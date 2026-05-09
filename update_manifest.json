@@ -1,18 +1,36 @@
 {
-  "version": "1.0.31",
-  "title": "Aether 1.0.31",
-  "notes": "Auto-update restart fix, hidden update installer, safer update package handling, container version picker fixes, and distinct red/purple themes.",
-  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.31/Aether.zip",
-  "size": 40997190,
-  "sha256": "e3864cbfd1a85979316f4534c1d0134ed34a3cf70c62bfea27b28cee4601f3c3",
+  "version": "1.0.32",
+  "title": "Aether 1.0.32",
+  "title_en": "Aether 1.0.32",
+  "title_ru": "Aether 1.0.32",
+  "notes": "Launcher storage, installer, Minecraft launch progress and Forge install fixes.",
+  "notes_en": "Launcher storage, installer, Minecraft launch progress and Forge install fixes.",
+  "notes_ru": "Хранилище лаунчера, установщик, прогресс запуска Minecraft и исправления установки Forge.",
   "changes": [
-    "Fixed PyInstaller python312.dll startup failure after launcher update.",
-    "Apply update without opening a console window.",
-    "Reset PyInstaller environment before restarting the updated launcher.",
-    "Support local Windows paths while testing update packages.",
-    "Verify update package SHA-256 when the manifest provides it.",
-    "Allow mouse wheel scrolling in the Minecraft version dropdown.",
-    "Disable manual typing of Minecraft versions in container creation/editing.",
-    "Make red and purple themes visually distinct."
-  ]
+    "Launcher executable is stored in the selected storage folder.",
+    "Desktop shortcut is updated to the stored launcher when it exists.",
+    "Play button shows Minecraft launch progress and can stop a running game.",
+    "Forge loader installation is validated before launching.",
+    "Installer now installs launcher files into the selected storage folder.",
+    "Settings include GitHub and Telegram icon buttons."
+  ],
+  "changes_en": [
+    "Launcher executable is stored in the selected storage folder.",
+    "Desktop shortcut is updated to the stored launcher when it exists.",
+    "Play button shows Minecraft launch progress and can stop a running game.",
+    "Forge loader installation is validated before launching.",
+    "Installer now installs launcher files into the selected storage folder.",
+    "Settings include GitHub and Telegram icon buttons."
+  ],
+  "changes_ru": [
+    "Exe лаунчера хранится в выбранной папке хранилища.",
+    "Ярлык на рабочем столе обновляется на exe из хранилища, если ярлык существует.",
+    "Кнопка Играть показывает прогресс запуска Minecraft и может закрыть запущенную игру.",
+    "Установка Forge проверяется перед запуском игры.",
+    "Установщик кладет файлы лаунчера в выбранную папку хранилища.",
+    "В настройках добавлены кнопки GitHub и Telegram с отдельными иконками."
+  ],
+  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.32/Aether.zip",
+  "size": 41041809,
+  "sha256": "80229c5f5f1dcf9a1846890f4f00412b12b0c1c3a232894cc433d648d50648d8"
 }
