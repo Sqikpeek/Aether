@@ -1,25 +1,36 @@
 {
-  "version": "1.0.35",
-  "title": "Aether 1.0.35",
-  "title_en": "Aether 1.0.35",
-  "title_ru": "Aether 1.0.35",
-  "notes": "Play button shimmer now strictly follows the selected launcher theme colors.",
-  "notes_en": "Play button shimmer now strictly follows the selected launcher theme colors.",
-  "notes_ru": "Перелив кнопки Играть теперь строго следует цветам выбранной темы лаунчера.",
+  "version": "1.0.36",
+  "title": "Aether 1.0.36",
+  "title_en": "Aether 1.0.36",
+  "title_ru": "Aether 1.0.36",
+  "notes": "Installer, auto-update and hidden helper process fixes.",
+  "notes_en": "Installer, auto-update and hidden helper process fixes.",
+  "notes_ru": "Исправления установщика, автообновления и скрытого запуска служебных процессов.",
   "changes": [
-    "Play button shimmer now uses only the selected theme accent and secondary accent colors.",
-    "The shimmer moves as a theme-colored highlight without switching into RGB spectrum colors.",
-    "Updated release files and manifest for version 1.0.35."
+    "Installer no longer crashes with JSON parsing errors when GitHub API or raw manifest returns invalid data.",
+    "Installer now uses GitHub latest download asset as the primary installation path.",
+    "Auto-update can detect the latest release through GitHub redirect even when the GitHub API is unavailable.",
+    "Broken or invalid update manifests are skipped instead of crashing the update checker.",
+    "Update check errors are written to the launcher log.",
+    "PowerShell, cmd, tasklist, taskkill and Java checks are launched hidden without visible terminal windows."
   ],
   "changes_en": [
-    "Play button shimmer now uses only the selected theme accent and secondary accent colors.",
-    "The shimmer moves as a theme-colored highlight without switching into RGB spectrum colors.",
+    "Installer no longer crashes with JSON parsing errors when GitHub API or raw manifest returns invalid data.",
+    "Installer now uses GitHub latest download asset as the primary installation path.",
+    "Auto-update can detect the latest release through GitHub redirect even when the GitHub API is unavailable.",
+    "Broken or invalid update manifests are skipped instead of crashing the update checker.",
+    "Update check errors are written to the launcher log.",
+    "PowerShell, cmd, tasklist, taskkill and Java checks are launched hidden without visible terminal windows."
   ],
   "changes_ru": [
-    "Перелив кнопки Играть теперь использует только основной и дополнительный акцент выбранной темы.",
-    "Перелив движется как подсветка в цветах темы и не переходит в RGB-спектр.",
+    "Установщик больше не падает с ошибками парсинга JSON, если GitHub API или raw-манифест вернул невалидные данные.",
+    "Установщик теперь использует GitHub latest download asset как основной путь установки.",
+    "Автообновление может определить последний релиз через GitHub redirect, даже если GitHub API недоступен.",
+    "Битые или невалидные манифесты обновления пропускаются и не ломают проверку обновлений.",
+    "Ошибки проверки обновлений пишутся в лог лаунчера.",
+    "PowerShell, cmd, tasklist, taskkill и проверки Java запускаются скрыто, без видимых окон терминала."
   ],
-  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.35/Aether%20Update.zip",
-  "size": 41044092,
-  "sha256": "b675f3bebfada11118698180feae690ea6f4077a012aa70244fd9ff65926c930"
+  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.36/Aether%20Update.zip",
+  "size": 41045986,
+  "sha256": "0405be3cb753638b3460a511c5bd22d4ca11c44f45ff12f08c15f6c2a08e6f2a"
 }
