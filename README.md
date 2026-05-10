@@ -1,5 +1,7 @@
 # AETHER
 
+Aether Installer: https://github.com/Sqikpeek/Aether/releases/tag/Launcher
+
 ## Russian
 
 Эта страница создана для обновления лаунчера по майнкрафту Aether. Поддержите разработку, написав предложения, что можно добавить, нахождение багов и т.п. 
