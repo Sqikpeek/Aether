@@ -1,37 +1,25 @@
 {
-  "version": "1.0.32",
-  "title": "Aether 1.0.32",
-  "title_en": "Aether 1.0.32",
-  "title_ru": "Aether 1.0.32",
-  "notes": "Launcher storage, installer, Minecraft launch progress and Forge install fixes.",
-  "notes_en": "Launcher storage, installer, Minecraft launch progress and Forge install fixes.",
-  "notes_ru": "Хранилище лаунчера, установщик, прогресс запуска Minecraft и исправления установки Forge.",
+  "version": "1.0.35",
+  "title": "Aether 1.0.35",
+  "title_en": "Aether 1.0.35",
+  "title_ru": "Aether 1.0.35",
+  "notes": "Play button shimmer now strictly follows the selected launcher theme colors.",
+  "notes_en": "Play button shimmer now strictly follows the selected launcher theme colors.",
+  "notes_ru": "Перелив кнопки Играть теперь строго следует цветам выбранной темы лаунчера.",
   "changes": [
-    "Launcher executable is stored in the selected storage folder.",
-    "Desktop shortcut is updated to the stored launcher when it exists.",
-    "Play button shows Minecraft launch progress and can stop a running game.",
-    "Forge loader installation is validated before launching.",
-    "Installer now installs launcher files into the selected storage folder.",
-    "Settings include GitHub and Telegram icon buttons."
+    "Play button shimmer now uses only the selected theme accent and secondary accent colors.",
+    "The shimmer moves as a theme-colored highlight without switching into RGB spectrum colors.",
+    "Updated release files and manifest for version 1.0.35."
   ],
   "changes_en": [
-    "Launcher executable is stored in the selected storage folder.",
-    "Desktop shortcut is updated to the stored launcher when it exists.",
-    "Play button shows Minecraft launch progress and can stop a running game.",
-    "Forge loader installation is validated before launching.",
-    "Installer now installs launcher files into the selected storage folder.",
-    "Settings include GitHub and Telegram icon buttons."
+    "Play button shimmer now uses only the selected theme accent and secondary accent colors.",
+    "The shimmer moves as a theme-colored highlight without switching into RGB spectrum colors.",
   ],
   "changes_ru": [
-    "Exe лаунчера хранится в выбранной папке хранилища.",
-    "Ярлык на рабочем столе обновляется на exe из хранилища, если ярлык существует.",
-    "Кнопка Играть показывает прогресс запуска Minecraft и может закрыть запущенную игру.",
-    "Установка Forge проверяется перед запуском игры.",
-    "Установщик кладет файлы лаунчера в выбранную папку хранилища.",
-    "В настройках добавлены кнопки GitHub и Telegram с отдельными иконками."
+    "Перелив кнопки Играть теперь использует только основной и дополнительный акцент выбранной темы.",
+    "Перелив движется как подсветка в цветах темы и не переходит в RGB-спектр.",
   ],
-  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.32/Aether.zip",
-  "size": 41040497,
-  "sha256": "be7a4e606dd3cedf2a71b27632c53ddb1d18ae0829632d1274d158e0732aa06b"
+  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.35/Aether%20Update.zip",
+  "size": 41044092,
+  "sha256": "b675f3bebfada11118698180feae690ea6f4077a012aa70244fd9ff65926c930"
 }
-
