@@ -6,6 +6,7 @@ Aether Launcher is a Minecraft launcher with containers, Modrinth content instal
 
 - GitHub: https://github.com/Sqikpeek/Aether
 - Releases: https://github.com/Sqikpeek/Aether/releases
+- Aether Installer: https://github.com/Sqikpeek/Aether/releases/tag/Launcher
 - Installer download: open the latest release and download `Aether Installer.exe`
 - Update package: the latest release uses `Aether Update.zip`
 
