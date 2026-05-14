@@ -1,8 +1,8 @@
 {
-  "version": "1.0.36",
-  "title": "Aether 1.0.36",
-  "title_en": "Aether 1.0.36",
-  "title_ru": "Aether 1.0.36",
+  "version": "1.0.37",
+  "title": "Aether 1.0.37",
+  "title_en": "Aether 1.0.37",
+  "title_ru": "Aether 1.0.37",
   "notes": "Installer, auto-update and hidden helper process fixes.",
   "notes_en": "Installer, auto-update and hidden helper process fixes.",
   "notes_ru": "Исправления установщика, автообновления и скрытого запуска служебных процессов.",
@@ -30,7 +30,7 @@
     "Ошибки проверки обновлений пишутся в лог лаунчера.",
     "PowerShell, cmd, tasklist, taskkill и проверки Java запускаются скрыто, без видимых окон терминала."
   ],
-  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.36/Aether%20Update.zip",
-  "size": 41045986,
-  "sha256": "0405be3cb753638b3460a511c5bd22d4ca11c44f45ff12f08c15f6c2a08e6f2a"
+  "url": "https://github.com/Sqikpeek/Aether/releases/download/v1.0.37/Aether.zip",
+  "size": 41228634,
+  "sha256": "4a1f384c90dc94b83c6328ae2a6601e6a2c815aa42998864d8996e07e866b427"
 }
