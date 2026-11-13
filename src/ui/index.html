@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aether Launcher</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="void-purple">
+  <div id="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">Æ</div>
+        <div class="brand-text">
+          <h1>Aether</h1>
+          <span>LAUNCHER</span>
+        </div>
+      </div>
+
+      <nav class="nav-links">
+        <div class="nav-item active" data-tab="containers">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <span data-i18n="nav_containers">Контейнеры</span>
+        </div>
+
+        <div class="nav-item" data-tab="mods">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+          </svg>
+          <span data-i18n="nav_mods">Моды (Modrinth)</span>
+        </div>
+
+        <div class="nav-item" data-tab="servers">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="2" y1="12" x2="22" y2="12"></line>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          <span data-i18n="nav_servers">Серверы</span>
+        </div>
+
+        <div class="nav-item" data-tab="logs">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 17 10 11 4 5"></polyline>
+            <line x1="12" y1="19" x2="20" y2="19"></line>
+          </svg>
+          <span data-i18n="nav_logs">Логи и краши</span>
+        </div>
+
+        <div class="nav-item" data-tab="backups">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          <span data-i18n="nav_backups">Резервные копии</span>
+        </div>
+
+        <div class="nav-item" data-tab="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span data-i18n="nav_settings">Настройки</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="version-badge" id="appVersionBadge">v1.0.38</span>
+        <button class="update-btn-pill" id="updatePillBtn">Update</button>
+      </div>
+    </aside>
+
+    <!-- Main View Area -->
+    <main class="main-view">
+      <!-- Top Bar -->
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <div class="container-selector">
+            <span>🎮</span>
+            <select id="activeContainerSelect"></select>
+          </div>
+        </div>
+
+        <div class="top-bar-right">
+          <div class="lang-switch">
+            <button class="lang-btn active" data-lang="ru">RU</button>
+            <button class="lang-btn" data-lang="en">EN</button>
+          </div>
+
+          <a href="https://github.com/Sqikpeek/Aether" target="_blank" class="icon-btn" title="GitHub">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+            </svg>
+          </a>
+        </div>
+      </header>
+
+      <!-- Containers Tab -->
+      <section class="tab-content active" id="tab-containers">
+        <div class="tab-header">
+          <div>
+            <h2 data-i18n="tab_containers_title">Игровые контейнеры</h2>
+            <p data-i18n="tab_containers_subtitle">Изолированные профили для версий Minecraft, сборок и модов</p>
+          </div>
+          <button class="btn btn-primary" id="openCreateContainerModalBtn" data-i18n="btn_create_container">+ Создать контейнер</button>
+        </div>
+
+        <div class="container-grid" id="containersGrid"></div>
+      </section>
+
+      <!-- Mods (Modrinth) Tab -->
+      <section class="tab-content" id="tab-mods">
+        <div class="tab-header">
+          <div>
+            <h2 data-i18n="tab_mods_title">Каталог Modrinth</h2>
+            <p data-i18n="tab_mods_subtitle">Поиск и установка модов, датапаков и плагинов напрямую</p>
+          </div>
+          <div class="mods-subnav">
+            <button class="btn btn-secondary active" id="subtabCatalogBtn" data-i18n="mods_catalog_tab">Каталог Modrinth</button>
+            <button class="btn btn-secondary" id="subtabInstalledBtn" data-i18n="mods_installed_tab">Установленные моды</button>
+          </div>
+        </div>
+
+        <div id="modsCatalogView">
+          <div class="mods-search-bar">
+            <div class="search-input-wrapper">
+              <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input type="text" id="modSearchInput" placeholder="Поиск модов на Modrinth..." data-i18n-attr="placeholder:mods_search_placeholder">
+            </div>
+            <button class="btn btn-primary" id="modSearchBtn">Найти</button>
+          </div>
+          <div class="mods-list" id="modrinthResultsList"></div>
+        </div>
+
+        <div id="modsInstalledView" style="display: none;">
+          <div class="mods-list" id="installedModsList"></div>
+        </div>
+      </section>
+
+      <!-- Servers Tab -->
+      <section class="tab-content" id="tab-servers">
+        <div class="tab-header">
+          <div>
+            <h2 data-i18n="tab_servers_title">Мониторинг серверов</h2>
+            <p data-i18n="tab_servers_subtitle">Проверка онлайна, пинга и MOTD до запуска игры</p>
+          </div>
+        </div>
+
+        <div class="mods-search-bar">
+          <div class="search-input-wrapper">
+            <input type="text" id="serverAddressInput" placeholder="mc.hypixel.net" value="mc.hypixel.net">
+          </div>
+          <button class="btn btn-primary" id="pingServerBtn" data-i18n="btn_ping">Проверить пинг</button>
+        </div>
+
+        <div id="serverPingCard" style="display: none; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 20px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <img id="serverFavicon" src="" style="width: 48px; height: 48px; border-radius: 8px; display: none;">
+              <div>
+                <h3 id="serverHostName" style="font-size: 17px; font-weight: 700;"></h3>
+                <span id="serverVersionText" style="font-size: 12px; color: var(--text-muted);"></span>
+              </div>
+            </div>
+            <div style="text-align: right;">
+              <span id="serverOnlineBadge" class="card-badge" style="background-color: rgba(16, 185, 129, 0.2); color: var(--success); font-size: 13px;">Онлайн</span>
+              <div id="serverPingMs" style="font-size: 12px; color: var(--text-muted); margin-top: 4px;"></div>
+            </div>
+          </div>
+          <div id="serverMotd" style="background: var(--bg-surface-elevated); padding: 12px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.4; color: #e2e8f0; margin-bottom: 12px;"></div>
+          <div style="font-size: 13px; color: var(--text-muted);">
+            <span data-i18n="server_players">Игроки:</span> <strong id="serverPlayersCount" style="color: var(--text-main);"></strong>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs & Crashes Tab -->
+      <section class="tab-content" id="tab-logs">
+        <div class="tab-header">
+          <div>
+            <h2 data-i18n="tab_logs_title">Логи и умная диагностика</h2>
+            <p data-i18n="tab_logs_subtitle">Отслеживание запуска, фильтрация ошибок и автоматический анализ сбоев</p>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn btn-secondary" id="clearLogsBtn" data-i18n="btn_clear_logs">Очистить</button>
+            <button class="btn btn-primary" id="copyLogsBtn" data-i18n="btn_copy_logs">Копировать логи</button>
+          </div>
+        </div>
+
+        <div class="logs-container">
+          <!-- Smart Crash Diagnostic Banner -->
+          <div class="diagnostic-card" id="crashDiagnosticCard">
+            <div class="diagnostic-title">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+              <span id="diagnosticTitle"></span>
+            </div>
+            <div class="diagnostic-cause" id="diagnosticCause"></div>
+            <div class="diagnostic-solution" id="diagnosticSolution"></div>
+          </div>
+
+          <div class="logs-output" id="logsOutput"></div>
+        </div>
+      </section>
+
+      <!-- Backups Tab -->
+      <section class="tab-content" id="tab-backups">
+        <div class="tab-header">
+          <div>
+            <h2 data-i18n="tab_backups_title">Резервные копии миров</h2>
+            <p data-i18n="tab_backups_subtitle">Снимки папок сохранений и конфигураций перед установкой модов</p>
+          </div>
+          <button class="btn btn-primary" id="createBackupBtn" data-i18n="btn_create_backup">+ Создать снимок</button>
+        </div>
+
+        <div class="mods-list" id="backupsList"></div>
+      </section>
+
+      <!-- Settings Tab -->
+      <section class="tab-content" id="tab-settings">
+        <div class="tab-header">
+          <div>
+            <h2 data-i18n="tab_settings_title">Настройки лаунчера</h2>
+            <p data-i18n="tab_settings_subtitle">Память, автоподбор Java, оптимизация ЦП и визуальные темы</p>
+          </div>
+          <button class="btn btn-primary" id="checkUpdatesManualBtn" data-i18n="btn_check_updates">Проверить обновления</button>
+        </div>
+
+        <div class="settings-grid">
+          <div class="settings-group">
+            <h3>Производительность и память</h3>
+            
+            <div class="form-item">
+              <label data-i18n="lbl_memory_slider">Выделенная память (RAM)</label>
+              <div class="slider-wrapper">
+                <input type="range" id="ramSlider" min="1024" max="16384" step="512" value="4096">
+                <span class="slider-val" id="ramValText">4.0 GB</span>
+              </div>
+            </div>
+
+            <div class="form-item">
+              <label data-i18n="lbl_jvm_preset">Предустановка флагов JVM</label>
+              <select id="jvmPresetSelect">
+                <option value="aikar">Aikar's Flags (Макс. FPS, без фризов)</option>
+                <option value="low-ram">Low RAM (Для слабых ПК)</option>
+                <option value="generative-zgc">Generational ZGC (Java 21+)</option>
+                <option value="standard">Стандартные флаги</option>
+                <option value="custom">Пользовательские</option>
+              </select>
+            </div>
+
+            <div class="form-item">
+              <label data-i18n="lbl_custom_args">Дополнительные аргументы Java</label>
+              <input type="text" id="customJvmArgsInput" placeholder="-XX:+UseStringDeduplication">
+            </div>
+
+            <div class="form-item" style="flex-direction: row; align-items: center; justify-content: space-between; margin-top: 10px;">
+              <div>
+                <label data-i18n="lbl_low_cpu">Режим низкой нагрузки на ЦП (0% в фоне)</label>
+                <p style="font-size: 11px; color: var(--text-muted);">Приостанавливает анимации при сворачивании и во время игры</p>
+              </div>
+              <label class="mod-toggle-switch">
+                <input type="checkbox" id="lowCpuModeCheckbox" checked>
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h3>Интерфейс и окружение</h3>
+
+            <div class="form-item">
+              <label data-i18n="lbl_theme">Тема оформления</label>
+              <select id="themeSelect">
+                <option value="void-purple">Void Purple (Фиолетовая бездна)</option>
+                <option value="crimson">Crimson Red (Багровый рубин)</option>
+                <option value="cyan-neon">Cyberpunk Cyan (Киберпанк)</option>
+                <option value="emerald">Emerald Green (Изумруд)</option>
+                <option value="amber">Amber Gold (Янтарь)</option>
+                <option value="nordic-blue">Nordic Blue (Северное сияние)</option>
+              </select>
+            </div>
+
+            <div class="form-item">
+              <label data-i18n="lbl_offline_username">Никнейм игрока</label>
+              <input type="text" id="usernameInput" value="Player">
+            </div>
+
+            <div class="form-item">
+              <label data-i18n="lbl_java_runtime">Среда выполнения Java</label>
+              <select id="javaSelect">
+                <option value="">Автоопределение (Рекомендуется)</option>
+              </select>
+            </div>
+
+            <div class="form-item">
+              <label data-i18n="lbl_storage_folder">Папка хранения данных</label>
+              <input type="text" id="storagePathInput" readonly>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Bottom Launch Dock with Strictly Theme-Shimmering Play Button -->
+  <footer class="launch-dock">
+    <div class="dock-container-info">
+      <div class="dock-avatar" id="dockContainerIcon">🧊</div>
+      <div class="dock-details">
+        <h3 id="dockContainerName">Minecraft Container</h3>
+        <p id="dockContainerVersion">Vanilla 1.21.1</p>
+      </div>
+    </div>
+
+    <div class="dock-center">
+      <div class="launch-status-pill" id="launchStatusText" data-i18n="status_idle">Готов к запуску</div>
+    </div>
+
+    <div class="play-btn-wrapper">
+      <button class="play-btn" id="playBtn">
+        <span id="playBtnText" data-i18n="btn_play">ИГРАТЬ</span>
+      </button>
+    </div>
+  </footer>
+
+  <!-- Create/Edit Container Modal -->
+  <div class="modal-overlay" id="containerModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="containerModalTitle">Создать контейнер</h3>
+        <button class="modal-close" id="closeContainerModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editContainerId">
+
+        <div class="form-item">
+          <label data-i18n="lbl_container_name">Название контейнера</label>
+          <input type="text" id="modalContainerName" placeholder="My Modded World">
+        </div>
+
+        <div class="form-item">
+          <label data-i18n="lbl_mc_version">Версия Minecraft</label>
+          <select id="modalMcVersionSelect"></select>
+        </div>
+
+        <div class="form-item">
+          <label data-i18n="lbl_loader">Загрузчик модов</label>
+          <select id="modalLoaderSelect">
+            <option value="vanilla">Vanilla (Чистый Minecraft)</option>
+            <option value="fabric">Fabric Loader</option>
+            <option value="forge">Forge</option>
+            <option value="neoforge">NeoForge</option>
+            <option value="quilt">Quilt</option>
+          </select>
+        </div>
+
+        <div class="form-item" style="flex-direction: row; align-items: center; justify-content: space-between;">
+          <div>
+            <label data-i18n="lbl_shared_saves">Общие миры (Shared Saves)</label>
+            <p style="font-size: 11px; color: var(--text-muted);" data-i18n="lbl_shared_saves_hint">Связать папку saves с общим хранилищем миров</p>
+          </div>
+          <label class="mod-toggle-switch">
+            <input type="checkbox" id="modalShareSavesCheckbox" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="cancelContainerModalBtn" data-i18n="btn_cancel">Отмена</button>
+        <button class="btn btn-primary" id="saveContainerModalBtn" data-i18n="btn_save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auto-Update Modal -->
+  <div class="modal-overlay" id="updateModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 data-i18n="update_available_title">Доступно обновление Aether!</h3>
+        <button class="modal-close" id="closeUpdateModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="update-badge" id="updateVersionBadge">v1.0.38</div>
+        <p id="updateNotesText" style="font-size: 13.5px; margin-bottom: 8px; font-weight: 600;"></p>
+        <div class="changelog-box" id="updateChangelogBox"></div>
+
+        <div id="updateDownloadSection" style="display: none; margin-top: 10px;">
+          <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px;">
+            <span id="updateStatusText">Загрузка...</span>
+            <span id="updatePercentText">0%</span>
+          </div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="updateProgressBar"></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="dismissUpdateModalBtn" data-i18n="btn_cancel">Позже</button>
+        <button class="btn btn-primary" id="startUpdateBtn" data-i18n="btn_update_now">Обновить сейчас</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

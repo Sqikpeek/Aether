@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+release/
+*.log
+.update_cache.json
+.update-staging/
+.backup/
+.DS_Store
+Thumbs.db
