@@ -15,24 +15,51 @@ if (!fs.existsSync(releaseDir)) {
   fs.mkdirSync(releaseDir, { recursive: true });
 }
 
-// Step 2: Compile native Windows executables (Aether.exe and Aether Installer.exe)
-console.log('[Package] Compiling native Windows PE binaries (Aether.exe and Aether Installer.exe)...');
+// Step 2: Compile native Windows executables (if compiler available)
+console.log('[Package] Checking compiler for native Windows PE binaries...');
+let hasZig = false;
 try {
-  execSync('zig cc -target x86_64-windows -Wl,--subsystem,windows -Os src/native/launcher.c -o dist/Aether.exe', { stdio: 'inherit' });
-  execSync('zig cc -target x86_64-windows -Wl,--subsystem,windows -Os src/native/installer.c -o release/"Aether Installer.exe"', { stdio: 'inherit' });
-  // Also keep at root
-  fs.copyFileSync('dist/Aether.exe', 'Aether.exe');
-  fs.copyFileSync('release/Aether Installer.exe', 'Aether Installer.exe');
-  console.log('[Package] Successfully compiled Aether.exe and Aether Installer.exe');
-} catch (err) {
-  console.error('[Package] Failed compiling native executables:', err);
+  execSync('zig version', { stdio: 'ignore' });
+  hasZig = true;
+} catch {}
+
+if (hasZig) {
+  try {
+    console.log('[Package] Compiling native Windows PE binaries with embedded payload...');
+    execSync('zig cc -target x86_64-windows -Wl,--subsystem,windows -Os src/native/launcher.c -o dist/Aether.exe', { stdio: 'inherit' });
+    execSync('zig cc -target x86_64-windows -Wl,--subsystem,windows -Os src/native/installer.c -o release/"Aether Installer.exe"', { stdio: 'inherit' });
+    fs.copyFileSync('dist/Aether.exe', 'Aether.exe');
+    fs.copyFileSync('release/Aether Installer.exe', 'Aether Installer.exe');
+    console.log('[Package] Successfully compiled standalone Aether.exe and Aether Installer.exe');
+  } catch (err) {
+    console.warn('[Package] Warning compiling native executables:', err.message);
+  }
+} else {
+  console.log('[Package] Compiler not found; using existing precompiled Aether.exe and Aether Installer.exe');
+  if (fs.existsSync('Aether.exe')) {
+    fs.copyFileSync('Aether.exe', 'dist/Aether.exe');
+  }
+  if (fs.existsSync('Aether Installer.exe')) {
+    fs.copyFileSync('Aether Installer.exe', 'release/Aether Installer.exe');
+  }
 }
 
 // Copy package.json to dist
 fs.copyFileSync('package.json', path.join(distDir, 'package.json'));
 
-// Helper to create zip archive of dist folder
+// Create update zip archive
 function createZipFromDir(srcDir, zipPath) {
+  if (fs.existsSync(zipPath)) {
+    fs.unlinkSync(zipPath);
+  }
+  
+  if (process.platform === 'win32') {
+    try {
+      execSync(`powershell -NoProfile -Command "Compress-Archive -Path '${srcDir}\\*' -DestinationPath '${zipPath}' -Force"`, { stdio: 'ignore' });
+      return;
+    } catch {}
+  }
+
   try {
     execSync(`zip -r "${zipPath}" .`, { cwd: srcDir, stdio: 'ignore' });
   } catch {

@@ -6,9 +6,57 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include "embedded_dist.h"
+
 static bool FileExists(const WCHAR* path) {
     DWORD dwAttrib = GetFileAttributesW(path);
     return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
+}
+
+static void CreateDirectoryRecursive(const WCHAR* dirPath) {
+    WCHAR temp[MAX_PATH];
+    wcsncpy(temp, dirPath, MAX_PATH);
+    for (WCHAR* p = temp + 1; *p; p++) {
+        if (*p == L'\\' || *p == L'/') {
+            WCHAR orig = *p;
+            *p = L'\0';
+            CreateDirectoryW(temp, NULL);
+            *p = orig;
+        }
+    }
+    CreateDirectoryW(temp, NULL);
+}
+
+static bool ExtractEmbeddedDist(const WCHAR* targetDir) {
+    for (size_t i = 0; i < NUM_EMBEDDED_FILES; i++) {
+        const EmbeddedFile* ef = &EMBEDDED_FILES[i];
+
+        WCHAR relW[MAX_PATH];
+        MultiByteToWideChar(CP_UTF8, 0, ef->relPath, -1, relW, MAX_PATH);
+
+        for (WCHAR* p = relW; *p; p++) {
+            if (*p == L'/') *p = L'\\';
+        }
+
+        WCHAR fullPath[MAX_PATH];
+        swprintf(fullPath, MAX_PATH, L"%ls\\dist\\%ls", targetDir, relW);
+
+        WCHAR parentDir[MAX_PATH];
+        wcsncpy(parentDir, fullPath, MAX_PATH);
+        WCHAR* lastSlash = wcsrchr(parentDir, L'\\');
+        if (lastSlash) {
+            *lastSlash = L'\0';
+            CreateDirectoryRecursive(parentDir);
+        }
+
+        HANDLE hFile = CreateFileW(fullPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(hFile, ef->data, (DWORD)ef->size, &written, NULL);
+            CloseHandle(hFile);
+        }
+    }
+    return true;
 }
 
 static bool FindNodeExecutable(const WCHAR* baseDir, WCHAR* outNodePath, DWORD outSize) {
@@ -79,22 +127,37 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         return 1;
     }
 
-    // Verify dist/index.js exists
+    // Locate or self-extract dist/index.js
     WCHAR scriptPath[MAX_PATH];
     swprintf(scriptPath, MAX_PATH, L"%ls\\dist\\index.js", baseDir);
+
     if (!FileExists(scriptPath)) {
-        // Check if index.js is directly in baseDir
         swprintf(scriptPath, MAX_PATH, L"%ls\\index.js", baseDir);
-        if (!FileExists(scriptPath)) {
-            MessageBoxW(
-                NULL,
-                L"Файлы лаунчера повреждены или не найдены (dist\\index.js отсутствует).\n"
-                L"Пожалуйста, запустите установщик Aether Installer заново.",
-                L"Aether Launcher — Ошибка",
-                MB_OK | MB_ICONERROR
-            );
-            return 2;
-        }
+    }
+
+    if (!FileExists(scriptPath)) {
+        // Self-extract embedded dist files into baseDir
+        ExtractEmbeddedDist(baseDir);
+        swprintf(scriptPath, MAX_PATH, L"%ls\\dist\\index.js", baseDir);
+    }
+
+    if (!FileExists(scriptPath)) {
+        // Fallback: extract to %APPDATA%\AetherLauncher
+        WCHAR appDataDir[MAX_PATH];
+        ExpandEnvironmentStringsW(L"%APPDATA%\\AetherLauncher", appDataDir, MAX_PATH);
+        ExtractEmbeddedDist(appDataDir);
+        swprintf(scriptPath, MAX_PATH, L"%ls\\dist\\index.js", appDataDir);
+        wcsncpy(baseDir, appDataDir, MAX_PATH);
+    }
+
+    if (!FileExists(scriptPath)) {
+        MessageBoxW(
+            NULL,
+            L"Не удалось извлечь необходимые файлы лаунчера.\nПопробуйте запустить Aether от имени администратора или проверить права доступа к папке.",
+            L"Aether Launcher — Ошибка",
+            MB_OK | MB_ICONERROR
+        );
+        return 2;
     }
 
     // Launch server completely hidden without visible console window

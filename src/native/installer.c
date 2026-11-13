@@ -6,8 +6,56 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+#include "embedded_dist.h"
+
+static void CreateDirectoryRecursive(const WCHAR* dirPath) {
+    WCHAR temp[MAX_PATH];
+    wcsncpy(temp, dirPath, MAX_PATH);
+    for (WCHAR* p = temp + 1; *p; p++) {
+        if (*p == L'\\' || *p == L'/') {
+            WCHAR orig = *p;
+            *p = L'\0';
+            CreateDirectoryW(temp, NULL);
+            *p = orig;
+        }
+    }
+    CreateDirectoryW(temp, NULL);
+}
+
+static bool ExtractEmbeddedDist(const WCHAR* targetDir) {
+    for (size_t i = 0; i < NUM_EMBEDDED_FILES; i++) {
+        const EmbeddedFile* ef = &EMBEDDED_FILES[i];
+
+        WCHAR relW[MAX_PATH];
+        MultiByteToWideChar(CP_UTF8, 0, ef->relPath, -1, relW, MAX_PATH);
+
+        for (WCHAR* p = relW; *p; p++) {
+            if (*p == L'/') *p = L'\\';
+        }
+
+        WCHAR fullPath[MAX_PATH];
+        swprintf(fullPath, MAX_PATH, L"%ls\\dist\\%ls", targetDir, relW);
+
+        WCHAR parentDir[MAX_PATH];
+        wcsncpy(parentDir, fullPath, MAX_PATH);
+        WCHAR* lastSlash = wcsrchr(parentDir, L'\\');
+        if (lastSlash) {
+            *lastSlash = L'\0';
+            CreateDirectoryRecursive(parentDir);
+        }
+
+        HANDLE hFile = CreateFileW(fullPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            DWORD written = 0;
+            WriteFile(hFile, ef->data, (DWORD)ef->size, &written, NULL);
+            CloseHandle(hFile);
+        }
+    }
+    return true;
+}
+
 static void CopyDirRecursive(const WCHAR* src, const WCHAR* dest) {
-    CreateDirectoryW(dest, NULL);
+    CreateDirectoryRecursive(dest);
     WCHAR searchPath[MAX_PATH];
     swprintf(searchPath, MAX_PATH, L"%ls\\*.*", src);
 
@@ -34,7 +82,6 @@ static void CopyDirRecursive(const WCHAR* src, const WCHAR* dest) {
 }
 
 static bool CreateShortcut(const WCHAR* targetPath, const WCHAR* shortcutPath, const WCHAR* workDir) {
-    // Call powershell to create shortcut safely without COM threading issues
     WCHAR cmd[2048];
     swprintf(cmd, 2048,
         L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "
@@ -92,20 +139,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         return 0;
     }
 
-    // Create target directory and copy files
-    CreateDirectoryW(destDir, NULL);
-    CopyDirRecursive(srcDir, destDir);
+    // 1. Create target directory
+    CreateDirectoryRecursive(destDir);
 
-    // Target executable
+    // 2. Extract embedded dist/ files
+    ExtractEmbeddedDist(destDir);
+
+    // 3. Copy Aether.exe if adjacent or from installer directory
+    WCHAR srcAetherExe[MAX_PATH];
+    swprintf(srcAetherExe, MAX_PATH, L"%ls\\Aether.exe", srcDir);
     WCHAR targetExe[MAX_PATH];
     swprintf(targetExe, MAX_PATH, L"%ls\\Aether.exe", destDir);
 
-    // Create Desktop Shortcut
+    if (GetFileAttributesW(srcAetherExe) != INVALID_FILE_ATTRIBUTES) {
+        CopyFileW(srcAetherExe, targetExe, FALSE);
+    } else {
+        // Copy current installer as Aether.exe if standalone
+        CopyFileW(currentExe, targetExe, FALSE);
+    }
+
+    // 4. Create Desktop Shortcut
     WCHAR desktopLnk[MAX_PATH];
     ExpandEnvironmentStringsW(L"%USERPROFILE%\\Desktop\\Aether Launcher.lnk", desktopLnk, MAX_PATH);
     CreateShortcut(targetExe, desktopLnk, destDir);
 
-    // Create Start Menu Shortcut
+    // 5. Create Start Menu Shortcut
     WCHAR startMenuLnk[MAX_PATH];
     ExpandEnvironmentStringsW(L"%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Aether Launcher.lnk", startMenuLnk, MAX_PATH);
     CreateShortcut(targetExe, startMenuLnk, destDir);
