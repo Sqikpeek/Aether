@@ -98,7 +98,67 @@ static bool FindNodeExecutable(const WCHAR* baseDir, WCHAR* outNodePath, DWORD o
     return false;
 }
 
+static bool FindDesktopAppBrowser(WCHAR* outBrowserPath, DWORD outSize) {
+    WCHAR path[MAX_PATH];
+
+    // 1. Microsoft Edge (Pre-installed on all Windows 10/11)
+    ExpandEnvironmentStringsW(L"%ProgramFiles(x86)%\\Microsoft\\Edge\\Application\\msedge.exe", path, MAX_PATH);
+    if (FileExists(path)) { wcsncpy(outBrowserPath, path, outSize); return true; }
+
+    ExpandEnvironmentStringsW(L"%ProgramFiles%\\Microsoft\\Edge\\Application\\msedge.exe", path, MAX_PATH);
+    if (FileExists(path)) { wcsncpy(outBrowserPath, path, outSize); return true; }
+
+    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Microsoft\\Edge\\Application\\msedge.exe", path, MAX_PATH);
+    if (FileExists(path)) { wcsncpy(outBrowserPath, path, outSize); return true; }
+
+    // 2. Google Chrome
+    ExpandEnvironmentStringsW(L"%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe", path, MAX_PATH);
+    if (FileExists(path)) { wcsncpy(outBrowserPath, path, outSize); return true; }
+
+    ExpandEnvironmentStringsW(L"%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe", path, MAX_PATH);
+    if (FileExists(path)) { wcsncpy(outBrowserPath, path, outSize); return true; }
+
+    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe", path, MAX_PATH);
+    if (FileExists(path)) { wcsncpy(outBrowserPath, path, outSize); return true; }
+
+    // 3. Brave Browser
+    ExpandEnvironmentStringsW(L"%ProgramFiles%\\BraveSoftware\\Brave-Browser\\Application\\brave.exe", path, MAX_PATH);
+    if (FileExists(path)) { wcsncpy(outBrowserPath, path, outSize); return true; }
+
+    return false;
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
+    // Single instance mutex to avoid port conflicts
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, L"Global\\AetherLauncherSingleInstanceMutex");
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Already running, focus existing window or notify
+        HWND existingWnd = FindWindowW(NULL, L"Aether Launcher");
+        if (existingWnd) {
+            SetForegroundWindow(existingWnd);
+            ShowWindow(existingWnd, SW_RESTORE);
+        } else {
+            // Open window
+            WCHAR browserPath[MAX_PATH];
+            if (FindDesktopAppBrowser(browserPath, MAX_PATH)) {
+                WCHAR appDataDir[MAX_PATH];
+                ExpandEnvironmentStringsW(L"%APPDATA%\\AetherLauncher", appDataDir, MAX_PATH);
+                WCHAR appCmd[2048];
+                swprintf(appCmd, 2048,
+                    L"\"%ls\" --app=\"http://localhost:3000\" --window-size=1150,730 --user-data-dir=\"%ls\\app_profile\" --app-id=\"AetherLauncher\"",
+                    browserPath, appDataDir
+                );
+                STARTUPINFOW si;
+                PROCESS_INFORMATION pi;
+                ZeroMemory(&si, sizeof(si));
+                si.cb = sizeof(si);
+                ZeroMemory(&pi, sizeof(pi));
+                CreateProcessW(NULL, appCmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+            }
+        }
+        return 0;
+    }
+
     WCHAR exePath[MAX_PATH];
     GetModuleFileNameW(NULL, exePath, MAX_PATH);
 
@@ -124,6 +184,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (choice == IDYES) {
             ShellExecuteW(NULL, L"open", L"https://nodejs.org", NULL, NULL, SW_SHOWNORMAL);
         }
+        CloseHandle(hMutex);
         return 1;
     }
 
@@ -157,17 +218,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             L"Aether Launcher — Ошибка",
             MB_OK | MB_ICONERROR
         );
+        CloseHandle(hMutex);
         return 2;
     }
 
     // Launch server completely hidden without visible console window
-    STARTUPINFOW si;
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&si, sizeof(si));
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    ZeroMemory(&pi, sizeof(pi));
+    STARTUPINFOW siServer;
+    PROCESS_INFORMATION piServer;
+    ZeroMemory(&siServer, sizeof(siServer));
+    siServer.cb = sizeof(siServer);
+    siServer.dwFlags = STARTF_USESHOWWINDOW;
+    siServer.wShowWindow = SW_HIDE;
+    ZeroMemory(&piServer, sizeof(piServer));
 
     WCHAR cmdLine[2048];
     swprintf(cmdLine, 2048, L"\"%ls\" \"%ls\"", nodePath, scriptPath);
@@ -181,26 +243,66 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         CREATE_NO_WINDOW | DETACHED_PROCESS,
         NULL,
         baseDir,
-        &si,
-        &pi
+        &siServer,
+        &piServer
     );
 
     if (!success) {
         WCHAR errBuf[256];
         swprintf(errBuf, 256, L"Не удалось запустить процесс лаунчера. Код ошибки: %lu", GetLastError());
         MessageBoxW(NULL, errBuf, L"Aether Launcher — Ошибка запуска", MB_OK | MB_ICONERROR);
+        CloseHandle(hMutex);
         return 3;
     }
 
-    // Close process handles as we run detached
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    // Wait 350ms for server to bind port
+    Sleep(350);
 
-    // Wait 400ms for server to bind port
-    Sleep(400);
+    // Launch in Dedicated Desktop Application Window Mode
+    WCHAR browserPath[MAX_PATH];
+    WCHAR appDataDir[MAX_PATH];
+    ExpandEnvironmentStringsW(L"%APPDATA%\\AetherLauncher", appDataDir, MAX_PATH);
 
-    // Open launcher interface in default browser or webview
+    if (FindDesktopAppBrowser(browserPath, MAX_PATH)) {
+        // Launch as a standalone desktop window without browser URL bar, tabs, or bookmarks!
+        WCHAR appCmd[2048];
+        swprintf(appCmd, 2048,
+            L"\"%ls\" --app=\"http://localhost:3000\" --window-size=1150,730 --user-data-dir=\"%ls\\app_profile\" --app-id=\"AetherLauncher\"",
+            browserPath, appDataDir
+        );
+
+        STARTUPINFOW siApp;
+        PROCESS_INFORMATION piApp;
+        ZeroMemory(&siApp, sizeof(siApp));
+        siApp.cb = sizeof(siApp);
+        ZeroMemory(&piApp, sizeof(piApp));
+
+        if (CreateProcessW(NULL, appCmd, NULL, NULL, FALSE, 0, NULL, baseDir, &siApp, &piApp)) {
+            // Desktop application window is running!
+            // Wait for the desktop app window to close
+            WaitForSingleObject(piApp.hProcess, INFINITE);
+
+            // Once the desktop window is closed by the user, terminate server and exit cleanly!
+            if (piServer.hProcess) {
+                TerminateProcess(piServer.hProcess, 0);
+                CloseHandle(piServer.hProcess);
+                CloseHandle(piServer.hThread);
+            }
+
+            CloseHandle(piApp.hProcess);
+            CloseHandle(piApp.hThread);
+            CloseHandle(hMutex);
+            return 0;
+        }
+    }
+
+    // Fallback if no desktop app browser found: open default browser
     ShellExecuteW(NULL, L"open", L"http://localhost:3000", NULL, NULL, SW_SHOWNORMAL);
+
+    // Keep server running
+    CloseHandle(piServer.hThread);
+    CloseHandle(piServer.hProcess);
+    CloseHandle(hMutex);
 
     return 0;
 }

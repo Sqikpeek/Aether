@@ -26,6 +26,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Setup Low CPU Window Listeners
 function setupLowCpuListeners() {
+  // Desktop Heartbeat
+  setInterval(() => {
+    fetch('/api/heartbeat').catch(() => {});
+  }, 3000);
+
+  // Quit App Button
+  const quitBtn = document.getElementById('quitAppBtn');
+  if (quitBtn) {
+    quitBtn.addEventListener('click', async () => {
+      const msg = state.lang === 'ru' ? 'Вы уверены, что хотите выйти из Aether Launcher?' : 'Are you sure you want to quit Aether Launcher?';
+      if (confirm(msg)) {
+        await fetch('/api/app/quit', { method: 'POST' }).catch(() => {});
+        window.close();
+      }
+    });
+  }
+
   window.addEventListener('focus', () => {
     state.isWindowFocused = true;
     document.body.classList.remove('low-cpu-active');

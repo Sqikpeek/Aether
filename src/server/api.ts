@@ -196,6 +196,19 @@ export class LauncherServer {
       });
     };
 
+    // --- App Lifecycle ---
+    if (pathname === '/api/heartbeat') {
+      return jsonResponse({ status: 'alive', time: Date.now() });
+    }
+
+    if (pathname === '/api/app/quit' && method === 'POST') {
+      jsonResponse({ success: true, message: 'Shutting down Aether Launcher...' });
+      setTimeout(() => {
+        this.stop().then(() => process.exit(0));
+      }, 200);
+      return;
+    }
+
     // --- Config ---
     if (pathname === '/api/config' && method === 'GET') {
       return jsonResponse(this.configManager.get());
