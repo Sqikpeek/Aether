@@ -36,6 +36,7 @@
   "homepage": "https://github.com/Sqikpeek/Aether#readme",
   "devDependencies": {
     "@types/node": "^22.10.1",
+    "@yao-pkg/pkg": "^6.25.0",
     "typescript": "^5.7.2"
   }
 }
