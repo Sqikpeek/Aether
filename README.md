@@ -1,10 +1,11 @@
 # Aether Launcher
 
-[![Build & Tests](https://img.shields.io/badge/tests-13%20passed-success)](https://github.com/Sqikpeek/Aether)
-[![Version](https://img.shields.io/badge/version-1.0.38-blue)](https://github.com/Sqikpeek/Aether/releases)
+[![Build & Tests](https://img.shields.io/badge/tests-15%20passed-success)](https://github.com/Sqikpeek/Aether)
+[![Language](https://img.shields.io/badge/language-C%2B%2B%20%2F%20Win32-blue)](https://github.com/Sqikpeek/Aether)
+[![Binary Size](https://img.shields.io/badge/binary-~240%20KB-brightgreen)](https://github.com/Sqikpeek/Aether)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-High-performance, ultra-low CPU Minecraft launcher with isolated containers, Modrinth integration, smart crash diagnostics, and resilient auto-updates.
+Pure native C++ Win32 Minecraft launcher with zero Chrome/Edge browser dependencies, instant startup (< 20 ms), prominent in-dock nickname selection, automatic Mojang CDN asset downloads, and crash diagnostics.
 
 [Русский](#russian) | [English](#english)
 
@@ -12,44 +13,44 @@ High-performance, ultra-low CPU Minecraft launcher with isolated containers, Mod
 
 ## Russian
 
-Aether Launcher — современный, легковесный и высокопроизводительный лаунчер по Minecraft с практически нулевой нагрузкой на процессор (< 0.1% в простое, 0.00% во время игры), изолированными контейнерами, установкой контента с Modrinth, автообновлениями, мониторингом серверов и снимками миров.
+Aether Launcher — нативный, легковесный и высокопроизводительный лаунчер Minecraft нового поколения, написанный на **чистом C++ (Win32 API)** без зависимостей от Chrome, Edge, WebView2 или Electron.
 
-### Возможности:
-- Сверхбыстрый движок на Node.js / TypeScript (старт за 50 мс, размер < 1 МБ вместо 41 МБ).
-- 0% нагрузки на ЦП в фоне и во время игры (событийное управление процессами).
-- Отдельные контейнеры для Vanilla, Fabric, Quilt, Forge и NeoForge.
-- Каталог Modrinth: установка модов, ресурспаков, датапаков в 1 клик.
-- Быстрое переключение модов (`.jar` <-> `.jar.disabled`).
-- Умная диагностика крашей с готовыми подсказками по исправлению ошибок.
-- Встроенный пинг серверов (онлайн, пинг, игроки, MOTD).
-- Снимки (бэкапы) миров и настроек в 1 клик.
-- Поддержка тем оформления и аппаратно-ускоренный перелив кнопки «Играть».
-- Мгновенное переключение языка (RU / EN).
+### Ключевые возможности:
+- **100% чистый C++ (Win32 API)**: Никакого Chrome или Node.js для работы GUI. Вес приложения всего ~240 КБ, мгновенный запуск.
+- **Никнейм в главном меню**: Поле ввода ника доступно прямо на нижней панели главного экрана перед кнопкой «Играть».
+- **Надежный запуск игры**:
+  - Автоматический поиск Java (8, 16, 17, 21+).
+  - Автоматическая загрузка официального `client.jar` с Mojang CDN при первом запуске выбранной версии.
+  - Полноценное формирование classpath, аргументов JVM и запуск `net.minecraft.client.main.Main`.
+  - Потоковый перехват логов игры и встроенная диагностика причин крашей.
+- **Мониторинг серверов**: Встроенный SLP-пинг серверов через сокеты Winsock.
+- **Нативный установщик**: `Aether Installer.exe` для автоматического развертывания и создания ярлыков.
 
 ### Ссылки:
 - Релизы: https://github.com/Sqikpeek/Aether/releases
-- Пакет обновления: `Aether Update.zip`
+- Лаунчер: `Aether.exe`
 - Установщик: `Aether Installer.exe`
+- Пакет обновления: `Aether Update.zip`
 
 ---
 
 ## English
 
-Aether Launcher is a lightweight, high-performance next-generation Minecraft launcher featuring near-zero CPU load (< 0.1% idle, 0.00% during gameplay), isolated containers, direct Modrinth content installation, crash diagnostics, server monitoring, and robust auto-updates.
+Aether Launcher is a 100% pure native C++ Win32 Minecraft launcher engineered for maximum performance, zero bloat, and zero browser dependencies (no Chrome, Edge, WebView2, or Electron required).
 
-### Features:
-- Blazing-fast Node.js / TypeScript engine (< 50 ms launch, < 1 MB package vs 41 MB).
-- 0% background CPU usage via event-driven architecture.
-- Independent containers for Vanilla, Fabric, Quilt, Forge, and NeoForge.
-- Modrinth catalog: 1-click install for mods, datapacks, resource packs, and plugins.
-- 1-click mod toggle (`.jar` <-> `.jar.disabled`).
-- Smart crash diagnostics with automated cause and solution identification.
-- Built-in server pinger (online status, latency, player count, MOTD).
-- 1-click world and configuration snapshots (backups).
-- 6 visual themes with GPU-accelerated theme-strict play button shimmer.
-- Instant language switching (RU / EN).
+### Key Features:
+- **Pure Native C++ Win32 Desktop App**: Executable footprint is only ~240 KB with instant startup (< 20 ms) and ~15 MB RAM usage.
+- **Nickname on Main Launch Dock**: Enter your player nickname directly on the primary launch screen without diving into settings.
+- **Robust Minecraft Launch Workflow**:
+  - Auto-discovery of installed Java JRE/JDKs across system registry and paths.
+  - Automatic Mojang CDN client download (`piston-meta.mojang.com`) when launching a version for the first time.
+  - Full classpath assembly, JVM argument configuration, and async process lifecycle management via `CreateProcessW`.
+  - Real-time game log streaming with intelligent crash diagnostics.
+- **Native Server Pinger**: Winsock-based Server List Ping (SLP) for real-time latency, status, and player counts.
+- **Native Installer**: Compact `Aether Installer.exe` wizard for automatic deployment and shortcut creation.
 
 ### Links:
 - Releases: https://github.com/Sqikpeek/Aether/releases
-- Update package: `Aether Update.zip`
+- Launcher: `Aether.exe`
 - Installer: `Aether Installer.exe`
+- Update Package: `Aether Update.zip`

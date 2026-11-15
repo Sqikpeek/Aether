@@ -5,71 +5,41 @@ import { execSync } from 'node:child_process';
 
 console.log('[Package] Starting packaging for Windows release assets...');
 
-// Step 1: Build TypeScript and UI
-execSync('node scripts/build.js', { stdio: 'inherit' });
-
-const distDir = path.resolve('dist');
 const releaseDir = path.resolve('release');
-
 if (!fs.existsSync(releaseDir)) {
   fs.mkdirSync(releaseDir, { recursive: true });
 }
 
-// Step 2: Compile native Windows executables (if compiler available)
-console.log('[Package] Checking compiler for native Windows PE binaries...');
-let hasZig = false;
+// Step 1: Compile Native C++ Windows Executables
+console.log('[Package] Compiling native C++ Windows PE binaries...');
 try {
-  execSync('zig version', { stdio: 'ignore' });
-  hasZig = true;
-} catch {}
-
-if (hasZig) {
-  try {
-    console.log('[Package] Compiling native Windows PE binaries with embedded payload...');
-    execSync('zig cc -target x86_64-windows -Wl,--subsystem,windows -Os src/native/launcher.c -o dist/Aether.exe', { stdio: 'inherit' });
-    execSync('zig cc -target x86_64-windows -Wl,--subsystem,windows -Os src/native/installer.c -o release/"Aether Installer.exe"', { stdio: 'inherit' });
-    fs.copyFileSync('dist/Aether.exe', 'Aether.exe');
-    fs.copyFileSync('release/Aether Installer.exe', 'Aether Installer.exe');
-    console.log('[Package] Successfully compiled standalone Aether.exe and Aether Installer.exe');
-  } catch (err) {
-    console.warn('[Package] Warning compiling native executables:', err.message);
-  }
-} else {
-  console.log('[Package] Compiler not found; using existing precompiled Aether.exe and Aether Installer.exe');
-  if (fs.existsSync('Aether.exe')) {
-    fs.copyFileSync('Aether.exe', 'dist/Aether.exe');
-  }
-  if (fs.existsSync('Aether Installer.exe')) {
-    fs.copyFileSync('Aether Installer.exe', 'release/Aether Installer.exe');
-  }
+  execSync('zig c++ -target x86_64-windows -Wl,--subsystem,windows -Os src/cpp/launcher_main.cpp src/cpp/minecraft_launcher.cpp -lgdi32 -lcomctl32 -lwininet -lws2_32 -lshlwapi -o Aether.exe', { stdio: 'inherit' });
+  execSync('zig c++ -target x86_64-windows -Wl,--subsystem,windows -Os src/cpp/installer_main.cpp -lshell32 -o "Aether Installer.exe"', { stdio: 'inherit' });
+  fs.copyFileSync('Aether Installer.exe', 'release/Aether Installer.exe');
+  console.log('[Package] Successfully compiled native C++ Aether.exe and Aether Installer.exe');
+} catch (err) {
+  console.warn('[Package] Warning compiling native C++ binaries:', err.message);
 }
 
-// Copy package.json to dist
-fs.copyFileSync('package.json', path.join(distDir, 'package.json'));
+// Step 2: Build update package (Aether Update.zip)
+const stagingDir = path.resolve('.update-staging');
+if (fs.existsSync(stagingDir)) {
+  fs.rmSync(stagingDir, { recursive: true, force: true });
+}
+fs.mkdirSync(stagingDir, { recursive: true });
 
-// Create update zip archive
-function createZipFromDir(srcDir, zipPath) {
-  if (fs.existsSync(zipPath)) {
-    fs.unlinkSync(zipPath);
-  }
-  
-  if (process.platform === 'win32') {
-    try {
-      execSync(`powershell -NoProfile -Command "Compress-Archive -Path '${srcDir}\\*' -DestinationPath '${zipPath}' -Force"`, { stdio: 'ignore' });
-      return;
-    } catch {}
-  }
-
-  try {
-    execSync(`zip -r "${zipPath}" .`, { cwd: srcDir, stdio: 'ignore' });
-  } catch {
-    execSync(`tar -czf "${zipPath}" *`, { cwd: srcDir, stdio: 'ignore' });
-  }
+fs.copyFileSync('Aether.exe', path.join(stagingDir, 'Aether.exe'));
+if (fs.existsSync('README_RU.md')) {
+  fs.copyFileSync('README_RU.md', path.join(stagingDir, 'README.txt'));
 }
 
 const updateZipPath = path.join(releaseDir, 'Aether Update.zip');
+if (fs.existsSync(updateZipPath)) {
+  fs.unlinkSync(updateZipPath);
+}
+
 console.log(`[Package] Creating release zip: ${updateZipPath}...`);
-createZipFromDir(distDir, updateZipPath);
+execSync(`zip -j "${updateZipPath}" "${path.join(stagingDir, 'Aether.exe')}"`, { stdio: 'ignore' });
 
 // Calculate SHA-256 and size
 const zipBuffer = fs.readFileSync(updateZipPath);
@@ -81,5 +51,8 @@ console.log(`[Package] SHA-256: ${sha256}`);
 
 // Also copy as Aether.zip for backward compatibility
 fs.copyFileSync(updateZipPath, path.join(releaseDir, 'Aether.zip'));
+
+// Clean staging
+fs.rmSync(stagingDir, { recursive: true, force: true });
 
 console.log('[Package] Packaging completed successfully!');
