@@ -226,6 +226,10 @@ static bool g_pressPlayBtn = false;
 static bool g_isRussian = true;
 static bool g_isDraggingSlider = false;
 static bool g_suppressRamChange = false;
+static bool g_suppressJvmChange = false;
+static bool g_suppressJavaPathChange = false;
+static std::wstring g_selectedLoaderFilter = L"Все";
+static std::vector<std::wstring> g_loaderFilterOptions = { L"Все", L"Fabric", L"Forge", L"NeoForge", L"Quilt" };
 
 // Active container & launch status
 static std::wstring g_activeContainerName = L"Minecraft 1.21.1 Vanilla";
@@ -996,6 +1000,145 @@ static std::vector<ModItem> g_allMods = {
         L"Устраняет лаги на больших складах с сотнями сундуков, заменяя медленные Entity на Block-модели.",
         L"1.17.1 – 1.21.3", L"Fabric / Quilt", L"FoundationGames", L"https://modrinth.com/mod/ebe", false
     },
+    // --- Expanded Additional Modrinth Top Mods ---
+    {
+        L"sodium-extra", L"Sodium Extra", L"Графика", L"18.3M",
+        L"Расширенные настройки графики, анимаций и детализации для Sodium.",
+        L"Sodium Extra возвращает большинство графических опций из OptiFine в интерфейс Sodium: настройку частиц, анимаций, деталей облаков, звезд и рендера мира.",
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"FlashyReese", L"https://modrinth.com/mod/sodium-extra", false
+    },
+    {
+        L"entity-view-distance", L"Entity View Distance", L"Оптимизация", L"8.7M",
+        L"Динамическое масштабирование дальности прорисовки мобов и существ для максимального FPS.",
+        L"Увеличивает FPS в зонах с большим скоплением мобов, настраивая дистанцию рендеринга существ независимо от дальности чанков.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"Mishole", L"https://modrinth.com/mod/entity-view-distance", false
+    },
+    {
+        L"bobby", L"Bobby", L"Графика", L"9.2M",
+        L"Отображение чанков мира за пределами ограничения дистанции сервера.",
+        L"Bobby кэширует чанки на стороне клиента и позволяет выставить дальность прорисовки до 32 чанков даже на серверах с ограничением 8 чанков.",
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"Johni0702", L"https://modrinth.com/mod/bobby", false
+    },
+    {
+        L"wthit", L"WTHIT (What The Hell Is That?)", L"Интерфейс", L"16.5M",
+        L"Информативный всплывающий HUD с названием блока, здоровьем моба и содержимым инвентаря.",
+        L"Легковесный и невероятно быстрый аналог WAILA и Jade с поддержкой плагинов для всех технических модов.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / Quilt", L"badasintended", L"https://modrinth.com/mod/wthit", false
+    },
+    {
+        L"chat-heads", L"Chat Heads", L"Интерфейс", L"14.1M",
+        L"Отображение аватара и скина игрока рядом с его сообщениями в чате.",
+        L"Делает чат на серверах и в одиночной игре намного удобнее и красивее, показывая 3D-голову автора каждого сообщения.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"dzwdz", L"https://modrinth.com/mod/chat-heads", false
+    },
+    {
+        L"carpet", L"Fabric Carpet", L"Утилиты", L"11.4M",
+        L"Мощнейший инструмент для технического выживания, спавна мобов и тестирования ферм от gnembon.",
+        L"Carpet добавляет гибкие правила для контроля тиков, визуализации спавна, заморозки игры и подробной статистики TPS.",
+        L"1.14 – 1.21.3", L"Fabric", L"gnembon", L"https://modrinth.com/mod/carpet", false
+    },
+    {
+        L"camera-utils", L"Camera Utils", L"Утилиты", L"7.6M",
+        L"Свободная камера, зум с колесиком мыши, фиксация угла обзора и третье лицо.",
+        L"Удобный мод для скриншотов, записи видео и кинематографичного обзора построек без сторонних читов.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"henkelmax", L"https://modrinth.com/mod/camera-utils", false
+    },
+    {
+        L"physics-mod", L"Physics Mod", L"Графика", L"12.8M",
+        L"Реалистичная физика разрушения блоков, тряпичные куклы мобов и динамичный дым.",
+        L"Физический движок для Minecraft: блоки рассыпаются на физические осколки, мобы падают по законам физики ragdoll, а жидкости красиво колышутся.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"Haubna", L"https://modrinth.com/mod/physics-mod", false
+    },
+    {
+        L"valkyrien-skies", L"Valkyrien Skies", L"Технологии", L"8.9M",
+        L"Реальная физика для летающих кораблей, подводных лодок и движущихся структур.",
+        L"Мод превращает ваши постройки в полноценные физические объекты: стройте дирижабли, лифты и пароходы, на которых можно ходить.",
+        L"1.18.2 – 1.20.1", L"Forge / Fabric", L"Trique", L"https://modrinth.com/mod/valkyrien-skies", false
+    },
+    {
+        L"eureka", L"Eureka! Ships", L"Технологии", L"7.4M",
+        L"Создание управляемых дирижаблей и кораблей на базе Valkyrien Skies.",
+        L"Поставьте штурвал, двигатели и паруса на любую вашу деревянную или каменную конструкцию и отправляйтесь в плавание по воздуху и воде.",
+        L"1.18.2 – 1.20.1", L"Forge / Fabric", L"Rubydesic", L"https://modrinth.com/mod/eureka", false
+    },
+    {
+        L"draconic-evolution", L"Draconic Evolution", L"Технологии", L"9.8M",
+        L"Легендарный эндгейм-мод с ядерными реакторами, драконьей броней и хранилищами энергии.",
+        L"Добавляет драконий инфузор, многомиллиардные энергетические ядра и мощнейшую экипировку для абсолютного доминирования.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"brandon3055", L"https://modrinth.com/mod/draconic-evolution", false
+    },
+    {
+        L"projecte", L"ProjectE", L"Магия", L"15.3M",
+        L"Эквивалентный обмен (Equivalent Exchange), трансмутация материи и энергия EMC.",
+        L"Позволяет превращать одни ресурсы в другие через очки EMC с помощью философского камня и столов трансмутации.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"sinkillerj", L"https://modrinth.com/mod/projecte", false
+    },
+    {
+        L"pneumaticcraft-repressurized", L"PneumaticCraft: Repressurized", L"Технологии", L"7.1M",
+        L"Инженерная пневматика: сжатый воздух, дроны-логисты, пластик и сборочные манипуляторы.",
+        L"Постройте сложную пневматическую систему давления для автоматизации ферм, защиты базы турелями и программирования дронов.",
+        L"1.16.5 – 1.20.1", L"Forge / NeoForge", L"desht364", L"https://modrinth.com/mod/pneumaticcraft-repressurized", false
+    },
+    {
+        L"industrial-foregoing", L"Industrial Foregoing", L"Технологии", L"11.9M",
+        L"Полная промышленная автоматизация: автофермы дерева, переработка латекса и лазерные буры.",
+        L"Современное продолжение культового MineFactory Reloaded со стильным интерфейсом и огромным набором промышленных генераторов.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"Buuz135", L"https://modrinth.com/mod/industrial-foregoing", false
+    },
+    {
+        L"cc-tweaked", L"CC: Tweaked (ComputerCraft)", L"Технологии", L"13.7M",
+        L"Программируемые компьютеры, мониторы и роботы-черепашки на языке Lua.",
+        L"Пишите реальные скрипты на Lua в игре для автоматической добычи руды, беспроводных чатов, автоматизации сундуков и управления играми.",
+        L"1.12.2 – 1.21.1", L"Forge / Fabric / NeoForge", L"SquidDev", L"https://modrinth.com/mod/cc-tweaked", false
+    },
+    {
+        L"ad-astra", L"Ad Astra", L"Приключения", L"12.4M",
+        L"Космические полеты: ракеты, скафандры, базы на Луне, Марсе, Венере, Меркурии и Гласио.",
+        L"Постройте ракету первой ступени, синтезируйте кислород и исследуйте инопланетные планеты с уникальной гравитацией и рудами.",
+        L"1.18.2 – 1.20.4", L"Forge / Fabric / NeoForge", L"Terrarium Earth", L"https://modrinth.com/mod/ad-astra", false
+    },
+    {
+        L"ice-and-fire", L"Ice and Fire: Dragons", L"Мобы", L"17.6M",
+        L"Огненные, ледяные и молниеносные драконы, циклопы, сирены, горгоны и гиппогрифы.",
+        L"Масштабный мод на мифологических существ с возможностью приручить дракона, ковать драконью сталь и сражаться с могучими боссами.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"Alexthe666", L"https://modrinth.com/mod/ice-and-fire-dragons", false
+    },
+    {
+        L"born-in-chaos", L"Born in Chaos", L"Мобы", L"9.5M",
+        L"Пугающие ночные кошмары, темные культисты, мистические мобы и элитное оружие.",
+        L"Наполняет мир опасными ночными существами, новыми подземельями и ритуалами темной магии для хардкорного выживания.",
+        L"1.18.2 – 1.20.1", L"Forge / NeoForge", L"monte_4", L"https://modrinth.com/mod/born-in-chaos", false
+    },
+    {
+        L"mutant-monsters", L"Mutant Monsters", L"Мобы", L"11.2M",
+        L"Возрождение легендарных мобов-мутантов: Мутант-Зомби, Мутант-Крипер, Скелет и Эндермен.",
+        L"Культовые грозные мутанты с сокрушительными анимациями, бросками блоков и уникальным оружием, выпадающим при победе.",
+        L"1.16.5 – 1.20.1", L"Forge / NeoForge / Fabric", L"Fuzs", L"https://modrinth.com/mod/mutant-monsters", false
+    },
+    {
+        L"alexs-caves", L"Alex's Caves", L"Приключения", L"10.8M",
+        L"Грандиозные подземные биомы: магнитные пещеры, ядовитые пустоши и доисторические динозавры.",
+        L"Шедевр пещерной генерации от автора Alex's Mobs с ядерными боеголовками, подводными субмаринами и древними доисторическими существами.",
+        L"1.20.1", L"Forge / NeoForge", L"sbom_xela", L"https://modrinth.com/mod/alexs-caves", false
+    },
+    {
+        L"blood-magic", L"Blood Magic", L"Магия", L"12.1M",
+        L"Алхимия жизненной силы, алтари крови, демонические ритуалы и связывающая магия.",
+        L"Используйте жизненную эссенцию (LP) для создания заклинаний, ритуалов автоматизации и призыва духов.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"WayofTime", L"https://modrinth.com/mod/blood-magic", false
+    },
+    {
+        L"macaws-fences", L"Macaw's Fences and Walls", L"Декор", L"14.5M",
+        L"Современные заборы, проволочные ограждения, деревянные частоколы и барьеры.",
+        L"Огромный набор декоративных оград для стильного оформления вашей деревни, фермы и замка.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"sketch_macaw", L"https://modrinth.com/mod/macaws-fences", false
+    },
+    {
+        L"connected-glass", L"Connected Glass", L"Декор", L"16.7M",
+        L"Бесшовные соединенные текстуры стекла без назойливых внутренних рамок.",
+        L"Добавляет чистое, соединенное, тонированное и матовое стекло, гармонично соединяющееся между собой без OptiFine.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"SuperMartijn642", L"https://modrinth.com/mod/connected-glass", false
+    },
     {
         L"no-chat-reports", L"No Chat Reports", L"Безопасность", L"19.8M",
         L"Шифрование и отключение телеметрии криптографической подписи чата игрока.",
@@ -1180,6 +1323,103 @@ inline void SetModState(const std::wstring& slugOrName, bool installed, bool dow
     }
 }
 
+
+inline void FetchModrinthOnlineMods(const std::wstring& query, int offset, const std::wstring& loader, HWND hwnd) {
+    std::thread([query, offset, loader, hwnd]() {
+        std::wstring apiUrl = L"https://api.modrinth.com/v2/search?limit=20&offset=" + std::to_wstring(offset);
+        if (!query.empty()) {
+            apiUrl += L"&query=" + query;
+        }
+        std::string json = FetchHttpString(apiUrl);
+        if (json.empty()) return;
+
+        size_t hitsPos = json.find("\"hits\":");
+        if (hitsPos == std::string::npos) return;
+
+        size_t cur = hitsPos;
+        int added = 0;
+        while ((cur = json.find("\"slug\":\"", cur)) != std::string::npos) {
+            cur += 8;
+            size_t sEnd = json.find("\"", cur);
+            if (sEnd == std::string::npos) break;
+            std::string slug = json.substr(cur, sEnd - cur);
+
+            std::string title = slug;
+            size_t tPos = json.find("\"title\":\"", cur);
+            if (tPos != std::string::npos && tPos < cur + 500) {
+                tPos += 9;
+                size_t tEnd = json.find("\"", tPos);
+                if (tEnd != std::string::npos) title = json.substr(tPos, tEnd - tPos);
+            }
+
+            std::string desc = "";
+            size_t dPos = json.find("\"description\":\"", cur);
+            if (dPos != std::string::npos && dPos < cur + 1000) {
+                dPos += 15;
+                size_t dEnd = json.find("\"", dPos);
+                if (dEnd != std::string::npos) desc = json.substr(dPos, dEnd - dPos);
+            }
+
+            std::string author = "Modrinth Creator";
+            size_t aPos = json.find("\"author\":\"", cur);
+            if (aPos != std::string::npos && aPos < cur + 1000) {
+                aPos += 10;
+                size_t aEnd = json.find("\"", aPos);
+                if (aEnd != std::string::npos) author = json.substr(aPos, aEnd - aPos);
+            }
+
+            std::string downloads = "1M+";
+            size_t dlPos = json.find("\"downloads\":", cur);
+            if (dlPos != std::string::npos && dlPos < cur + 1000) {
+                dlPos += 12;
+                size_t dlEnd = json.find_first_of(",}", dlPos);
+                if (dlEnd != std::string::npos) {
+                    long dls = atol(json.substr(dlPos, dlEnd - dlPos).c_str());
+                    if (dls >= 1000000) downloads = std::to_string(dls / 1000000) + "." + std::to_string((dls % 1000000) / 100000) + "M";
+                    else if (dls >= 1000) downloads = std::to_string(dls / 1000) + "K";
+                    else downloads = std::to_string(dls);
+                }
+            }
+
+            std::wstring wSlug(slug.begin(), slug.end());
+            std::wstring wTitle(title.begin(), title.end());
+            std::wstring wDesc(desc.begin(), desc.end());
+            std::wstring wAuthor(author.begin(), author.end());
+            std::wstring wDls(downloads.begin(), downloads.end());
+
+            bool exists = false;
+            for (const auto& existing : g_allMods) {
+                if (ToLowerW(existing.id) == ToLowerW(wSlug)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                ModItem nm;
+                nm.id = wSlug;
+                nm.name = wTitle;
+                nm.category = L"Modrinth";
+                nm.downloads = wDls;
+                nm.brief = wDesc.substr(0, std::min<size_t>(120, wDesc.length()));
+                nm.fullDesc = wDesc;
+                nm.versions = g_config.version;
+                nm.loader = (loader.empty() || loader == L"vanilla") ? L"Fabric / Forge" : loader;
+                nm.author = wAuthor;
+                nm.url = L"https://modrinth.com/mod/" + wSlug;
+                nm.installed = false;
+                g_allMods.push_back(nm);
+                added++;
+            }
+        }
+
+        if (added > 0) {
+            FilterMods();
+            AppendLog(Tr(L"[Modrinth] Подгружено ещё " + std::to_wstring(added) + L" модов из каталога Modrinth API",
+                         L"[Modrinth] Fetched " + std::to_wstring(added) + L" additional mods from Modrinth API"));
+            if (hwnd) InvalidateRect(hwnd, NULL, FALSE);
+        }
+    }).detach();
+}
 inline void TriggerModDownload(const std::wstring& slug, const std::wstring& modTitle, HWND hwnd) {
     SetModState(slug, false, true, 20);
     AppendLog(Tr(L"[Modrinth] Начат поиск и скачивание мода: " + modTitle,
@@ -1428,7 +1668,13 @@ void SetActiveContainer(int index) {
         g_activeVersion = g_containers[index].version;
         g_config.version = g_containers[index].version;
         g_config.loader = g_containers[index].loader;
+        if (g_config.loader == L"fabric") g_selectedLoaderFilter = L"Fabric";
+        else if (g_config.loader == L"forge") g_selectedLoaderFilter = L"Forge";
+        else if (g_config.loader == L"neoforge") g_selectedLoaderFilter = L"NeoForge";
+        else if (g_config.loader == L"quilt") g_selectedLoaderFilter = L"Quilt";
+        else g_selectedLoaderFilter = L"Все";
         SaveConfig(g_config);
+        FilterMods();
 
         AppendLog(Tr(L"[Aether] Выбран активный контейнер: " + g_activeContainerName + L" (" + g_config.loader + L")",
                      L"[Aether] Selected active container: " + g_activeContainerName));
@@ -1479,17 +1725,34 @@ void CreateNewContainerDialog() {
 void FilterMods() {
     g_filteredMods.clear();
     std::wstring q = ToLowerW(g_modSearchQuery);
+    std::wstring lFilter = ToLowerW(g_selectedLoaderFilter);
 
     for (const auto& m : g_allMods) {
+        // Category filter
         if (g_selectedCategory != L"Все" && m.category != g_selectedCategory) {
             continue;
         }
 
+        // Loader filter
+        if (lFilter != L"все" && !lFilter.empty()) {
+            std::wstring mLoader = ToLowerW(m.loader);
+            if (mLoader.find(L"все") == std::wstring::npos &&
+                mLoader.find(lFilter) == std::wstring::npos) {
+                if (lFilter == L"quilt" && mLoader.find(L"fabric") != std::wstring::npos) {
+                    // Quilt is compatible with Fabric mods
+                } else {
+                    continue;
+                }
+            }
+        }
+
+        // Search text filter
         if (!q.empty()) {
             if (ToLowerW(m.name).find(q) == std::wstring::npos &&
                 ToLowerW(m.brief).find(q) == std::wstring::npos &&
                 ToLowerW(m.fullDesc).find(q) == std::wstring::npos &&
-                ToLowerW(m.category).find(q) == std::wstring::npos) {
+                ToLowerW(m.category).find(q) == std::wstring::npos &&
+                ToLowerW(m.loader).find(q) == std::wstring::npos) {
                 continue;
             }
         }
@@ -1832,26 +2095,53 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                                g_currentTheme.accent, g_currentTheme.accentSecondary,
                                Color(255, 255, 255, 255), Tr(L"⚡ Скачать любой мод", L"⚡ Download Any Mod"), fontSmallBold, false, false);
 
-            // Category Filter Pills
-            int filterY = searchY + 42;
+            // 1. Mod Loader Filter Pills (Separate mods by loader!)
+            int loaderFilterY = searchY + 42;
+            PointF ldrLblPt((float)contentX, (float)loaderFilterY + 3);
+            g.DrawString(Tr(L"Загрузчик:", L"Mod Loader:"), -1, &fontSmallBold, ldrLblPt, &mutedBrush);
+
+            int curLdrX = contentX + 80;
+            for (const auto& ldr : g_loaderFilterOptions) {
+                bool isLdrSel = (g_selectedLoaderFilter == ldr);
+                int pillW = 12 + (int)ldr.length() * 8 + 12;
+
+                DrawCard(g, (float)curLdrX, (float)loaderFilterY, (float)pillW, 22, 5,
+                         isLdrSel ? Color(255, 37, 99, 235) : g_currentTheme.bgSurfaceElevated,
+                         isLdrSel ? Color(255, 96, 165, 250) : g_currentTheme.border);
+
+                RectF ldrRc((float)curLdrX, (float)loaderFilterY, (float)pillW, 22);
+                SolidBrush ldrPillBrush(isLdrSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+                g.DrawString(ldr.c_str(), -1, &fontSmallBold, ldrRc, &sfCenter, &ldrPillBrush);
+
+                curLdrX += pillW + 6;
+            }
+
+            // Sync with active profile hint
+            std::wstring syncText = Tr(L"⚡ Текущий профиль: " + g_config.loader, L"⚡ Profile loader: " + g_config.loader);
+            PointF syncPt((float)curLdrX + 10, (float)loaderFilterY + 3);
+            SolidBrush cyanSyncBrush(Color(255, 56, 189, 248));
+            g.DrawString(syncText.c_str(), -1, &fontSmall, syncPt, &cyanSyncBrush);
+
+            // 2. Category Filter Pills
+            int filterY = loaderFilterY + 28;
             int curFilterX = contentX;
             for (const auto& cat : g_modCategories) {
                 bool isCatSel = (g_selectedCategory == cat);
-                int pillW = 14 + (int)cat.length() * 9 + 14;
+                int pillW = 12 + (int)cat.length() * 8 + 12;
 
-                DrawCard(g, (float)curFilterX, (float)filterY, (float)pillW, 26, 6,
+                DrawCard(g, (float)curFilterX, (float)filterY, (float)pillW, 24, 5,
                          isCatSel ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
                          isCatSel ? g_currentTheme.accent : g_currentTheme.border);
 
-                RectF pillRc((float)curFilterX, (float)filterY, (float)pillW, 26);
+                RectF pillRc((float)curFilterX, (float)filterY, (float)pillW, 24);
                 SolidBrush pillBrush(isCatSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
                 g.DrawString(cat.c_str(), -1, &fontSmallBold, pillRc, &sfCenter, &pillBrush);
 
-                curFilterX += pillW + 8;
+                curFilterX += pillW + 6;
             }
 
             // Paginated Mod Cards Area
-            int modListY = filterY + 36;
+            int modListY = filterY + 32;
             int modItemH = 58;
             int totalPages = std::max(1, (int)(g_filteredMods.size() + MODS_PER_PAGE - 1) / MODS_PER_PAGE);
             if (g_modPage >= totalPages) g_modPage = totalPages - 1;
@@ -1877,6 +2167,12 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                     DrawCard(g, (float)contentX + 180, (float)mY + 10, 85, 18, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
                     RectF tagRc((float)contentX + 180, (float)mY + 10, 85, 18);
                     g.DrawString(g_filteredMods[i].category.c_str(), -1, &fontSmall, tagRc, &sfCenter, &mutedBrush);
+
+                    // Loader Compatibility Tag Badge
+                    DrawCard(g, (float)contentX + 272, (float)mY + 10, 115, 18, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                    RectF ldrTagRc((float)contentX + 272, (float)mY + 10, 115, 18);
+                    SolidBrush cyanLdrBrush(Color(255, 56, 189, 248));
+                    g.DrawString(g_filteredMods[i].loader.c_str(), -1, &fontSmall, ldrTagRc, &sfCenter, &cyanLdrBrush);
 
                     PointF mDescPt((float)contentX + 16, (float)mY + 32);
                     g.DrawString(g_filteredMods[i].brief.c_str(), -1, &fontSmall, mDescPt, &mutedBrush);
@@ -2536,8 +2832,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SendMessageW(g_hEditJvmArgs, WM_SETFONT, (WPARAM)hFontNick, TRUE);
 
         // 5. Custom Java Path Edit Box (Settings Tab)
+        std::wstring initialJavaPath = g_config.customJavaPath.empty() ? g_detectedJava.path : g_config.customJavaPath;
         g_hEditJavaPath = CreateWindowExW(
-            0, L"EDIT", g_config.customJavaPath.c_str(),
+            0, L"EDIT", initialJavaPath.c_str(),
             WS_CHILD | ES_AUTOHSCROLL,
             220 + 24 + 16, 54 + 16 + 296, 320, 22,
             hwnd, (HMENU)IDC_EDIT_JAVAPATH, g_hInstance, NULL
@@ -2553,6 +2850,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         );
         SendMessageW(g_hEditGameWidth, WM_SETFONT, (WPARAM)hFontNick, TRUE);
 
+        g_detectedJava = MinecraftLauncher::DetectJava(g_config.customJavaPath);
+
         g_hEditGameHeight = CreateWindowExW(
             0, L"EDIT", std::to_wstring(g_config.windowHeight).c_str(),
             WS_CHILD | ES_NUMBER | ES_AUTOHSCROLL,
@@ -2560,8 +2859,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             hwnd, (HMENU)IDC_EDIT_GAMEHEIGHT, g_hInstance, NULL
         );
         SendMessageW(g_hEditGameHeight, WM_SETFONT, (WPARAM)hFontNick, TRUE);
-
-        g_detectedJava = MinecraftLauncher::DetectJava(g_config.customJavaPath);
 
         return 0;
     }
@@ -2589,14 +2886,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
                 }
             }
-            else if (id == IDC_EDIT_JVMARGS && g_hEditJvmArgs) {
+            else if (id == IDC_EDIT_JVMARGS && g_hEditJvmArgs && !g_suppressJvmChange) {
                 WCHAR buf[1024] = { 0 };
                 GetWindowTextW(g_hEditJvmArgs, buf, 1023);
                 g_config.customJvmArgs = buf;
                 g_config.jvmPreset = L"custom";
                 SaveConfig(g_config);
             }
-            else if (id == IDC_EDIT_JAVAPATH && g_hEditJavaPath) {
+            else if (id == IDC_EDIT_JAVAPATH && g_hEditJavaPath && !g_suppressJavaPathChange) {
                 WCHAR buf[512] = { 0 };
                 GetWindowTextW(g_hEditJavaPath, buf, 511);
                 g_config.customJavaPath = buf;
@@ -2892,9 +3189,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 int lIdx = cmd - 2500;
                 g_config.loader = g_loaders[lIdx].first;
                 g_containers[g_activeContainerIndex].loader = g_config.loader;
+
+                // Synchronize loader filter
+                if (g_config.loader == L"fabric") g_selectedLoaderFilter = L"Fabric";
+                else if (g_config.loader == L"forge") g_selectedLoaderFilter = L"Forge";
+                else if (g_config.loader == L"neoforge") g_selectedLoaderFilter = L"NeoForge";
+                else if (g_config.loader == L"quilt") g_selectedLoaderFilter = L"Quilt";
+                else g_selectedLoaderFilter = L"Все";
+
                 SaveConfig(g_config);
                 AppendLog(Tr(L"[Aether] Выбран загрузчик модов: " + g_loaders[lIdx].second,
                              L"[Aether] Selected mod loader: " + g_loaders[lIdx].second));
+                FilterMods();
                 InvalidateRect(hwnd, NULL, FALSE);
             }
             return 0;
@@ -3023,18 +3329,32 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
+            // Click Loader Filter Pills
+            int loaderFilterY = searchY + 42;
+            int curLdrX = contentX + 80;
+            for (const auto& ldr : g_loaderFilterOptions) {
+                int pillW = 12 + (int)ldr.length() * 8 + 12;
+                if (x >= curLdrX && x <= curLdrX + pillW && y >= loaderFilterY && y <= loaderFilterY + 22) {
+                    g_selectedLoaderFilter = ldr;
+                    FilterMods();
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+                curLdrX += pillW + 6;
+            }
+
             // Click Category Filter Pills
-            int filterY = searchY + 42;
+            int filterY = loaderFilterY + 28;
             int curFilterX = contentX;
             for (const auto& cat : g_modCategories) {
-                int pillW = 14 + (int)cat.length() * 9 + 14;
-                if (x >= curFilterX && x <= curFilterX + pillW && y >= filterY && y <= filterY + 26) {
+                int pillW = 12 + (int)cat.length() * 8 + 12;
+                if (x >= curFilterX && x <= curFilterX + pillW && y >= filterY && y <= filterY + 24) {
                     g_selectedCategory = cat;
                     FilterMods();
                     InvalidateRect(hwnd, NULL, FALSE);
                     return 0;
                 }
-                curFilterX += pillW + 8;
+                curFilterX += pillW + 6;
             }
 
             // Click Mod Cards in current page
@@ -3090,6 +3410,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
                 return 0;
             }
+            // Online Modrinth Fetch Button (+20)
+            int moreBtnW = 200;
+            int moreBtnX = contentX + contentW - 120 - moreBtnW - 10;
+            if (x >= moreBtnX && x <= moreBtnX + moreBtnW && y >= pageBarY + 4 && y <= pageBarY + 32) {
+                FetchModrinthOnlineMods(g_modSearchQuery, (int)g_allMods.size(), g_config.loader, hwnd);
+                return 0;
+            }
             // Next Button
             if (x >= contentX + contentW - 120 && x <= contentX + contentW - 10 && y >= pageBarY + 4 && y <= pageBarY + 32) {
                 if (g_modPage + 1 < totalPages) {
@@ -3104,13 +3431,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_currentTab == 4) {
             int contentX = 220 + 24;
             int contentW = width - 220 - 48;
-            int setY = 54 + 16 + 68;
+            int contentY = 54 + 16;
+            int setY = contentY + 62;
 
             int sliderX = contentX + 16;
-            int sliderY = setY + 74;
+            int sliderY = setY + 68;
             int sliderW = contentW - 32;
 
-            if (x >= sliderX - 10 && x <= sliderX + sliderW + 10 && y >= sliderY - 10 && y <= sliderY + 24) {
+            // RAM Slider Click and Drag Hit Test
+            if (x >= sliderX - 10 && x <= sliderX + sliderW + 10 && y >= sliderY - 14 && y <= sliderY + 14) {
                 g_isDraggingSlider = true;
                 SetCapture(hwnd);
 
@@ -3133,11 +3462,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
+            // RAM Preset Pills Hit Test (setY + 82, height 22)
             int pillStartX = contentX + 16;
-            int pillY = setY + 104;
+            int pillY = setY + 82;
             for (size_t i = 0; i < g_ramPresets.size(); ++i) {
                 int pX = pillStartX + (int)i * 72;
-                if (x >= pX && x <= pX + 62 && y >= pillY && y <= pillY + 28) {
+                if (x >= pX && x <= pX + 62 && y >= pillY && y <= pillY + 22) {
                     SetGlobalRam(g_ramPresets[i]);
                     if (g_hEditRam) {
                         g_suppressRamChange = true;
@@ -3170,7 +3500,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     if (pr.id != L"custom") {
                         g_config.customJvmArgs = pr.flags;
                         if (g_hEditJvmArgs) {
+                            g_suppressJvmChange = true;
                             SetWindowTextW(g_hEditJvmArgs, g_config.customJvmArgs.c_str());
+                            g_suppressJvmChange = false;
                         }
                     }
                     SaveConfig(g_config);
@@ -3182,12 +3514,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 gcPillX += pillW + 6;
             }
 
-            // Click Auto-detect Java Button
+            // Click Auto-detect Java Button (Updates text box with detected Java path)
             int autoBtnX = contentX + contentW - 192;
             if (x >= autoBtnX && x <= autoBtnX + 88 && y >= jvmCardY + 154 && y <= jvmCardY + 182) {
-                g_config.customJavaPath = L"";
-                if (g_hEditJavaPath) SetWindowTextW(g_hEditJavaPath, L"");
                 g_detectedJava = MinecraftLauncher::DetectJava(L"");
+                g_config.customJavaPath = g_detectedJava.path;
+                if (g_hEditJavaPath) {
+                    g_suppressJavaPathChange = true;
+                    SetWindowTextW(g_hEditJavaPath, g_detectedJava.path.c_str());
+                    g_suppressJavaPathChange = false;
+                }
                 SaveConfig(g_config);
                 AppendLog(Tr(L"[Aether] Автоопределение Java: " + g_detectedJava.path + L" (Java " + std::to_wstring(g_detectedJava.majorVersion) + L")",
                              L"[Aether] Auto-detected Java: " + g_detectedJava.path));
