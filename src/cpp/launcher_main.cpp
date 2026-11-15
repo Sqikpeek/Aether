@@ -1,10 +1,10 @@
 // ============================================================================
 // Aether Launcher - Native Modern C++ Win32 GUI Engine (GDI+)
 // Pure Native Desktop Application with Zero Browser / Chrome / Node Dependencies
-// Features: Vector GDI+ Anti-Aliased Icons, Double-Buffering (60 FPS),
-// Single Default Container & Full Selection Menu, Real-Time Mod Search &
-// Category Filters, Mouse-Wheel Scrolling & Full Mod Details View,
-// Smooth Draggable RAM Slider with Global Setting and In-Dock Nickname.
+// Features: Immersive Dark DWM Title Bar (No White Border),
+// Comprehensive Mod Catalog with Pagination & Category Filters & Full Details,
+// 21 Minecraft Versions & Dedicated Mod Loader Selector Dropdown (Vanilla/Fabric/Forge/NeoForge/Quilt),
+// Global RAM Slider & Numeric Input, and In-Dock Player Nickname.
 // ============================================================================
 
 #define UNICODE
@@ -16,6 +16,7 @@
 #include <commctrl.h>
 #include <propidl.h>
 #include <gdiplus.h>
+#include <dwmapi.h>
 #include <shlwapi.h>
 #include <shellapi.h>
 
@@ -35,6 +36,7 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "wininet.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shlwapi.lib")
@@ -67,20 +69,20 @@ struct LauncherTheme {
 static std::vector<LauncherTheme> g_themes = {
     {
         L"void-purple", L"Void Purple",
-        Color(255, 12, 13, 18),   // bgBase #0c0d12
-        Color(255, 20, 22, 32),   // bgSurface #141620
-        Color(255, 26, 30, 46),   // bgSurfaceElevated #1a1e2e
-        Color(255, 22, 26, 41),   // bgCard #161a29
-        Color(70, 157, 78, 221),  // border
-        Color(255, 157, 78, 221), // borderFocus #9d4edd
-        Color(255, 157, 78, 221), // accent #9d4edd
-        Color(255, 199, 125, 255),// accentSecondary #c77dff
-        Color(100, 157, 78, 221), // accentGlow
-        Color(255, 240, 242, 248),// textMain
-        Color(255, 140, 147, 168),// textMuted
-        Color(255, 16, 185, 129), // success #10b981
-        Color(255, 245, 158, 11), // warning #f59e0b
-        Color(255, 239, 68, 68)   // danger #ef4444
+        Color(255, 12, 13, 18),
+        Color(255, 20, 22, 32),
+        Color(255, 26, 30, 46),
+        Color(255, 22, 26, 41),
+        Color(70, 157, 78, 221),
+        Color(255, 157, 78, 221),
+        Color(255, 157, 78, 221),
+        Color(255, 199, 125, 255),
+        Color(100, 157, 78, 221),
+        Color(255, 240, 242, 248),
+        Color(255, 140, 147, 168),
+        Color(255, 16, 185, 129),
+        Color(255, 245, 158, 11),
+        Color(255, 239, 68, 68)
     },
     {
         L"crimson", L"Crimson Red",
@@ -225,7 +227,29 @@ static std::wstring g_lastCrashTitle = L"";
 static std::wstring g_lastCrashCause = L"";
 static std::wstring g_lastCrashSolution = L"";
 
-// Mod Items, Filters, Scrolling & Details
+// Mod Loaders
+static std::vector<std::pair<std::wstring, std::wstring>> g_loaders = {
+    { L"vanilla", L"Vanilla (Чистый)" },
+    { L"fabric", L"Fabric Loader" },
+    { L"forge", L"Forge" },
+    { L"neoforge", L"NeoForge" },
+    { L"quilt", L"Quilt Loader" }
+};
+
+// Expanded Minecraft Versions (21 Popular Releases)
+static std::vector<std::wstring> g_versions = {
+    L"1.21.3", L"1.21.1", L"1.21",
+    L"1.20.6", L"1.20.4", L"1.20.2", L"1.20.1",
+    L"1.19.4", L"1.19.2",
+    L"1.18.2", L"1.17.1",
+    L"1.16.5", L"1.15.2", L"1.14.4",
+    L"1.13.2", L"1.12.2", L"1.11.2",
+    L"1.10.2", L"1.9.4",
+    L"1.8.9", L"1.7.10"
+};
+static int g_selectedVersionIndex = 1; // Default to 1.21.1
+
+// Rich Mod Catalog (30 Top Modrinth Mods across all categories)
 struct ModItem {
     std::wstring name;
     std::wstring category;
@@ -244,43 +268,25 @@ static std::vector<ModItem> g_allMods = {
         L"Sodium", L"Оптимизация", L"32.4M",
         L"Современный движок рендеринга для Fabric, колоссально повышающий FPS.",
         L"Sodium — свободный открытый движок рендеринга нового поколения для Minecraft на Fabric. Он кардинально оптимизирует построение чанков, устраняет микрофризы и повышает FPS в 2-5 раз без потерь графики.",
-        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/sodium", true
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/sodium", true
     },
     {
         L"Iris Shaders", L"Шейдеры", L"24.1M",
         L"Современный загрузчик шейдер-паков с поддержкой PBR и совместимостью с Sodium.",
         L"Iris — современный загрузчик шейдеров с непревзойденной производительностью благодаря глубокой интеграции с Sodium. Поддерживает BSL, Complementary, Sildurs и классические OptiFine-шейдеры.",
-        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"coderbot", L"https://modrinth.com/mod/iris", true
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"coderbot", L"https://modrinth.com/mod/iris", true
     },
     {
         L"Lithium", L"Оптимизация", L"19.8M",
         L"Глубокая оптимизация тика сервера, физики мобов и чанков без изменения механик.",
         L"Lithium — универсальный оптимизатор серверной физики, поиска путей ИИ мобов и загрузки чанков. Снижает нагрузку на процессор на 40% как в одиночной игре, так и на серверах.",
-        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/lithium", false
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/lithium", false
     },
     {
         L"Fabric API", L"Библиотеки", L"45.2M",
         L"Основная библиотека хуков и событий, необходимая для большинства модов Fabric.",
         L"Fabric API — обязательная библиотека для экосистемы Fabric, предоставляющая необходимые хуки, события и интерфейсы для взаимодействия модов с игровым движком.",
-        L"1.14 – 1.21.1", L"Fabric", L"FabricMC", L"https://modrinth.com/mod/fabric-api", true
-    },
-    {
-        L"AppleSkin", L"Интерфейс", L"28.6M",
-        L"Удобное отображение насыщения и истощения полоски голода над хотбаром.",
-        L"AppleSkin добавляет визуализацию скрытых параметров насыщения еды и шкалы истощения, помогая точно планировать рацион персонажа.",
-        L"1.12.2 – 1.21.1", L"Fabric / Forge / Quilt", L"squeek502", L"https://modrinth.com/mod/appleskin", false
-    },
-    {
-        L"JourneyMap", L"Карты", L"38.1M",
-        L"Красивая карта реального времени с радаром мобов и путевыми точками (waypoint).",
-        L"JourneyMap картографирует ваш мир в реальном времени во время исследования. Отображает мини-карту, радар мобов, пещеры и позволяет ставить путевые метки.",
-        L"1.12.2 – 1.21.1", L"Fabric / Forge", L"Techbrew", L"https://modrinth.com/mod/journeymap", false
-    },
-    {
-        L"Just Enough Items (JEI)", L"Интерфейс", L"120.5M",
-        L"Просмотр рецептов крафта, плавки и использования предметов прямо в инвентаре.",
-        L"JEI — незаменимый инструмент для просмотра рецептов крафта предметов, зелий и механизмов. Поддерживает поиск, избранное и интеграцию со всеми модами.",
-        L"1.12.2 – 1.21.1", L"Forge / Fabric / NeoForge", L"mezz", L"https://modrinth.com/mod/jei", false
+        L"1.14 – 1.21.3", L"Fabric", L"FabricMC", L"https://modrinth.com/mod/fabric-api", true
     },
     {
         L"Create", L"Технологии", L"54.8M",
@@ -289,34 +295,161 @@ static std::vector<ModItem> g_allMods = {
         L"1.18.2 – 1.20.1", L"Forge / Fabric", L"simibubi", L"https://modrinth.com/mod/create", false
     },
     {
+        L"Just Enough Items (JEI)", L"Интерфейс", L"120.5M",
+        L"Просмотр рецептов крафта, плавки и использования предметов прямо в инвентаре.",
+        L"JEI — незаменимый инструмент для просмотра рецептов крафта предметов, зелий и механизмов. Поддерживает поиск, избранное и интеграцию со всеми модами.",
+        L"1.12.2 – 1.21.3", L"Forge / Fabric / NeoForge", L"mezz", L"https://modrinth.com/mod/jei", false
+    },
+    {
+        L"JourneyMap", L"Карты", L"38.1M",
+        L"Красивая карта реального времени с радаром мобов и путевыми точками (waypoint).",
+        L"JourneyMap картографирует ваш мир в реальном времени во время исследования. Отображает мини-карту, радар мобов, пещеры и позволяет ставить путевые метки.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge", L"Techbrew", L"https://modrinth.com/mod/journeymap", false
+    },
+    {
+        L"AppleSkin", L"Интерфейс", L"28.6M",
+        L"Удобное отображение насыщения и истощения полоски голода над хотбаром.",
+        L"AppleSkin добавляет визуализацию скрытых параметров насыщения еды и шкалы истощения, помогая точно планировать рацион персонажа.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / Quilt", L"squeek502", L"https://modrinth.com/mod/appleskin", false
+    },
+    {
         L"FerriteCore", L"Оптимизация", L"22.3M",
         L"Экстремальная оптимизация потребления оперативной памяти Java кучи.",
         L"FerriteCore сокращает потребление оперативной памяти Minecraft на 20-35% за счет дедупликации данных и оптимизации моделей блоков.",
-        L"1.16.5 – 1.21.1", L"Fabric / Forge", L"malte0811", L"https://modrinth.com/mod/ferrite-core", false
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"malte0811", L"https://modrinth.com/mod/ferrite-core", false
     },
     {
         L"Mod Menu", L"Интерфейс", L"41.2M",
         L"Удобный список установленных модов с кнопками настроек прямо в меню игры.",
         L"Mod Menu добавляет удобную кнопку «Моды» на главный экран Minecraft, позволяя просматривать установленные модификации и настраивать их конфиги.",
-        L"1.14 – 1.21.1", L"Fabric / Quilt", L"TerraformersMC", L"https://modrinth.com/mod/modmenu", true
+        L"1.14 – 1.21.3", L"Fabric / Quilt", L"TerraformersMC", L"https://modrinth.com/mod/modmenu", true
+    },
+    {
+        L"Distant Horizons", L"Шейдеры", L"14.5M",
+        L"Уникальный движок LOD рендеринга, позволяющий видеть мир на 256+ чанков вдаль.",
+        L"Distant Horizons строит упрощенные воксельные модели удаленных чанков, обеспечивая невероятную дальность прорисовки гор и биомов с высоким FPS.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"James Seibel", L"https://modrinth.com/mod/distanthorizons", false
+    },
+    {
+        L"Cloth Config", L"Библиотеки", L"39.8M",
+        L"Клиентская библиотека для создания красивых экранов конфигураций модов.",
+        L"Cloth Config предоставляет стандартный API интерфейса настроек для сотен популярных модификаций на Fabric и Forge.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"shedaniel", L"https://modrinth.com/mod/cloth-config", true
+    },
+    {
+        L"Indium", L"Оптимизация", L"18.7M",
+        L"Слой совместимости Sodium с Fabric Rendering API (FRAPI).",
+        L"Indium восстанавливает поддержку кастомных рендереров блоков для модов, использующих Fabric Rendering API совместно с Sodium.",
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"comp500", L"https://modrinth.com/mod/indium", true
+    },
+    {
+        L"ImmediatelyFast", L"Оптимизация", L"11.2M",
+        L"Оптимизация рендеринга GUI, текста, частиц, карт и полосок здоровья.",
+        L"ImmediatelyFast ускоряет отрисовку непосредственного режима HUD и инвентарей, существенно повышая частоту кадров в меню и на серверах.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"Raphiiko", L"https://modrinth.com/mod/immediatelyfast", false
+    },
+    {
+        L"Entity Culling", L"Оптимизация", L"16.4M",
+        L"Пропуск отрисовки мобов и сундуков, скрытых за непрозрачными стенами.",
+        L"Entity Culling использует асинхронную проверку окклюзии, отсекая невидимые сущности и сундуки на спавне или базах.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"tr7zw", L"https://modrinth.com/mod/entityculling", false
+    },
+    {
+        L"Xaero's Minimap", L"Карты", L"48.2M",
+        L"Легковесная и плавная мини-карта с радаром мобов и пещерным режимом.",
+        L"Отображает карту в углу экрана, точки смерти, враждебных мобов и координаты без просадок FPS.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"xaero96", L"https://modrinth.com/mod/xaeros-minimap", false
+    },
+    {
+        L"Xaero's World Map", L"Карты", L"34.1M",
+        L"Полноэкранная детальная карта открытого мира с плавным масштабированием.",
+        L"Открывается по нажатию клавиши 'M', позволяет исследовать весь исследованный мир и ставить маркеры.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"xaero96", L"https://modrinth.com/mod/xaeros-world-map", false
+    },
+    {
+        L"Roughly Enough Items (REI)", L"Интерфейс", L"42.9M",
+        L"Современная, быстрая и расширяемая система просмотра рецептов.",
+        L"Мощный браузер крафтов с закладками, историей поиска, фильтрацией по модам и поддержкой всех версий.",
+        L"1.14 – 1.21.3", L"Fabric / Forge", L"shedaniel", L"https://modrinth.com/mod/rei", false
+    },
+    {
+        L"EMI", L"Интерфейс", L"15.8M",
+        L"Универсальный и молниеносный индекс предметов и крафтов без фризов.",
+        L"Инновационный просмотр рецептов с древом крафта и расчетом нужных ресурсов в реальном времени.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"emilyploszaj", L"https://modrinth.com/mod/emi", false
+    },
+    {
+        L"Shulker Box Tooltip", L"Интерфейс", L"26.3M",
+        L"Мгновенный предпросмотр содержимого шалкеровых ящиков при наведении.",
+        L"Показывает сетку предметов внутри шалкеров без необходимости ставить их на землю.",
+        L"1.14 – 1.21.3", L"Fabric / Forge", L"MisterPeModder", L"https://modrinth.com/mod/shulkerboxtooltip", false
+    },
+    {
+        L"Jade", L"Интерфейс", L"36.7M",
+        L"Информационная плашка сверху: имя блока, мода, прочность и состояние тайла.",
+        L"Современный преемник WAILA/HWYLA, показывает рост урожая, уровень энергии и вместимость контейнеров.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"Snownee", L"https://modrinth.com/mod/jade", false
+    },
+    {
+        L"Architectury API", L"Библиотеки", L"41.5M",
+        L"Мультиплатформенная библиотека промежуточного слоя для Fabric и Forge.",
+        L"Позволяет мододелам компилировать единый код под все загрузчики модов.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"shedaniel", L"https://modrinth.com/mod/architectury-api", true
+    },
+    {
+        L"Applied Energistics 2", L"Технологии", L"29.4M",
+        L"Цифровые МЭ-сети, пространственные хранилища материи и автокрафт.",
+        L"Легендарный мод на преобразование предметов в цифровую энергию и управление фабриками.",
+        L"1.12.2 – 1.21.1", L"Fabric / Forge / NeoForge", L"AlgorithmX2", L"https://modrinth.com/mod/ae2", false
+    },
+    {
+        L"Farmer's Delight", L"Технологии", L"31.2M",
+        L"Уютное кулинарное и фермерское расширение для готовки еды и блюд.",
+        L"Добавляет сковороду, котелок, разделочную доску, ножи и десятки вкусных блюд с полезными баффами.",
+        L"1.16.5 – 1.21.1", L"Fabric / Forge", L"vectorwing", L"https://modrinth.com/mod/farmers-delight", false
+    },
+    {
+        L"Complementary Reimagined", L"Шейдеры", L"18.9M",
+        L"Фотореалистичный шейдер-пак с мягкими облаками, водой и объемным светом.",
+        L"Один из самых красивых шейдеров в мире, работающий без глитчей на Iris и Sodium.",
+        L"1.12.2 – 1.21.3", L"Iris / OptiFine", L"EminGT", L"https://modrinth.com/mod/complementary-reimagined", false
+    },
+    {
+        L"BSL Shaders", L"Шейдеры", L"22.1M",
+        L"Теплый кинематографичный шейдерпак с настраиваемой атмосферой.",
+        L"Классика шейдеров с великолепной водой, лучами заката и мягкими тенями листвы.",
+        L"1.12.2 – 1.21.3", L"Iris / OptiFine", L"CaptTatsu", L"https://modrinth.com/mod/bsl-shaders", false
+    },
+    {
+        L"Krypton", L"Оптимизация", L"9.8M",
+        L"Оптимизация сетевого стека Minecraft и скорости передачи чанков.",
+        L"Существенно снижает задержку и нагрузку на трафик при игре по сети и в мультиплеере.",
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"astei", L"https://modrinth.com/mod/krypton", false
+    },
+    {
+        L"Mouse Tweaks", L"Интерфейс", L"44.6M",
+        L"Удобное перетаскивание предметов мышью с зажатыми кнопками.",
+        L"Колоссально экономит время при сортировке сундуков и крафте стаков предметов.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge", L"YaLTeR", L"https://modrinth.com/mod/mouse-tweaks", false
+    },
+    {
+        L"Continuity", L"Шейдеры", L"12.4M",
+        L"Бесшовные текстуры стекла, полированного камня и книжных полок.",
+        L"Восстанавливает работу connected textures (CTM) в связке с Sodium и ресурпаками.",
+        L"1.18.2 – 1.21.3", L"Fabric / Quilt", L"PepperCode1", L"https://modrinth.com/mod/continuity", false
     }
 };
 
 static std::vector<ModItem> g_filteredMods = g_allMods;
 static std::wstring g_modSearchQuery = L"";
 static std::wstring g_selectedCategory = L"Все";
-static int g_modScrollY = 0;
+static int g_modPage = 0;
+static const int MODS_PER_PAGE = 4;
 static const ModItem* g_selectedModDetail = nullptr;
 
 static std::vector<std::wstring> g_modCategories = {
     L"Все", L"Оптимизация", L"Шейдеры", L"Интерфейс", L"Технологии", L"Библиотеки", L"Карты"
 };
-
-// Available versions
-static std::vector<std::wstring> g_versions = {
-    L"1.21.1", L"1.20.4", L"1.20.1", L"1.19.4", L"1.18.2", L"1.16.5", L"1.12.2"
-};
-static int g_selectedVersionIndex = 0;
 
 // Quick RAM presets (MB)
 static std::vector<int> g_ramPresets = { 2048, 4096, 6144, 8192, 12288, 16384 };
@@ -328,6 +461,7 @@ void FilterMods();
 void SetActiveContainer(int index);
 void SetGlobalRam(int mb);
 void CreateNewContainerDialog();
+void ApplyDwmDarkTitleBar(HWND hwnd);
 
 // Translation Helper
 inline const wchar_t* Tr(const wchar_t* ru, const wchar_t* en) {
@@ -341,6 +475,24 @@ inline std::wstring ToLowerW(const std::wstring& s) {
     std::wstring r = s;
     for (auto& c : r) c = towlower(c);
     return r;
+}
+
+// ----------------------------------------------------------------------------
+// DWM Immersive Dark Title Bar (Eliminates the Stark White Title Bar Border!)
+// ----------------------------------------------------------------------------
+void ApplyDwmDarkTitleBar(HWND hwnd) {
+    if (!hwnd) return;
+    BOOL darkMode = TRUE;
+    // DWMWA_USE_IMMERSIVE_DARK_MODE (20 on Win11 / Win10 20H1+, 19 on older Win10)
+    DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
+    DwmSetWindowAttribute(hwnd, 19, &darkMode, sizeof(darkMode));
+
+    // Match titlebar caption to active dark theme surface color (Win11 DWMWA_CAPTION_COLOR 35)
+    COLORREF captionColor = RGB(g_currentTheme.bgSurface.GetR(), g_currentTheme.bgSurface.GetG(), g_currentTheme.bgSurface.GetB());
+    DwmSetWindowAttribute(hwnd, 35, &captionColor, sizeof(captionColor));
+
+    COLORREF textColor = RGB(240, 242, 248);
+    DwmSetWindowAttribute(hwnd, 36 /* DWMWA_TEXT_COLOR */, &textColor, sizeof(textColor));
 }
 
 // ----------------------------------------------------------------------------
@@ -542,7 +694,7 @@ void SetActiveContainer(int index) {
         g_config.loader = g_containers[index].loader;
         SaveConfig(g_config);
 
-        AppendLog(Tr(L"[Aether] Выбран активный контейнер: " + g_activeContainerName,
+        AppendLog(Tr(L"[Aether] Выбран активный контейнер: " + g_activeContainerName + L" (" + g_config.loader + L")",
                      L"[Aether] Selected active container: " + g_activeContainerName));
 
         if (g_hMainWindow) {
@@ -553,25 +705,36 @@ void SetActiveContainer(int index) {
 
 void CreateNewContainerDialog() {
     HMENU hVerMenu = CreatePopupMenu();
-    for (size_t i = 0; i < g_versions.size(); ++i) {
-        std::wstring itemText = L"Minecraft " + g_versions[i] + L" (Vanilla)";
-        AppendMenuW(hVerMenu, MF_STRING, 4000 + (UINT)i, itemText.c_str());
-    }
+    AppendMenuW(hVerMenu, MF_STRING, 4001, L"Minecraft 1.21.1 (Vanilla)");
+    AppendMenuW(hVerMenu, MF_STRING, 4002, L"Minecraft 1.21.1 (Fabric)");
+    AppendMenuW(hVerMenu, MF_STRING, 4003, L"Minecraft 1.20.4 (Fabric)");
+    AppendMenuW(hVerMenu, MF_STRING, 4004, L"Minecraft 1.20.1 (Forge)");
+    AppendMenuW(hVerMenu, MF_STRING, 4005, L"Minecraft 1.20.1 (Fabric)");
+    AppendMenuW(hVerMenu, MF_STRING, 4006, L"Minecraft 1.16.5 (Forge)");
+    AppendMenuW(hVerMenu, MF_STRING, 4007, L"Minecraft 1.12.2 (Forge)");
 
     POINT pt = { 220 + 24 + 200, 54 + 20 + 34 };
     ClientToScreen(g_hMainWindow, &pt);
     int cmd = TrackPopupMenuEx(hVerMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, pt.x, pt.y, g_hMainWindow, NULL);
     DestroyMenu(hVerMenu);
 
-    if (cmd >= 4000 && cmd < 4000 + (int)g_versions.size()) {
-        int vIdx = cmd - 4000;
-        std::wstring newVer = g_versions[vIdx];
-        std::wstring newName = L"Minecraft " + newVer + L" Vanilla";
-        std::wstring newId = L"c-" + std::to_wstring(g_containers.size() + 1);
-        g_containers.push_back({ newId, newName, newVer, L"vanilla", g_config.memoryMb });
-        SetActiveContainer((int)g_containers.size() - 1);
-        AppendLog(Tr(L"[Aether] Создан новый контейнер: " + newName, L"[Aether] Created new container: " + newName));
-    }
+    std::wstring newVer = L"1.21.1";
+    std::wstring newLdr = L"vanilla";
+    std::wstring newName = L"Minecraft 1.21.1 Vanilla";
+
+    if (cmd == 4001) { newVer = L"1.21.1"; newLdr = L"vanilla"; newName = L"Minecraft 1.21.1 Vanilla"; }
+    else if (cmd == 4002) { newVer = L"1.21.1"; newLdr = L"fabric"; newName = L"Fabric 1.21.1 Performance"; }
+    else if (cmd == 4003) { newVer = L"1.20.4"; newLdr = L"fabric"; newName = L"Fabric 1.20.4 Shaders"; }
+    else if (cmd == 4004) { newVer = L"1.20.1"; newLdr = L"forge"; newName = L"Forge 1.20.1 Tech & Magic"; }
+    else if (cmd == 4005) { newVer = L"1.20.1"; newLdr = L"fabric"; newName = L"Fabric 1.20.1 Modded"; }
+    else if (cmd == 4006) { newVer = L"1.16.5"; newLdr = L"forge"; newName = L"Forge 1.16.5 Classic"; }
+    else if (cmd == 4007) { newVer = L"1.12.2"; newLdr = L"forge"; newName = L"Forge 1.12.2 Golden Era"; }
+    else return;
+
+    std::wstring newId = L"c-" + std::to_wstring(g_containers.size() + 1);
+    g_containers.push_back({ newId, newName, newVer, newLdr, g_config.memoryMb });
+    SetActiveContainer((int)g_containers.size() - 1);
+    AppendLog(Tr(L"[Aether] Создан новый контейнер: " + newName, L"[Aether] Created new container: " + newName));
 }
 
 // ----------------------------------------------------------------------------
@@ -597,7 +760,7 @@ void FilterMods() {
 
         g_filteredMods.push_back(m);
     }
-    g_modScrollY = 0;
+    g_modPage = 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -642,7 +805,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     int mainH = height - dockH;
 
     // ------------------------------------------------------------------------
-    // 1. Sidebar (Width: 220px) - Servers Tab Removed by Request!
+    // 1. Sidebar (Width: 220px)
     // ------------------------------------------------------------------------
     SolidBrush sidebarBrush(g_currentTheme.bgSurface);
     g.FillRectangle(&sidebarBrush, 0, 0, sidebarW, mainH);
@@ -744,7 +907,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     g.DrawString(L"Native C++ Win32", -1, &fontEngine, enginePt, &mutedBrush);
 
     // ------------------------------------------------------------------------
-    // 2. Top Header Bar (Height: 54px)
+    // 2. Top Header Bar (Height: 54px, Seamless Flow Without Harsh Border!)
     // ------------------------------------------------------------------------
     int topH = 54;
     int contentX = sidebarW + 24;
@@ -752,7 +915,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
     SolidBrush topBrush(g_currentTheme.bgSurface);
     g.FillRectangle(&topBrush, sidebarW, 0, width - sidebarW, topH);
-    g.DrawLine(&borderPen, sidebarW, topH, width, topH);
 
     // Clickable Active Container Selector Dropdown Pill
     DrawCard(g, (float)sidebarW + 20, 11, 280, 32, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
@@ -779,7 +941,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     // ------------------------------------------------------------------------
     // 3. Tab Content Area
     // ------------------------------------------------------------------------
-    int contentY = topH + 20;
+    int contentY = topH + 16;
 
     if (g_currentTab == 0) {
         // --- Containers Tab (Only 1 Default Container with Selection) ---
@@ -791,7 +953,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                         L"Isolated profiles for Minecraft versions, modpacks and loaders"),
                      -1, &fontSubtitle, subPt, &mutedBrush);
 
-        // "+ Создать контейнер" button
         int addBtnW = 180;
         int addBtnX = contentX + contentW - addBtnW;
         DrawGradientButton(g, (float)addBtnX, (float)contentY, (float)addBtnW, 34, 8,
@@ -825,7 +986,8 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
             PointF cStatsPt((float)contentX + 70, (float)cY + 72);
             std::wstring stats = Tr(L"Выделенная память: ", L"Memory: ") + std::to_wstring(g_config.memoryMb / 1024) +
-                                 L" GB  •  " + Tr(L"Общие миры: Вкл  •  Статус: Готов", L"Shared Saves: On  •  Status: Ready");
+                                 L" GB  •  " + Tr(L"Загрузчик: ", L"Loader: ") + g_containers[i].loader +
+                                 L"  •  " + Tr(L"Статус: Готов", L"Status: Ready");
             g.DrawString(stats.c_str(), -1, &fontSmall, cStatsPt, &mutedBrush);
 
             int btnW = 150;
@@ -845,12 +1007,9 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         }
     }
     else if (g_currentTab == 1) {
-        // --- Modrinth Mods Tab (Search + Filters + Scrolling + Details View) ---
+        // --- Modrinth Mods Tab (Search + Filters + Pagination + Details View) ---
         if (g_selectedModDetail != nullptr) {
-            // ================================================================
-            // MOD DETAIL VIEW
-            // ================================================================
-            // Back button
+            // Mod Detail View
             DrawCard(g, (float)contentX, (float)contentY, 150, 30, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
             PointF backPt((float)contentX + 14, (float)contentY + 6);
             g.DrawString(Tr(L"← Назад к каталогу", L"← Back to catalog"), -1, &fontSmallBold, backPt, &whiteBrush);
@@ -859,7 +1018,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             int detailH = mainH - cardY - 10;
             DrawCard(g, (float)contentX, (float)cardY, (float)contentW, (float)detailH, 12, g_currentTheme.bgCard, g_currentTheme.border);
 
-            // Mod Title & Category
             PointF mTitlePt((float)contentX + 24, (float)cardY + 20);
             Font fontModLarge(&ff, 20, FontStyleBold, UnitPixel);
             g.DrawString(g_selectedModDetail->name.c_str(), -1, &fontModLarge, mTitlePt, &whiteBrush);
@@ -873,14 +1031,12 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             std::wstring dlText = Tr(L"Скачиваний: ", L"Downloads: ") + g_selectedModDetail->downloads;
             g.DrawString(dlText.c_str(), -1, &fontSmall, dlPt, &mutedBrush);
 
-            // Full Description Box
             DrawCard(g, (float)contentX + 24, (float)cardY + 88, (float)contentW - 48, 110, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
             RectF descRc((float)contentX + 36, (float)cardY + 98, (float)contentW - 72, 90);
             StringFormat sfDesc;
             sfDesc.SetTrimming(StringTrimmingWord);
             g.DrawString(g_selectedModDetail->fullDesc.c_str(), -1, &fontRegular, descRc, &sfDesc, &whiteBrush);
 
-            // Metadata info
             int metaY = cardY + 214;
             PointF vLblPt((float)contentX + 24, (float)metaY);
             g.DrawString(Tr(L"Поддерживаемые версии Minecraft:", L"Supported Minecraft versions:"), -1, &fontBold, vLblPt, &whiteBrush);
@@ -897,7 +1053,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             PointF authValPt((float)contentX + 240, (float)metaY + 68);
             g.DrawString(g_selectedModDetail->author.c_str(), -1, &fontRegular, authValPt, &mutedBrush);
 
-            // Action Buttons: Install Toggle & Modrinth Link
             int actY = cardY + detailH - 52;
             int instBtnW = 160;
             if (g_selectedModDetail->installed) {
@@ -912,24 +1067,19 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                                    Color(255, 255, 255, 255), Tr(L"+ Установить мод", L"+ Install Mod"), fontBold, false, false);
             }
 
-            // Web link button
             DrawCard(g, (float)contentX + 196, (float)actY, 210, 36, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
             PointF linkPt((float)contentX + 210, (float)actY + 8);
             g.DrawString(Tr(L"🌐 Страница на Modrinth", L"🌐 Page on Modrinth"), -1, &fontSmallBold, linkPt, &whiteBrush);
         }
         else {
-            // ================================================================
-            // MOD CATALOG & FILTER VIEW
-            // ================================================================
             PointF titlePt((float)contentX, (float)contentY);
             g.DrawString(Tr(L"Каталог Modrinth v2", L"Modrinth v2 Catalog"), -1, &fontTitle, titlePt, &whiteBrush);
 
             PointF subPt((float)contentX, (float)contentY + 28);
-            g.DrawString(Tr(L"Поиск, фильтрация и установка модов, датапаков и шейдеров",
-                            L"Search, filter and install mods, datapacks and shaders"),
+            g.DrawString(Tr(L"Поиск, фильтрация по категориям и постраничный каталог модов",
+                            L"Search, category filtering and paginated mod catalog"),
                          -1, &fontSubtitle, subPt, &mutedBrush);
 
-            // Search Bar (Win32 EDIT control g_hEditModSearch sits inside!)
             int searchY = contentY + 58;
             DrawCard(g, (float)contentX, (float)searchY, (float)contentW - 100, 34, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
             DrawIconSearch(g, (float)contentX + 12, (float)searchY + 9, 16.0f, g_currentTheme.accentSecondary);
@@ -956,25 +1106,26 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                 curFilterX += pillW + 8;
             }
 
-            // Scrollable Mods List Area
+            // Paginated Mod Cards Area
             int modListY = filterY + 36;
-            int listVisibleH = mainH - modListY - 8;
-
-            g.SetClip(RectF((float)contentX, (float)modListY, (float)contentW, (float)listVisibleH));
-
             int modItemH = 58;
-            int totalContentH = (int)g_filteredMods.size() * (modItemH + 8);
+            int totalPages = std::max(1, (int)(g_filteredMods.size() + MODS_PER_PAGE - 1) / MODS_PER_PAGE);
+            if (g_modPage >= totalPages) g_modPage = totalPages - 1;
+            if (g_modPage < 0) g_modPage = 0;
+
+            int startIdx = g_modPage * MODS_PER_PAGE;
+            int endIdx = std::min((int)g_filteredMods.size(), startIdx + MODS_PER_PAGE);
 
             if (g_filteredMods.empty()) {
                 PointF emptyPt((float)contentX + 16, (float)modListY + 20);
                 g.DrawString(Tr(L"Моды не найдены по данному запросу или фильтру.",
                                 L"No mods found matching this query or filter."), -1, &fontRegular, emptyPt, &mutedBrush);
             } else {
-                for (size_t i = 0; i < g_filteredMods.size(); ++i) {
-                    int mY = modListY - g_modScrollY + (int)i * (modItemH + 8);
-                    if (mY + modItemH < modListY || mY > modListY + listVisibleH) continue;
+                for (int i = startIdx; i < endIdx; ++i) {
+                    int slot = i - startIdx;
+                    int mY = modListY + slot * (modItemH + 8);
 
-                    DrawCard(g, (float)contentX, (float)mY, (float)contentW - 12, (float)modItemH, 8, g_currentTheme.bgCard, g_currentTheme.border);
+                    DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8, g_currentTheme.bgCard, g_currentTheme.border);
 
                     PointF mNamePt((float)contentX + 16, (float)mY + 10);
                     g.DrawString(g_filteredMods[i].name.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
@@ -986,16 +1137,16 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                     PointF mDescPt((float)contentX + 16, (float)mY + 32);
                     g.DrawString(g_filteredMods[i].brief.c_str(), -1, &fontSmall, mDescPt, &mutedBrush);
 
-                    // "Подробнее" Button
+                    // "Инфо" Button
                     int detBtnW = 86;
-                    int detBtnX = contentX + contentW - 12 - 120 - detBtnW - 12;
+                    int detBtnX = contentX + contentW - 120 - detBtnW - 14;
                     DrawCard(g, (float)detBtnX, (float)mY + 14, (float)detBtnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
                     RectF detRc((float)detBtnX, (float)mY + 14, (float)detBtnW, 28);
                     g.DrawString(Tr(L"Инфо", L"Details"), -1, &fontSmallBold, detRc, &sfCenter, &whiteBrush);
 
                     // Install / Installed Button
                     int btnW = 120;
-                    int btnX = contentX + contentW - 12 - btnW - 10;
+                    int btnX = contentX + contentW - btnW - 10;
                     if (g_filteredMods[i].installed) {
                         DrawCard(g, (float)btnX, (float)mY + 14, (float)btnW, 28, 6, Color(40, 16, 185, 129), g_currentTheme.success);
                         DrawIconCheck(g, (float)btnX + 12, (float)mY + 22, 11.0f, g_currentTheme.success);
@@ -1010,26 +1161,32 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                 }
             }
 
-            g.ResetClip();
+            // Pagination Controls Bar at the bottom of Mods Tab!
+            int pageBarY = mainH - 44;
+            DrawCard(g, (float)contentX, (float)pageBarY, (float)contentW, 36, 8, g_currentTheme.bgSurface, g_currentTheme.border);
 
-            // Modern Scrollbar Track & Thumb
-            if (totalContentH > listVisibleH) {
-                int scrollTrackX = contentX + contentW - 6;
-                int scrollTrackY = modListY;
-                int scrollTrackH = listVisibleH;
+            // Previous Page Button
+            bool hasPrev = (g_modPage > 0);
+            DrawCard(g, (float)contentX + 10, (float)pageBarY + 4, 110, 28, 6,
+                     hasPrev ? g_currentTheme.bgSurfaceElevated : g_currentTheme.bgCard, g_currentTheme.border);
+            RectF prevRc((float)contentX + 10, (float)pageBarY + 4, 110, 28);
+            SolidBrush prevBrush(hasPrev ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+            g.DrawString(Tr(L"◀ Предыдущая", L"◀ Previous"), -1, &fontSmallBold, prevRc, &sfCenter, &prevBrush);
 
-                SolidBrush scrollTrackBg(Color(30, 255, 255, 255));
-                g.FillRectangle(&scrollTrackBg, scrollTrackX, scrollTrackY, 4, scrollTrackH);
+            // Page numbers in center
+            std::wstring pageInfo = Tr(L"Страница ", L"Page ") + std::to_wstring(g_modPage + 1) +
+                                    Tr(L" из ", L" of ") + std::to_wstring(totalPages) +
+                                    L"  (" + std::to_wstring(g_filteredMods.size()) + Tr(L" модов)", L" mods)");
+            RectF pageInfoRc((float)contentX + 130, (float)pageBarY + 4, (float)contentW - 260, 28);
+            g.DrawString(pageInfo.c_str(), -1, &fontSmallBold, pageInfoRc, &sfCenter, &whiteBrush);
 
-                float viewPct = (float)listVisibleH / (float)totalContentH;
-                int thumbH = std::max(24, (int)(scrollTrackH * viewPct));
-                float maxScrollY = (float)(totalContentH - listVisibleH);
-                float scrollPct = (maxScrollY > 0) ? ((float)g_modScrollY / maxScrollY) : 0.0f;
-                int thumbY = scrollTrackY + (int)((scrollTrackH - thumbH) * scrollPct);
-
-                SolidBrush thumbBrush(g_currentTheme.accentSecondary);
-                g.FillRectangle(&thumbBrush, scrollTrackX, thumbY, 4, thumbH);
-            }
+            // Next Page Button
+            bool hasNext = (g_modPage + 1 < totalPages);
+            DrawCard(g, (float)contentX + contentW - 120, (float)pageBarY + 4, 110, 28, 6,
+                     hasNext ? g_currentTheme.bgSurfaceElevated : g_currentTheme.bgCard, g_currentTheme.border);
+            RectF nextRc((float)contentX + contentW - 120, (float)pageBarY + 4, 110, 28);
+            SolidBrush nextBrush(hasNext ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+            g.DrawString(Tr(L"Следующая ▶", L"Next ▶"), -1, &fontSmallBold, nextRc, &sfCenter, &nextBrush);
         }
     }
     else if (g_currentTab == 2) {
@@ -1128,7 +1285,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
         int setY = contentY + 68;
 
-        // Group 1: RAM Allocation with Draggable Slider + Custom Numeric Input (Global for all containers!)
         DrawCard(g, (float)contentX, (float)setY, (float)contentW, 148, 10, g_currentTheme.bgCard, g_currentTheme.border);
 
         PointF ramLblPt((float)contentX + 16, (float)setY + 14);
@@ -1148,7 +1304,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         SolidBrush accentSec(g_currentTheme.accentSecondary);
         g.DrawString((L"(" + gbs.str() + L")").c_str(), -1, &fontBold, gbPt, &accentSec);
 
-        // Interactive RAM Slider Track
         int sliderX = contentX + 16;
         int sliderY = setY + 78;
         int sliderW = contentW - 32;
@@ -1173,7 +1328,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             g.FillPath(&fillGrad, &fillPath);
         }
 
-        // Draggable Knob
         float knobX = sliderX + fillW;
         float knobY = sliderY + 4.0f;
         SolidBrush knobBrush(g_currentTheme.accentSecondary);
@@ -1181,7 +1335,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         Pen knobPen(Color(255, 255, 255, 255), 2.0f);
         g.DrawEllipse(&knobPen, knobX - 8.0f, knobY - 8.0f, 16.0f, 16.0f);
 
-        // Quick Preset Pills
         int pillStartX = contentX + 16;
         int pillY = setY + 104;
         for (size_t i = 0; i < g_ramPresets.size(); ++i) {
@@ -1200,7 +1353,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             g.DrawString(ramLabel.c_str(), -1, &fontSmallBold, ramRc, &sfCenter, &ramTextBrush);
         }
 
-        // Group 2: Visual Themes
         int themeY = setY + 162;
         DrawCard(g, (float)contentX, (float)themeY, (float)contentW, 90, 10, g_currentTheme.bgCard, g_currentTheme.border);
         PointF thmLblPt((float)contentX + 16, (float)themeY + 14);
@@ -1220,7 +1372,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             g.DrawString(g_themes[i].name.c_str(), -1, &fontSmallBold, thmRc, &sfCenter, &thmTextBrush);
         }
 
-        // Group 3: JVM Presets
         int jvmY = themeY + 104;
         DrawCard(g, (float)contentX, (float)jvmY, (float)contentW, 76, 10, g_currentTheme.bgCard, g_currentTheme.border);
         PointF jvmLblPt((float)contentX + 16, (float)jvmY + 14);
@@ -1233,7 +1384,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     }
 
     // ------------------------------------------------------------------------
-    // 4. Bottom Launch Dock (Height: 84px)
+    // 4. Bottom Launch Dock (Height: 84px) - Features Dedicated Loader Selector!
     // ------------------------------------------------------------------------
     int dockY = height - dockH;
 
@@ -1257,29 +1408,45 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     g.DrawString(g_activeContainerName.c_str(), -1, &fontBold, dNamePt, &whiteBrush);
 
     PointF dVerPt(84, (float)dockY + 44);
-    std::wstring subVer = g_activeVersion + L" • " + Tr(L"Готов к игре", L"Ready to launch");
+    std::wstring subVer = g_activeVersion + L" (" + g_config.loader + L") • " + Tr(L"Готов к игре", L"Ready to launch");
     g.DrawString(subVer.c_str(), -1, &fontSmall, dVerPt, &mutedBrush);
 
     // Center-Left: Prominent NICKNAME Input Box on Bottom Dock!
-    PointF nickLblPt(270, (float)dockY + 14);
+    PointF nickLblPt(250, (float)dockY + 14);
     SolidBrush accentSecBrush(g_currentTheme.accentSecondary);
     g.DrawString(Tr(L"НИКНЕЙМ ИГРОКА", L"PLAYER NICKNAME"), -1, &fontSmallBold, nickLblPt, &accentSecBrush);
 
-    DrawCard(g, 268, (float)dockY + 34, 164, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+    DrawCard(g, 248, (float)dockY + 34, 140, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
 
-    // Center-Right: Version Dropdown Selector Pill
-    PointF verLblPt(452, (float)dockY + 14);
+    // Center: Version Dropdown Selector Pill
+    PointF verLblPt(402, (float)dockY + 14);
     g.DrawString(Tr(L"ВЕРСИЯ ИГРЫ", L"GAME VERSION"), -1, &fontSmallBold, verLblPt, &mutedBrush);
 
-    DrawCard(g, 450, (float)dockY + 34, 110, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
-    PointF verValPt(462, (float)dockY + 41);
+    DrawCard(g, 400, (float)dockY + 34, 105, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+    PointF verValPt(412, (float)dockY + 41);
     g.DrawString(g_activeVersion.c_str(), -1, &fontBold, verValPt, &whiteBrush);
-    PointF arrowPt(538, (float)dockY + 42);
+    PointF arrowPt(488, (float)dockY + 42);
     g.DrawString(L"▼", -1, &fontSmall, arrowPt, &mutedBrush);
 
+    // Center-Right: Mod Loader Selector Dropdown Pill!
+    PointF ldrLblPt(520, (float)dockY + 14);
+    g.DrawString(Tr(L"ЗАГРУЗЧИК", L"MOD LOADER"), -1, &fontSmallBold, ldrLblPt, &mutedBrush);
+
+    DrawCard(g, 518, (float)dockY + 34, 120, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+    std::wstring ldrDisplayName = L"Vanilla";
+    if (g_config.loader == L"fabric") ldrDisplayName = L"Fabric";
+    else if (g_config.loader == L"forge") ldrDisplayName = L"Forge";
+    else if (g_config.loader == L"neoforge") ldrDisplayName = L"NeoForge";
+    else if (g_config.loader == L"quilt") ldrDisplayName = L"Quilt";
+
+    PointF ldrValPt(530, (float)dockY + 41);
+    g.DrawString(ldrDisplayName.c_str(), -1, &fontBold, ldrValPt, &whiteBrush);
+    PointF ldrArrowPt(618, (float)dockY + 42);
+    g.DrawString(L"▼", -1, &fontSmall, ldrArrowPt, &mutedBrush);
+
     // Status Pill
-    int statusX = 580;
-    DrawCard(g, (float)statusX, (float)dockY + 34, 210, 32, 16, g_currentTheme.bgCard, g_currentTheme.border);
+    int statusX = 652;
+    DrawCard(g, (float)statusX, (float)dockY + 34, 175, 32, 16, g_currentTheme.bgCard, g_currentTheme.border);
 
     SolidBrush statusDotBrush(g_isGameRunning.load() ? g_currentTheme.warning : g_currentTheme.success);
     g.FillEllipse(&statusDotBrush, statusX + 14, dockY + 45, 10, 10);
@@ -1292,7 +1459,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     // ------------------------------------------------------------------------
     int playBtnW = 190;
     int playBtnH = 52;
-    int playBtnX = width - playBtnW - 24;
+    int playBtnX = width - playBtnW - 20;
     int playBtnY = dockY + 16;
 
     GraphicsPath glowPath;
@@ -1344,6 +1511,8 @@ void StartMinecraftLaunch() {
                      L"[Aether] =================================================="));
         AppendLog(Tr(L"[Aether] Старт запуска профиля: " + g_activeContainerName,
                      L"[Aether] Launching profile: " + g_activeContainerName));
+        AppendLog(Tr(L"[Aether] Загрузчик модов: " + g_config.loader,
+                     L"[Aether] Mod loader: " + g_config.loader));
         AppendLog(Tr(L"[Aether] Игрок: " + g_config.nickname,
                      L"[Aether] Player: " + g_config.nickname));
         AppendLog(Tr(L"[Aether] Выделение RAM (глобально): " + std::to_wstring(g_config.memoryMb) + L" MB",
@@ -1430,7 +1599,7 @@ void StartMinecraftLaunch() {
         bool launched = MinecraftLauncher::LaunchMinecraft(
             g_config.storagePath,
             g_activeVersion,
-            L"vanilla",
+            g_config.loader,
             g_config.nickname,
             g_config.memoryMb,
             javaPath,
@@ -1479,6 +1648,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_CREATE: {
         g_hMainWindow = hwnd;
 
+        // Apply Windows 10/11 Dark Titlebar (Eliminates white window caption border)
+        ApplyDwmDarkTitleBar(hwnd);
+
         AppendLog(Tr(L"[Aether] Лаунчер инициализирован успешно (Нативный C++ Win32 GDI+ движок).",
                      L"[Aether] Launcher initialized successfully (Native C++ Win32 GDI+ engine)."));
         AppendLog(Tr(L"[Aether] Нулевая зависимость от сторонних браузеров / Chrome / Node.js.",
@@ -1490,7 +1662,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_hEditNick = CreateWindowExW(
             0, L"EDIT", g_config.nickname.c_str(),
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            272, 680 - 84 + 38, 156, 24,
+            252, 680 - 84 + 38, 132, 24,
             hwnd, (HMENU)IDC_EDIT_NICKNAME, g_hInstance, NULL
         );
 
@@ -1503,7 +1675,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_hEditModSearch = CreateWindowExW(
             0, L"EDIT", L"",
             WS_CHILD | ES_AUTOHSCROLL,
-            220 + 24 + 36, 54 + 20 + 64, 500, 22,
+            220 + 24 + 36, 54 + 16 + 64, 500, 22,
             hwnd, (HMENU)IDC_EDIT_MODSEARCH, g_hInstance, NULL
         );
         SendMessageW(g_hEditModSearch, WM_SETFONT, (WPARAM)hFontNick, TRUE);
@@ -1512,7 +1684,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_hEditRam = CreateWindowExW(
             0, L"EDIT", std::to_wstring(g_config.memoryMb).c_str(),
             WS_CHILD | ES_NUMBER | ES_AUTOHSCROLL,
-            220 + 24 + 126, 54 + 20 + 68 + 42, 80, 22,
+            220 + 24 + 126, 54 + 16 + 68 + 42, 80, 22,
             hwnd, (HMENU)IDC_EDIT_RAM, g_hInstance, NULL
         );
         SendMessageW(g_hEditRam, WM_SETFONT, (WPARAM)hFontNick, TRUE);
@@ -1560,14 +1732,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int height = HIWORD(lParam);
 
         if (g_hEditNick) {
-            SetWindowPos(g_hEditNick, NULL, 272, height - 84 + 38, 156, 24, SWP_NOZORDER);
+            SetWindowPos(g_hEditNick, NULL, 252, height - 84 + 38, 132, 24, SWP_NOZORDER);
         }
         if (g_hEditModSearch) {
-            SetWindowPos(g_hEditModSearch, NULL, 220 + 24 + 36, 54 + 20 + 64, width - 220 - 48 - 146, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditModSearch, NULL, 220 + 24 + 36, 54 + 16 + 64, width - 220 - 48 - 146, 22, SWP_NOZORDER);
             ShowWindow(g_hEditModSearch, (g_currentTab == 1 && g_selectedModDetail == nullptr) ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditRam) {
-            SetWindowPos(g_hEditRam, NULL, 220 + 24 + 126, 54 + 20 + 68 + 42, 80, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditRam, NULL, 220 + 24 + 126, 54 + 16 + 68 + 42, 80, 22, SWP_NOZORDER);
             ShowWindow(g_hEditRam, g_currentTab == 4 ? SW_SHOW : SW_HIDE);
         }
 
@@ -1589,20 +1761,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_MOUSEWHEEL: {
         if (g_currentTab == 1 && g_selectedModDetail == nullptr) {
             int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            g_modScrollY -= (delta / WHEEL_DELTA) * 45;
+            int totalPages = std::max(1, (int)(g_filteredMods.size() + MODS_PER_PAGE - 1) / MODS_PER_PAGE);
 
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            int mainH = (rc.bottom - rc.top) - 84;
-            int modListY = 54 + 20 + 58 + 42 + 36;
-            int listVisibleH = mainH - modListY - 8;
-            int totalContentH = (int)g_filteredMods.size() * (58 + 8);
-
-            int maxScrollY = std::max(0, totalContentH - listVisibleH);
-            if (g_modScrollY < 0) g_modScrollY = 0;
-            if (g_modScrollY > maxScrollY) g_modScrollY = maxScrollY;
-
-            InvalidateRect(hwnd, NULL, FALSE);
+            if (delta < 0 && g_modPage + 1 < totalPages) {
+                g_modPage++;
+                InvalidateRect(hwnd, NULL, FALSE);
+            } else if (delta > 0 && g_modPage > 0) {
+                g_modPage--;
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
             return 0;
         }
         break;
@@ -1617,17 +1784,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int width = rc.right - rc.left;
         int height = rc.bottom - rc.top;
 
-        // Check sidebar tab hover (5 tabs)
         int oldTabHover = g_hoveredTab;
         g_hoveredTab = -1;
         if (x < 220 && y >= 88 && y < 88 + 5 * 46) {
             g_hoveredTab = (y - 88) / 46;
         }
 
-        // Check Play button hover
         int playBtnW = 190;
         int playBtnH = 52;
-        int playBtnX = width - playBtnW - 24;
+        int playBtnX = width - playBtnW - 20;
         int playBtnY = height - 84 + 16;
         bool oldPlayHover = g_hoverPlayBtn;
         g_hoverPlayBtn = (x >= playBtnX && x <= playBtnX + playBtnW && y >= playBtnY && y <= playBtnY + playBtnH);
@@ -1644,7 +1809,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (pct > 1.0f) pct = 1.0f;
 
             int mb = 1024 + (int)(pct * (16384 - 1024));
-            mb = (mb / 128) * 128; // Step by 128 MB
+            mb = (mb / 128) * 128;
             if (mb < 1024) mb = 1024;
             if (mb > 16384) mb = 16384;
 
@@ -1680,7 +1845,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int clickedTab = (y - 88) / 46;
             if (clickedTab >= 0 && clickedTab < 5) {
                 g_currentTab = clickedTab;
-                g_selectedModDetail = nullptr; // Reset mod detail view
+                g_selectedModDetail = nullptr;
 
                 if (g_hEditModSearch) {
                     ShowWindow(g_hEditModSearch, g_currentTab == 1 ? SW_SHOW : SW_HIDE);
@@ -1695,14 +1860,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         // ====================================================================
-        // REAL SELECTION LIST FOR TOP BAR CONTAINER SELECTOR
+        // TOP BAR CONTAINER SELECTOR DROPDOWN MENU
         // ====================================================================
         if (x >= 220 + 20 && x <= 220 + 300 && y >= 11 && y <= 43) {
             HMENU hMenu = CreatePopupMenu();
             for (size_t i = 0; i < g_containers.size(); ++i) {
                 UINT flags = MF_STRING;
                 if ((int)i == g_activeContainerIndex) flags |= MF_CHECKED;
-                std::wstring itemText = g_containers[i].name + L" (" + g_containers[i].version + L")";
+                std::wstring itemText = g_containers[i].name + L" [" + g_containers[i].version + L" / " + g_containers[i].loader + L"]";
                 AppendMenuW(hMenu, flags, 3000 + (UINT)i, itemText.c_str());
             }
             AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -1732,7 +1897,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // Click Play button
         int playBtnW = 190;
         int playBtnH = 52;
-        int playBtnX = width - playBtnW - 24;
+        int playBtnX = width - playBtnW - 20;
         int playBtnY = height - 84 + 16;
         if (x >= playBtnX && x <= playBtnX + playBtnW && y >= playBtnY && y <= playBtnY + playBtnH) {
             g_pressPlayBtn = true;
@@ -1742,9 +1907,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         // ====================================================================
-        // REAL SELECTION LIST FOR GAME VERSION
+        // VERSION SELECTOR DROPDOWN MENU (21 Versions!)
         // ====================================================================
-        if (x >= 450 && x <= 560 && y >= height - 84 + 34 && y <= height - 84 + 66) {
+        if (x >= 400 && x <= 505 && y >= height - 84 + 34 && y <= height - 84 + 66) {
             HMENU hMenu = CreatePopupMenu();
             for (size_t i = 0; i < g_versions.size(); ++i) {
                 UINT flags = MF_STRING;
@@ -1752,7 +1917,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 AppendMenuW(hMenu, flags, 2000 + (UINT)i, g_versions[i].c_str());
             }
 
-            POINT pt = { 450, height - 84 + 34 };
+            POINT pt = { 400, height - 84 + 34 };
             ClientToScreen(hwnd, &pt);
             int cmd = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD, pt.x, pt.y, hwnd, NULL);
             DestroyMenu(hMenu);
@@ -1771,13 +1936,40 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
+        // ====================================================================
+        // MOD LOADER SELECTOR DROPDOWN MENU (Dedicated on Bottom Dock!)
+        // ====================================================================
+        if (x >= 518 && x <= 638 && y >= height - 84 + 34 && y <= height - 84 + 66) {
+            HMENU hMenu = CreatePopupMenu();
+            for (size_t i = 0; i < g_loaders.size(); ++i) {
+                UINT flags = MF_STRING;
+                if (g_config.loader == g_loaders[i].first) flags |= MF_CHECKED;
+                AppendMenuW(hMenu, flags, 2500 + (UINT)i, g_loaders[i].second.c_str());
+            }
+
+            POINT pt = { 518, height - 84 + 34 };
+            ClientToScreen(hwnd, &pt);
+            int cmd = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD, pt.x, pt.y, hwnd, NULL);
+            DestroyMenu(hMenu);
+
+            if (cmd >= 2500 && cmd < 2500 + (int)g_loaders.size()) {
+                int lIdx = cmd - 2500;
+                g_config.loader = g_loaders[lIdx].first;
+                g_containers[g_activeContainerIndex].loader = g_config.loader;
+                SaveConfig(g_config);
+                AppendLog(Tr(L"[Aether] Выбран загрузчик модов: " + g_loaders[lIdx].second,
+                             L"[Aether] Selected mod loader: " + g_loaders[lIdx].second));
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
         // --- Tab 0: Containers Tab Interaction ---
         if (g_currentTab == 0) {
             int contentX = 220 + 24;
             int contentW = width - 220 - 48;
-            int contentY = 54 + 20;
+            int contentY = 54 + 16;
 
-            // Click "+ Создать контейнер"
             int addBtnW = 180;
             int addBtnX = contentX + contentW - addBtnW;
             if (x >= addBtnX && x <= addBtnX + addBtnW && y >= contentY && y <= contentY + 34) {
@@ -1785,7 +1977,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            // Click container cards or "Выбрать контейнер"
             int cardY = contentY + 68;
             int cardW = contentW;
             int cardH = 120;
@@ -1805,8 +1996,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int contentW = width - 220 - 48;
 
             if (g_selectedModDetail != nullptr) {
-                // Mod Detail View Interaction: Back button
-                if (x >= contentX && x <= contentX + 150 && y >= 54 + 20 && y <= 54 + 20 + 30) {
+                if (x >= contentX && x <= contentX + 150 && y >= 54 + 16 && y <= 54 + 16 + 30) {
                     g_selectedModDetail = nullptr;
                     if (g_hEditModSearch) {
                         ShowWindow(g_hEditModSearch, SW_SHOW);
@@ -1815,12 +2005,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     return 0;
                 }
 
-                int cardY = 54 + 20 + 44;
+                int cardY = 54 + 16 + 44;
                 int mainH = (rc.bottom - rc.top) - 84;
                 int detailH = mainH - cardY - 10;
                 int actY = cardY + detailH - 52;
 
-                // Click Install / Uninstall Button inside Details
                 if (x >= contentX + 24 && x <= contentX + 24 + 160 && y >= actY && y <= actY + 36) {
                     for (auto& m : g_allMods) {
                         if (m.name == g_selectedModDetail->name) {
@@ -1833,7 +2022,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     return 0;
                 }
 
-                // Click Web Link to Modrinth
                 if (x >= contentX + 196 && x <= contentX + 196 + 210 && y >= actY && y <= actY + 36) {
                     ShellExecuteW(NULL, L"open", g_selectedModDetail->url.c_str(), NULL, NULL, SW_SHOWNORMAL);
                     return 0;
@@ -1841,7 +2029,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            int searchY = 54 + 20 + 58;
+            int searchY = 54 + 16 + 58;
 
             // Click "Найти" button
             int findBtnX = contentX + contentW - 90;
@@ -1870,20 +2058,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 curFilterX += pillW + 8;
             }
 
-            // Click Mod List Item: "Инфо", "Установить" or Card Body
+            // Click Mod Cards in current page
             int modListY = filterY + 36;
-            int listVisibleH = (height - 84) - modListY - 8;
             int modItemH = 58;
+            int totalPages = std::max(1, (int)(g_filteredMods.size() + MODS_PER_PAGE - 1) / MODS_PER_PAGE);
+            int startIdx = g_modPage * MODS_PER_PAGE;
+            int endIdx = std::min((int)g_filteredMods.size(), startIdx + MODS_PER_PAGE);
 
-            for (size_t i = 0; i < g_filteredMods.size(); ++i) {
-                int mY = modListY - g_modScrollY + (int)i * (modItemH + 8);
-                if (mY + modItemH < modListY || mY > modListY + listVisibleH) continue;
+            for (int i = startIdx; i < endIdx; ++i) {
+                int slot = i - startIdx;
+                int mY = modListY + slot * (modItemH + 8);
 
                 int detBtnW = 86;
-                int detBtnX = contentX + contentW - 12 - 120 - detBtnW - 12;
+                int detBtnX = contentX + contentW - 120 - detBtnW - 14;
 
                 int btnW = 120;
-                int btnX = contentX + contentW - 12 - btnW - 10;
+                int btnX = contentX + contentW - btnW - 10;
 
                 // Click Install Button
                 if (x >= btnX && x <= btnX + btnW && y >= mY + 14 && y <= mY + 42) {
@@ -1911,13 +2101,33 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     return 0;
                 }
             }
+
+            // Click Pagination Buttons
+            int mainH = height - 84;
+            int pageBarY = mainH - 44;
+            // Previous Button
+            if (x >= contentX + 10 && x <= contentX + 120 && y >= pageBarY + 4 && y <= pageBarY + 32) {
+                if (g_modPage > 0) {
+                    g_modPage--;
+                    InvalidateRect(hwnd, NULL, FALSE);
+                }
+                return 0;
+            }
+            // Next Button
+            if (x >= contentX + contentW - 120 && x <= contentX + contentW - 10 && y >= pageBarY + 4 && y <= pageBarY + 32) {
+                if (g_modPage + 1 < totalPages) {
+                    g_modPage++;
+                    InvalidateRect(hwnd, NULL, FALSE);
+                }
+                return 0;
+            }
         }
 
         // --- Tab 4: Settings Tab (RAM Slider Drag & Presets - Global RAM!) ---
         if (g_currentTab == 4) {
             int contentX = 220 + 24;
             int contentW = width - 220 - 48;
-            int setY = 54 + 20 + 68;
+            int setY = 54 + 16 + 68;
 
             int sliderX = contentX + 16;
             int sliderY = setY + 74;
@@ -1946,7 +2156,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            // Click quick RAM presets
             int pillStartX = contentX + 16;
             int pillY = setY + 104;
             for (size_t i = 0; i < g_ramPresets.size(); ++i) {
@@ -1963,7 +2172,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
             }
 
-            // Click Theme presets
             int themeY = setY + 162;
             int thmStartX = contentX + 16;
             for (size_t i = 0; i < g_themes.size(); ++i) {
@@ -1972,6 +2180,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_currentTheme = g_themes[i];
                     g_config.theme = g_themes[i].id;
                     SaveConfig(g_config);
+                    ApplyDwmDarkTitleBar(hwnd);
                     InvalidateRect(hwnd, NULL, FALSE);
                     return 0;
                 }
@@ -2070,7 +2279,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     HWND hwnd = CreateWindowExW(
         WS_EX_APPWINDOW,
         L"AetherLauncherNativeGDI",
-        L"Aether Launcher (Native Win32 C++)",
+        L"Aether Launcher",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         startX, startY, winWidth, winHeight,
         NULL, NULL, hInstance, NULL

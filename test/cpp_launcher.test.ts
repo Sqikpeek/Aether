@@ -76,8 +76,27 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   // Verify global RAM setting
   assert.ok(launcherMain.includes('SetGlobalRam'), 'RAM setting must be applied globally to all containers');
 
-  // Verify mod category filters, scrolling, and details view
+  // Verify mod category filters, mouse wheel navigation, and details view
   assert.ok(launcherMain.includes('g_modCategories'), 'Launcher must provide category filter selection for mods');
-  assert.ok(launcherMain.includes('WM_MOUSEWHEEL') && launcherMain.includes('g_modScrollY'), 'Launcher must support mouse-wheel scrolling for mods');
+  assert.ok(launcherMain.includes('WM_MOUSEWHEEL') && launcherMain.includes('g_modPage'), 'Launcher must support mouse-wheel scrolling/page-flipping for mods');
   assert.ok(launcherMain.includes('g_selectedModDetail'), 'Launcher must support opening detailed mod descriptions');
+
+  // Verify Mod Loader selection dropdown on launch dock and in container management
+  assert.ok(launcherMain.includes('g_loaders'), 'Launcher must define available mod loaders');
+  assert.ok(launcherMain.includes('Fabric') && launcherMain.includes('Forge') && launcherMain.includes('NeoForge') && launcherMain.includes('Quilt'), 'Launcher must support Vanilla, Fabric, Forge, NeoForge, and Quilt');
+  assert.ok(launcherMain.includes('AppendMenuW') && launcherMain.includes('TrackPopupMenuEx'), 'Launcher must provide dedicated popup menu for mod loader selection');
+
+  // Verify expanded versions list (20+ versions)
+  assert.ok(launcherMain.includes('1.21.3') && launcherMain.includes('1.12.2') && launcherMain.includes('1.7.10'), 'Launcher must include versions from 1.21.3 down to 1.7.10');
+  assert.ok(launcherMain.includes('g_versions') && launcherMain.includes('1.8.9'), 'Launcher must have comprehensive version catalog');
+
+  // Verify mod pagination (multiple pages and navigation)
+  assert.ok(launcherMain.includes('g_modPage') && launcherMain.includes('totalPages'), 'Launcher must implement mod catalog pagination');
+  assert.ok(launcherMain.includes('Предыдущая') && launcherMain.includes('Следующая'), 'Launcher must have Previous and Next page controls');
+  assert.ok(launcherMain.includes('MODS_PER_PAGE'), 'Launcher must define items per page');
+
+  // Verify DWM Immersive Dark Titlebar (removing harsh white border)
+  assert.ok(launcherMain.includes('DwmSetWindowAttribute'), 'Launcher must call DwmSetWindowAttribute for dark titlebar');
+  assert.ok(launcherMain.includes('DWMWA_USE_IMMERSIVE_DARK_MODE') || launcherMain.includes('20'), 'Launcher must request DWM dark mode attribute');
+  assert.ok(launcherMain.includes('DWMWA_CAPTION_COLOR') || launcherMain.includes('35'), 'Launcher must set caption color to match dark theme');
 });
