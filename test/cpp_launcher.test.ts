@@ -69,4 +69,15 @@ test('Native C++ source files are present and contain core Minecraft launch logi
 
   // Verify server tab is removed
   assert.ok(!launcherMain.includes('{ L"🌐", L"Серверы"'), 'Server tab must be removed from sidebar navigation');
+
+  // Verify dropdown selection menus for container and version
+  assert.ok(launcherMain.includes('TrackPopupMenuEx') && launcherMain.includes('CreatePopupMenu'), 'Launcher must use dropdown popup menus for version and container selection');
+
+  // Verify global RAM setting
+  assert.ok(launcherMain.includes('SetGlobalRam'), 'RAM setting must be applied globally to all containers');
+
+  // Verify mod category filters, scrolling, and details view
+  assert.ok(launcherMain.includes('g_modCategories'), 'Launcher must provide category filter selection for mods');
+  assert.ok(launcherMain.includes('WM_MOUSEWHEEL') && launcherMain.includes('g_modScrollY'), 'Launcher must support mouse-wheel scrolling for mods');
+  assert.ok(launcherMain.includes('g_selectedModDetail'), 'Launcher must support opening detailed mod descriptions');
 });

@@ -2,8 +2,9 @@
 // Aether Launcher - Native Modern C++ Win32 GUI Engine (GDI+)
 // Pure Native Desktop Application with Zero Browser / Chrome / Node Dependencies
 // Features: Vector GDI+ Anti-Aliased Icons, Double-Buffering (60 FPS),
-// Single Default Container & Full Selection, Real-Time Mod Search via App Tab,
-// Interactive RAM Slider with Custom Numeric Input, and In-Dock Nickname.
+// Single Default Container & Full Selection Menu, Real-Time Mod Search &
+// Category Filters, Mouse-Wheel Scrolling & Full Mod Details View,
+// Smooth Draggable RAM Slider with Global Setting and In-Dock Nickname.
 // ============================================================================
 
 #define UNICODE
@@ -207,6 +208,7 @@ static bool g_hoverPlayBtn = false;
 static bool g_pressPlayBtn = false;
 static bool g_isRussian = true;
 static bool g_isDraggingSlider = false;
+static bool g_suppressRamChange = false;
 
 // Active container & launch status
 static std::wstring g_activeContainerName = L"Minecraft 1.21.1 Vanilla";
@@ -223,30 +225,92 @@ static std::wstring g_lastCrashTitle = L"";
 static std::wstring g_lastCrashCause = L"";
 static std::wstring g_lastCrashSolution = L"";
 
-// Mod Items & Search Filter
+// Mod Items, Filters, Scrolling & Details
 struct ModItem {
     std::wstring name;
-    std::wstring description;
-    std::wstring downloads;
     std::wstring category;
+    std::wstring downloads;
+    std::wstring brief;
+    std::wstring fullDesc;
+    std::wstring versions;
+    std::wstring loader;
+    std::wstring author;
+    std::wstring url;
     bool installed;
 };
 
 static std::vector<ModItem> g_allMods = {
-    { L"Sodium", L"Современный движок рендеринга для Fabric, колоссально повышающий FPS и плавность.", L"32.4M", L"Оптимизация", true },
-    { L"Iris Shaders", L"Современный загрузчик шейдер-паков с поддержкой PBR и совместимостью с Sodium.", L"24.1M", L"Шейдеры", true },
-    { L"Lithium", L"Глубокая оптимизация тика сервера, физики мобов и чанков без изменения механик.", L"19.8M", L"Оптимизация", false },
-    { L"Fabric API", L"Основная библиотека хуков и событий, необходимая для большинства модов Fabric.", L"45.2M", L"Библиотека", true },
-    { L"AppleSkin", L"Удобное отображение насыщения и истощения полоски голода над хотбаром.", L"28.6M", L"Интерфейс", false },
-    { L"JourneyMap", L"Красивая карта реального времени с радаром мобов и путевыми точками (waypoint).", L"38.1M", L"Карта", false },
-    { L"Just Enough Items (JEI)", L"Просмотр рецептов крафта, плавки и использования предметов прямо в инвентаре.", L"120.5M", L"Интерфейс", false },
-    { L"Create", L"Грандиозный мод на механику, шестеренки, конвейеры, поезда и автоматизацию.", L"54.8M", L"Технологии", false },
-    { L"FerriteCore", L"Экстремальная оптимизация потребления оперативной памяти Java кучи.", L"22.3M", L"Оптимизация", false },
-    { L"Mod Menu", L"Удобный список установленных модов с кнопками настроек прямо в меню игры.", L"41.2M", L"Интерфейс", true }
+    {
+        L"Sodium", L"Оптимизация", L"32.4M",
+        L"Современный движок рендеринга для Fabric, колоссально повышающий FPS.",
+        L"Sodium — свободный открытый движок рендеринга нового поколения для Minecraft на Fabric. Он кардинально оптимизирует построение чанков, устраняет микрофризы и повышает FPS в 2-5 раз без потерь графики.",
+        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/sodium", true
+    },
+    {
+        L"Iris Shaders", L"Шейдеры", L"24.1M",
+        L"Современный загрузчик шейдер-паков с поддержкой PBR и совместимостью с Sodium.",
+        L"Iris — современный загрузчик шейдеров с непревзойденной производительностью благодаря глубокой интеграции с Sodium. Поддерживает BSL, Complementary, Sildurs и классические OptiFine-шейдеры.",
+        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"coderbot", L"https://modrinth.com/mod/iris", true
+    },
+    {
+        L"Lithium", L"Оптимизация", L"19.8M",
+        L"Глубокая оптимизация тика сервера, физики мобов и чанков без изменения механик.",
+        L"Lithium — универсальный оптимизатор серверной физики, поиска путей ИИ мобов и загрузки чанков. Снижает нагрузку на процессор на 40% как в одиночной игре, так и на серверах.",
+        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/lithium", false
+    },
+    {
+        L"Fabric API", L"Библиотеки", L"45.2M",
+        L"Основная библиотека хуков и событий, необходимая для большинства модов Fabric.",
+        L"Fabric API — обязательная библиотека для экосистемы Fabric, предоставляющая необходимые хуки, события и интерфейсы для взаимодействия модов с игровым движком.",
+        L"1.14 – 1.21.1", L"Fabric", L"FabricMC", L"https://modrinth.com/mod/fabric-api", true
+    },
+    {
+        L"AppleSkin", L"Интерфейс", L"28.6M",
+        L"Удобное отображение насыщения и истощения полоски голода над хотбаром.",
+        L"AppleSkin добавляет визуализацию скрытых параметров насыщения еды и шкалы истощения, помогая точно планировать рацион персонажа.",
+        L"1.12.2 – 1.21.1", L"Fabric / Forge / Quilt", L"squeek502", L"https://modrinth.com/mod/appleskin", false
+    },
+    {
+        L"JourneyMap", L"Карты", L"38.1M",
+        L"Красивая карта реального времени с радаром мобов и путевыми точками (waypoint).",
+        L"JourneyMap картографирует ваш мир в реальном времени во время исследования. Отображает мини-карту, радар мобов, пещеры и позволяет ставить путевые метки.",
+        L"1.12.2 – 1.21.1", L"Fabric / Forge", L"Techbrew", L"https://modrinth.com/mod/journeymap", false
+    },
+    {
+        L"Just Enough Items (JEI)", L"Интерфейс", L"120.5M",
+        L"Просмотр рецептов крафта, плавки и использования предметов прямо в инвентаре.",
+        L"JEI — незаменимый инструмент для просмотра рецептов крафта предметов, зелий и механизмов. Поддерживает поиск, избранное и интеграцию со всеми модами.",
+        L"1.12.2 – 1.21.1", L"Forge / Fabric / NeoForge", L"mezz", L"https://modrinth.com/mod/jei", false
+    },
+    {
+        L"Create", L"Технологии", L"54.8M",
+        L"Грандиозный мод на механику, шестеренки, конвейеры, поезда и автоматизацию.",
+        L"Create — один из лучших технологических модов в истории Minecraft. Добавляет вращательную энергию, кинетические механизмы, ветряные мельницы, зубчатые передачи, поезда и интерактивную логистику.",
+        L"1.18.2 – 1.20.1", L"Forge / Fabric", L"simibubi", L"https://modrinth.com/mod/create", false
+    },
+    {
+        L"FerriteCore", L"Оптимизация", L"22.3M",
+        L"Экстремальная оптимизация потребления оперативной памяти Java кучи.",
+        L"FerriteCore сокращает потребление оперативной памяти Minecraft на 20-35% за счет дедупликации данных и оптимизации моделей блоков.",
+        L"1.16.5 – 1.21.1", L"Fabric / Forge", L"malte0811", L"https://modrinth.com/mod/ferrite-core", false
+    },
+    {
+        L"Mod Menu", L"Интерфейс", L"41.2M",
+        L"Удобный список установленных модов с кнопками настроек прямо в меню игры.",
+        L"Mod Menu добавляет удобную кнопку «Моды» на главный экран Minecraft, позволяя просматривать установленные модификации и настраивать их конфиги.",
+        L"1.14 – 1.21.1", L"Fabric / Quilt", L"TerraformersMC", L"https://modrinth.com/mod/modmenu", true
+    }
 };
 
 static std::vector<ModItem> g_filteredMods = g_allMods;
 static std::wstring g_modSearchQuery = L"";
+static std::wstring g_selectedCategory = L"Все";
+static int g_modScrollY = 0;
+static const ModItem* g_selectedModDetail = nullptr;
+
+static std::vector<std::wstring> g_modCategories = {
+    L"Все", L"Оптимизация", L"Шейдеры", L"Интерфейс", L"Технологии", L"Библиотеки", L"Карты"
+};
 
 // Available versions
 static std::vector<std::wstring> g_versions = {
@@ -262,6 +326,8 @@ void AppendLog(const std::wstring& line);
 void StartMinecraftLaunch();
 void FilterMods();
 void SetActiveContainer(int index);
+void SetGlobalRam(int mb);
+void CreateNewContainerDialog();
 
 // Translation Helper
 inline const wchar_t* Tr(const wchar_t* ru, const wchar_t* en) {
@@ -457,8 +523,16 @@ static void DrawGradientButton(Graphics& g, float x, float y, float w, float h, 
 }
 
 // ----------------------------------------------------------------------------
-// Container Selection Helper
+// Container Selection & Global RAM
 // ----------------------------------------------------------------------------
+void SetGlobalRam(int mb) {
+    g_config.memoryMb = mb;
+    for (auto& c : g_containers) {
+        c.memoryMb = mb;
+    }
+    SaveConfig(g_config);
+}
+
 void SetActiveContainer(int index) {
     if (index >= 0 && index < (int)g_containers.size()) {
         g_activeContainerIndex = index;
@@ -466,15 +540,10 @@ void SetActiveContainer(int index) {
         g_activeVersion = g_containers[index].version;
         g_config.version = g_containers[index].version;
         g_config.loader = g_containers[index].loader;
-        g_config.memoryMb = g_containers[index].memoryMb;
         SaveConfig(g_config);
 
-        if (g_hEditRam) {
-            SetWindowTextW(g_hEditRam, std::to_wstring(g_config.memoryMb).c_str());
-        }
-
-        AppendLog(Tr(L"[Aether] Активный контейнер изменен на: " + g_activeContainerName,
-                     L"[Aether] Active container set to: " + g_activeContainerName));
+        AppendLog(Tr(L"[Aether] Выбран активный контейнер: " + g_activeContainerName,
+                     L"[Aether] Selected active container: " + g_activeContainerName));
 
         if (g_hMainWindow) {
             InvalidateRect(g_hMainWindow, NULL, FALSE);
@@ -482,23 +551,53 @@ void SetActiveContainer(int index) {
     }
 }
 
+void CreateNewContainerDialog() {
+    HMENU hVerMenu = CreatePopupMenu();
+    for (size_t i = 0; i < g_versions.size(); ++i) {
+        std::wstring itemText = L"Minecraft " + g_versions[i] + L" (Vanilla)";
+        AppendMenuW(hVerMenu, MF_STRING, 4000 + (UINT)i, itemText.c_str());
+    }
+
+    POINT pt = { 220 + 24 + 200, 54 + 20 + 34 };
+    ClientToScreen(g_hMainWindow, &pt);
+    int cmd = TrackPopupMenuEx(hVerMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, pt.x, pt.y, g_hMainWindow, NULL);
+    DestroyMenu(hVerMenu);
+
+    if (cmd >= 4000 && cmd < 4000 + (int)g_versions.size()) {
+        int vIdx = cmd - 4000;
+        std::wstring newVer = g_versions[vIdx];
+        std::wstring newName = L"Minecraft " + newVer + L" Vanilla";
+        std::wstring newId = L"c-" + std::to_wstring(g_containers.size() + 1);
+        g_containers.push_back({ newId, newName, newVer, L"vanilla", g_config.memoryMb });
+        SetActiveContainer((int)g_containers.size() - 1);
+        AppendLog(Tr(L"[Aether] Создан новый контейнер: " + newName, L"[Aether] Created new container: " + newName));
+    }
+}
+
 // ----------------------------------------------------------------------------
 // Mod Filter Logic
 // ----------------------------------------------------------------------------
 void FilterMods() {
-    if (g_modSearchQuery.empty()) {
-        g_filteredMods = g_allMods;
-        return;
-    }
-    std::wstring q = ToLowerW(g_modSearchQuery);
     g_filteredMods.clear();
+    std::wstring q = ToLowerW(g_modSearchQuery);
+
     for (const auto& m : g_allMods) {
-        if (ToLowerW(m.name).find(q) != std::wstring::npos ||
-            ToLowerW(m.description).find(q) != std::wstring::npos ||
-            ToLowerW(m.category).find(q) != std::wstring::npos) {
-            g_filteredMods.push_back(m);
+        if (g_selectedCategory != L"Все" && m.category != g_selectedCategory) {
+            continue;
         }
+
+        if (!q.empty()) {
+            if (ToLowerW(m.name).find(q) == std::wstring::npos &&
+                ToLowerW(m.brief).find(q) == std::wstring::npos &&
+                ToLowerW(m.fullDesc).find(q) == std::wstring::npos &&
+                ToLowerW(m.category).find(q) == std::wstring::npos) {
+                continue;
+            }
+        }
+
+        g_filteredMods.push_back(m);
     }
+    g_modScrollY = 0;
 }
 
 // ----------------------------------------------------------------------------
@@ -655,12 +754,12 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     g.FillRectangle(&topBrush, sidebarW, 0, width - sidebarW, topH);
     g.DrawLine(&borderPen, sidebarW, topH, width, topH);
 
-    // Clickable Active Container Selector Pill
+    // Clickable Active Container Selector Dropdown Pill
     DrawCard(g, (float)sidebarW + 20, 11, 280, 32, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
     DrawIconGamepad(g, (float)sidebarW + 32, 18, 18, 16, g_currentTheme.accentSecondary);
     PointF activeNamePt((float)sidebarW + 60, 17);
     g.DrawString(g_activeContainerName.c_str(), -1, &fontBold, activeNamePt, &whiteBrush);
-    PointF arrowPillPt((float)sidebarW + 280, 18);
+    PointF arrowPillPt((float)sidebarW + 276, 18);
     g.DrawString(L"▼", -1, &fontSmall, arrowPillPt, &mutedBrush);
 
     int langX = width - 110;
@@ -692,7 +791,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                         L"Isolated profiles for Minecraft versions, modpacks and loaders"),
                      -1, &fontSubtitle, subPt, &mutedBrush);
 
-        // "+ Создать контейнер" button on the right
+        // "+ Создать контейнер" button
         int addBtnW = 180;
         int addBtnX = contentX + contentW - addBtnW;
         DrawGradientButton(g, (float)addBtnX, (float)contentY, (float)addBtnW, 34, 8,
@@ -710,14 +809,12 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             DrawCard(g, (float)contentX, (float)cY, (float)cardW, (float)cardH, 12,
                      g_currentTheme.bgCard, isActive ? g_currentTheme.borderFocus : g_currentTheme.border);
 
-            // 3D Isometric Cube Icon
             DrawIconCube(g, (float)contentX + 36, (float)cY + 36, 18.0f,
                          g_currentTheme.accentSecondary, g_currentTheme.accent, Color(255, 100, 50, 160));
 
             PointF cTitlePt((float)contentX + 70, (float)cY + 16);
             g.DrawString(g_containers[i].name.c_str(), -1, &fontHeader, cTitlePt, &whiteBrush);
 
-            // Loader & Version Badges
             DrawCard(g, (float)contentX + 70, (float)cY + 42, 65, 20, 4, Color(40, 16, 185, 129), Color(100, 16, 185, 129));
             RectF b1Rc((float)contentX + 70, (float)cY + 42, 65, 20);
             g.DrawString(g_containers[i].loader.c_str(), -1, &fontSmallBold, b1Rc, &sfCenter, &greenBrush);
@@ -727,11 +824,10 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             g.DrawString(g_containers[i].version.c_str(), -1, &fontSmall, b2Rc, &sfCenter, &mutedBrush);
 
             PointF cStatsPt((float)contentX + 70, (float)cY + 72);
-            std::wstring stats = Tr(L"Выделенная память: ", L"Memory: ") + std::to_wstring(g_containers[i].memoryMb / 1024) +
+            std::wstring stats = Tr(L"Выделенная память: ", L"Memory: ") + std::to_wstring(g_config.memoryMb / 1024) +
                                  L" GB  •  " + Tr(L"Общие миры: Вкл  •  Статус: Готов", L"Shared Saves: On  •  Status: Ready");
             g.DrawString(stats.c_str(), -1, &fontSmall, cStatsPt, &mutedBrush);
 
-            // Right action pill: Active indicator or Select button
             int btnW = 150;
             int btnX = contentX + cardW - btnW - 20;
             int btnY = cY + (cardH - 32) / 2;
@@ -749,59 +845,190 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         }
     }
     else if (g_currentTab == 1) {
-        // --- Modrinth Mods Tab (Fixed Real-Time Search via Edit Control) ---
-        PointF titlePt((float)contentX, (float)contentY);
-        g.DrawString(Tr(L"Каталог Modrinth v2", L"Modrinth v2 Catalog"), -1, &fontTitle, titlePt, &whiteBrush);
+        // --- Modrinth Mods Tab (Search + Filters + Scrolling + Details View) ---
+        if (g_selectedModDetail != nullptr) {
+            // ================================================================
+            // MOD DETAIL VIEW
+            // ================================================================
+            // Back button
+            DrawCard(g, (float)contentX, (float)contentY, 150, 30, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+            PointF backPt((float)contentX + 14, (float)contentY + 6);
+            g.DrawString(Tr(L"← Назад к каталогу", L"← Back to catalog"), -1, &fontSmallBold, backPt, &whiteBrush);
 
-        PointF subPt((float)contentX, (float)contentY + 28);
-        g.DrawString(Tr(L"Поиск и установка модов, датапаков и шейдеров прямо в лаунчере",
-                        L"Search and install mods, datapacks and shaders directly in launcher"),
-                     -1, &fontSubtitle, subPt, &mutedBrush);
+            int cardY = contentY + 44;
+            int detailH = mainH - cardY - 10;
+            DrawCard(g, (float)contentX, (float)cardY, (float)contentW, (float)detailH, 12, g_currentTheme.bgCard, g_currentTheme.border);
 
-        int searchY = contentY + 62;
-        // Search bar card background (The real Win32 EDIT control g_hEditModSearch sits inside!)
-        DrawCard(g, (float)contentX, (float)searchY, (float)contentW - 100, 36, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
-        DrawIconSearch(g, (float)contentX + 12, (float)searchY + 10, 16.0f, g_currentTheme.accentSecondary);
+            // Mod Title & Category
+            PointF mTitlePt((float)contentX + 24, (float)cardY + 20);
+            Font fontModLarge(&ff, 20, FontStyleBold, UnitPixel);
+            g.DrawString(g_selectedModDetail->name.c_str(), -1, &fontModLarge, mTitlePt, &whiteBrush);
 
-        // "Найти" Button
-        DrawGradientButton(g, (float)contentX + contentW - 90, (float)searchY, 90, 36, 8,
-                           g_currentTheme.accent, g_currentTheme.accentSecondary,
-                           Color(255, 255, 255, 255), Tr(L"Найти", L"Search"), fontBold, false, false);
+            DrawCard(g, (float)contentX + 24, (float)cardY + 54, 90, 22, 4, Color(40, 6, 182, 212), Color(100, 6, 182, 212));
+            RectF catRc((float)contentX + 24, (float)cardY + 54, 90, 22);
+            SolidBrush cyanBrush(Color(255, 56, 189, 248));
+            g.DrawString(g_selectedModDetail->category.c_str(), -1, &fontSmallBold, catRc, &sfCenter, &cyanBrush);
 
-        int modListY = searchY + 48;
-        int modItemH = 54;
+            PointF dlPt((float)contentX + 124, (float)cardY + 56);
+            std::wstring dlText = Tr(L"Скачиваний: ", L"Downloads: ") + g_selectedModDetail->downloads;
+            g.DrawString(dlText.c_str(), -1, &fontSmall, dlPt, &mutedBrush);
 
-        if (g_filteredMods.empty()) {
-            PointF emptyPt((float)contentX + 16, (float)modListY + 20);
-            g.DrawString(Tr(L"Моды не найдены по данному запросу.", L"No mods found matching your query."), -1, &fontRegular, emptyPt, &mutedBrush);
-        } else {
-            for (size_t i = 0; i < g_filteredMods.size() && i < 6; ++i) {
-                int mY = modListY + (int)i * (modItemH + 8);
-                DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8, g_currentTheme.bgCard, g_currentTheme.border);
+            // Full Description Box
+            DrawCard(g, (float)contentX + 24, (float)cardY + 88, (float)contentW - 48, 110, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+            RectF descRc((float)contentX + 36, (float)cardY + 98, (float)contentW - 72, 90);
+            StringFormat sfDesc;
+            sfDesc.SetTrimming(StringTrimmingWord);
+            g.DrawString(g_selectedModDetail->fullDesc.c_str(), -1, &fontRegular, descRc, &sfDesc, &whiteBrush);
 
-                PointF mNamePt((float)contentX + 16, (float)mY + 10);
-                g.DrawString(g_filteredMods[i].name.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
+            // Metadata info
+            int metaY = cardY + 214;
+            PointF vLblPt((float)contentX + 24, (float)metaY);
+            g.DrawString(Tr(L"Поддерживаемые версии Minecraft:", L"Supported Minecraft versions:"), -1, &fontBold, vLblPt, &whiteBrush);
+            PointF vValPt((float)contentX + 24, (float)metaY + 20);
+            g.DrawString(g_selectedModDetail->versions.c_str(), -1, &fontRegular, vValPt, &mutedBrush);
 
-                DrawCard(g, (float)contentX + 180, (float)mY + 10, 85, 18, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-                RectF tagRc((float)contentX + 180, (float)mY + 10, 85, 18);
-                g.DrawString(g_filteredMods[i].category.c_str(), -1, &fontSmall, tagRc, &sfCenter, &mutedBrush);
+            PointF ldrLblPt((float)contentX + 24, (float)metaY + 48);
+            g.DrawString(Tr(L"Загрузчик модов:", L"Mod Loader:"), -1, &fontBold, ldrLblPt, &whiteBrush);
+            PointF ldrValPt((float)contentX + 24, (float)metaY + 68);
+            g.DrawString(g_selectedModDetail->loader.c_str(), -1, &fontRegular, ldrValPt, &mutedBrush);
 
-                PointF mDescPt((float)contentX + 16, (float)mY + 30);
-                g.DrawString(g_filteredMods[i].description.c_str(), -1, &fontSmall, mDescPt, &mutedBrush);
+            PointF authLblPt((float)contentX + 240, (float)metaY + 48);
+            g.DrawString(Tr(L"Автор мода:", L"Author:"), -1, &fontBold, authLblPt, &whiteBrush);
+            PointF authValPt((float)contentX + 240, (float)metaY + 68);
+            g.DrawString(g_selectedModDetail->author.c_str(), -1, &fontRegular, authValPt, &mutedBrush);
 
-                int btnW = 120;
-                int btnX = contentX + contentW - btnW - 14;
-                if (g_filteredMods[i].installed) {
-                    DrawCard(g, (float)btnX, (float)mY + 12, (float)btnW, 28, 6, Color(40, 16, 185, 129), g_currentTheme.success);
-                    DrawIconCheck(g, (float)btnX + 12, (float)mY + 20, 11.0f, g_currentTheme.success);
-                    PointF instTextPt((float)btnX + 28, (float)mY + 17);
-                    SolidBrush greenText(g_currentTheme.success);
-                    g.DrawString(Tr(L"Установлен", L"Installed"), -1, &fontSmallBold, instTextPt, &greenText);
-                } else {
-                    DrawGradientButton(g, (float)btnX, (float)mY + 12, (float)btnW, 28, 6,
-                                       g_currentTheme.accent, g_currentTheme.accentSecondary,
-                                       Color(255, 255, 255, 255), Tr(L"+ Установить", L"+ Install"), fontSmallBold, false, false);
+            // Action Buttons: Install Toggle & Modrinth Link
+            int actY = cardY + detailH - 52;
+            int instBtnW = 160;
+            if (g_selectedModDetail->installed) {
+                DrawCard(g, (float)contentX + 24, (float)actY, (float)instBtnW, 36, 6, Color(40, 16, 185, 129), g_currentTheme.success);
+                DrawIconCheck(g, (float)contentX + 40, (float)actY + 12, 12.0f, g_currentTheme.success);
+                PointF instTxtPt((float)contentX + 58, (float)actY + 8);
+                SolidBrush greenText(g_currentTheme.success);
+                g.DrawString(Tr(L"Установлен", L"Installed"), -1, &fontBold, instTxtPt, &greenText);
+            } else {
+                DrawGradientButton(g, (float)contentX + 24, (float)actY, (float)instBtnW, 36, 6,
+                                   g_currentTheme.accent, g_currentTheme.accentSecondary,
+                                   Color(255, 255, 255, 255), Tr(L"+ Установить мод", L"+ Install Mod"), fontBold, false, false);
+            }
+
+            // Web link button
+            DrawCard(g, (float)contentX + 196, (float)actY, 210, 36, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+            PointF linkPt((float)contentX + 210, (float)actY + 8);
+            g.DrawString(Tr(L"🌐 Страница на Modrinth", L"🌐 Page on Modrinth"), -1, &fontSmallBold, linkPt, &whiteBrush);
+        }
+        else {
+            // ================================================================
+            // MOD CATALOG & FILTER VIEW
+            // ================================================================
+            PointF titlePt((float)contentX, (float)contentY);
+            g.DrawString(Tr(L"Каталог Modrinth v2", L"Modrinth v2 Catalog"), -1, &fontTitle, titlePt, &whiteBrush);
+
+            PointF subPt((float)contentX, (float)contentY + 28);
+            g.DrawString(Tr(L"Поиск, фильтрация и установка модов, датапаков и шейдеров",
+                            L"Search, filter and install mods, datapacks and shaders"),
+                         -1, &fontSubtitle, subPt, &mutedBrush);
+
+            // Search Bar (Win32 EDIT control g_hEditModSearch sits inside!)
+            int searchY = contentY + 58;
+            DrawCard(g, (float)contentX, (float)searchY, (float)contentW - 100, 34, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+            DrawIconSearch(g, (float)contentX + 12, (float)searchY + 9, 16.0f, g_currentTheme.accentSecondary);
+
+            DrawGradientButton(g, (float)contentX + contentW - 90, (float)searchY, 90, 34, 8,
+                               g_currentTheme.accent, g_currentTheme.accentSecondary,
+                               Color(255, 255, 255, 255), Tr(L"Найти", L"Search"), fontBold, false, false);
+
+            // Category Filter Pills
+            int filterY = searchY + 42;
+            int curFilterX = contentX;
+            for (const auto& cat : g_modCategories) {
+                bool isCatSel = (g_selectedCategory == cat);
+                int pillW = 14 + (int)cat.length() * 9 + 14;
+
+                DrawCard(g, (float)curFilterX, (float)filterY, (float)pillW, 26, 6,
+                         isCatSel ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
+                         isCatSel ? g_currentTheme.accent : g_currentTheme.border);
+
+                RectF pillRc((float)curFilterX, (float)filterY, (float)pillW, 26);
+                SolidBrush pillBrush(isCatSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+                g.DrawString(cat.c_str(), -1, &fontSmallBold, pillRc, &sfCenter, &pillBrush);
+
+                curFilterX += pillW + 8;
+            }
+
+            // Scrollable Mods List Area
+            int modListY = filterY + 36;
+            int listVisibleH = mainH - modListY - 8;
+
+            g.SetClip(RectF((float)contentX, (float)modListY, (float)contentW, (float)listVisibleH));
+
+            int modItemH = 58;
+            int totalContentH = (int)g_filteredMods.size() * (modItemH + 8);
+
+            if (g_filteredMods.empty()) {
+                PointF emptyPt((float)contentX + 16, (float)modListY + 20);
+                g.DrawString(Tr(L"Моды не найдены по данному запросу или фильтру.",
+                                L"No mods found matching this query or filter."), -1, &fontRegular, emptyPt, &mutedBrush);
+            } else {
+                for (size_t i = 0; i < g_filteredMods.size(); ++i) {
+                    int mY = modListY - g_modScrollY + (int)i * (modItemH + 8);
+                    if (mY + modItemH < modListY || mY > modListY + listVisibleH) continue;
+
+                    DrawCard(g, (float)contentX, (float)mY, (float)contentW - 12, (float)modItemH, 8, g_currentTheme.bgCard, g_currentTheme.border);
+
+                    PointF mNamePt((float)contentX + 16, (float)mY + 10);
+                    g.DrawString(g_filteredMods[i].name.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
+
+                    DrawCard(g, (float)contentX + 180, (float)mY + 10, 85, 18, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                    RectF tagRc((float)contentX + 180, (float)mY + 10, 85, 18);
+                    g.DrawString(g_filteredMods[i].category.c_str(), -1, &fontSmall, tagRc, &sfCenter, &mutedBrush);
+
+                    PointF mDescPt((float)contentX + 16, (float)mY + 32);
+                    g.DrawString(g_filteredMods[i].brief.c_str(), -1, &fontSmall, mDescPt, &mutedBrush);
+
+                    // "Подробнее" Button
+                    int detBtnW = 86;
+                    int detBtnX = contentX + contentW - 12 - 120 - detBtnW - 12;
+                    DrawCard(g, (float)detBtnX, (float)mY + 14, (float)detBtnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                    RectF detRc((float)detBtnX, (float)mY + 14, (float)detBtnW, 28);
+                    g.DrawString(Tr(L"Инфо", L"Details"), -1, &fontSmallBold, detRc, &sfCenter, &whiteBrush);
+
+                    // Install / Installed Button
+                    int btnW = 120;
+                    int btnX = contentX + contentW - 12 - btnW - 10;
+                    if (g_filteredMods[i].installed) {
+                        DrawCard(g, (float)btnX, (float)mY + 14, (float)btnW, 28, 6, Color(40, 16, 185, 129), g_currentTheme.success);
+                        DrawIconCheck(g, (float)btnX + 12, (float)mY + 22, 11.0f, g_currentTheme.success);
+                        PointF instTextPt((float)btnX + 28, (float)mY + 19);
+                        SolidBrush greenText(g_currentTheme.success);
+                        g.DrawString(Tr(L"Установлен", L"Installed"), -1, &fontSmallBold, instTextPt, &greenText);
+                    } else {
+                        DrawGradientButton(g, (float)btnX, (float)mY + 14, (float)btnW, 28, 6,
+                                           g_currentTheme.accent, g_currentTheme.accentSecondary,
+                                           Color(255, 255, 255, 255), Tr(L"+ Установить", L"+ Install"), fontSmallBold, false, false);
+                    }
                 }
+            }
+
+            g.ResetClip();
+
+            // Modern Scrollbar Track & Thumb
+            if (totalContentH > listVisibleH) {
+                int scrollTrackX = contentX + contentW - 6;
+                int scrollTrackY = modListY;
+                int scrollTrackH = listVisibleH;
+
+                SolidBrush scrollTrackBg(Color(30, 255, 255, 255));
+                g.FillRectangle(&scrollTrackBg, scrollTrackX, scrollTrackY, 4, scrollTrackH);
+
+                float viewPct = (float)listVisibleH / (float)totalContentH;
+                int thumbH = std::max(24, (int)(scrollTrackH * viewPct));
+                float maxScrollY = (float)(totalContentH - listVisibleH);
+                float scrollPct = (maxScrollY > 0) ? ((float)g_modScrollY / maxScrollY) : 0.0f;
+                int thumbY = scrollTrackY + (int)((scrollTrackH - thumbH) * scrollPct);
+
+                SolidBrush thumbBrush(g_currentTheme.accentSecondary);
+                g.FillRectangle(&thumbBrush, scrollTrackX, thumbY, 4, thumbH);
             }
         }
     }
@@ -890,32 +1117,30 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         g.DrawString(Tr(L"Восстановить", L"Restore"), -1, &fontSmallBold, rstRc, &sfCenter, &whiteBrush);
     }
     else if (g_currentTab == 4) {
-        // --- Settings Tab: RAM Draggable Slider & Custom Numeric Input ---
+        // --- Settings Tab: RAM Draggable Slider & Custom Numeric Input (Global RAM) ---
         PointF titlePt((float)contentX, (float)contentY);
         g.DrawString(Tr(L"Настройки лаунчера", L"Launcher Settings"), -1, &fontTitle, titlePt, &whiteBrush);
 
         PointF subPt((float)contentX, (float)contentY + 28);
-        g.DrawString(Tr(L"Память, автоподбор Java, оптимизация и визуальные темы",
-                        L"Memory allocation, Java scanner, optimization and themes"),
+        g.DrawString(Tr(L"Память (для всех контейнеров), автоподбор Java, оптимизация и темы",
+                        L"Memory allocation (for all containers), Java scanner and themes"),
                      -1, &fontSubtitle, subPt, &mutedBrush);
 
         int setY = contentY + 68;
 
-        // Group 1: RAM Allocation with Draggable Slider + Custom Numeric Input
+        // Group 1: RAM Allocation with Draggable Slider + Custom Numeric Input (Global for all containers!)
         DrawCard(g, (float)contentX, (float)setY, (float)contentW, 148, 10, g_currentTheme.bgCard, g_currentTheme.border);
 
         PointF ramLblPt((float)contentX + 16, (float)setY + 14);
-        g.DrawString(Tr(L"Выделенная оперативная память (RAM)", L"Allocated RAM"), -1, &fontBold, ramLblPt, &whiteBrush);
+        g.DrawString(Tr(L"Выделенная память (RAM) — для всех контейнеров", L"Allocated RAM — across all containers"), -1, &fontBold, ramLblPt, &whiteBrush);
 
         PointF ramCustomLblPt((float)contentX + 16, (float)setY + 44);
         g.DrawString(Tr(L"Кастомный ввод:", L"Custom Input:"), -1, &fontSmall, ramCustomLblPt, &mutedBrush);
 
-        // Edit box background card (g_hEditRam sits directly inside!)
         DrawCard(g, (float)contentX + 120, (float)setY + 38, 90, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
         PointF mbLblPt((float)contentX + 218, (float)setY + 44);
         g.DrawString(L"MB", -1, &fontSmallBold, mbLblPt, &mutedBrush);
 
-        // Formatted RAM representation in GB
         float gbVal = (float)g_config.memoryMb / 1024.0f;
         std::wstringstream gbs;
         gbs << std::fixed << std::setprecision(1) << gbVal << L" GB";
@@ -934,7 +1159,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         SolidBrush trackBg(g_currentTheme.bgSurfaceElevated);
         g.FillPath(&trackBg, &trackPath);
 
-        // Fill active portion of slider track
         float ramPct = (float)(g_config.memoryMb - 1024) / (float)(16384 - 1024);
         if (ramPct < 0.0f) ramPct = 0.0f;
         if (ramPct > 1.0f) ramPct = 1.0f;
@@ -1043,11 +1267,11 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
     DrawCard(g, 268, (float)dockY + 34, 164, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
 
-    // Center-Right: Version Dropdown Pill
+    // Center-Right: Version Dropdown Selector Pill
     PointF verLblPt(452, (float)dockY + 14);
     g.DrawString(Tr(L"ВЕРСИЯ ИГРЫ", L"GAME VERSION"), -1, &fontSmallBold, verLblPt, &mutedBrush);
 
-    DrawCard(g, 450, (float)dockY + 34, 110, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+    DrawCard(g, 450, (float)dockY + 34, 110, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
     PointF verValPt(462, (float)dockY + 41);
     g.DrawString(g_activeVersion.c_str(), -1, &fontBold, verValPt, &whiteBrush);
     PointF arrowPt(538, (float)dockY + 42);
@@ -1122,8 +1346,8 @@ void StartMinecraftLaunch() {
                      L"[Aether] Launching profile: " + g_activeContainerName));
         AppendLog(Tr(L"[Aether] Игрок: " + g_config.nickname,
                      L"[Aether] Player: " + g_config.nickname));
-        AppendLog(Tr(L"[Aether] Выделение RAM: " + std::to_wstring(g_config.memoryMb) + L" MB",
-                     L"[Aether] RAM: " + std::to_wstring(g_config.memoryMb) + L" MB"));
+        AppendLog(Tr(L"[Aether] Выделение RAM (глобально): " + std::to_wstring(g_config.memoryMb) + L" MB",
+                     L"[Aether] RAM (global): " + std::to_wstring(g_config.memoryMb) + L" MB"));
 
         AppendLog(Tr(L"[JavaDetector] Сканирование установленных сред выполнения Java...",
                      L"[JavaDetector] Scanning installed Java runtimes..."));
@@ -1279,7 +1503,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_hEditModSearch = CreateWindowExW(
             0, L"EDIT", L"",
             WS_CHILD | ES_AUTOHSCROLL,
-            220 + 24 + 36, 54 + 20 + 68, 500, 24,
+            220 + 24 + 36, 54 + 20 + 64, 500, 22,
             hwnd, (HMENU)IDC_EDIT_MODSEARCH, g_hInstance, NULL
         );
         SendMessageW(g_hEditModSearch, WM_SETFONT, (WPARAM)hFontNick, TRUE);
@@ -1308,15 +1532,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 FilterMods();
                 InvalidateRect(hwnd, NULL, FALSE);
             }
-            else if (id == IDC_EDIT_RAM && g_hEditRam && !g_isDraggingSlider) {
+            else if (id == IDC_EDIT_RAM && g_hEditRam && !g_isDraggingSlider && !g_suppressRamChange) {
                 WCHAR buf[32] = { 0 };
                 GetWindowTextW(g_hEditRam, buf, 31);
                 if (wcslen(buf) > 0) {
                     int val = _wtoi(buf);
                     if (val >= 512 && val <= 32768) {
-                        g_config.memoryMb = val;
-                        g_containers[g_activeContainerIndex].memoryMb = val;
-                        SaveConfig(g_config);
+                        SetGlobalRam(val);
                         InvalidateRect(hwnd, NULL, FALSE);
                     }
                 }
@@ -1341,8 +1563,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             SetWindowPos(g_hEditNick, NULL, 272, height - 84 + 38, 156, 24, SWP_NOZORDER);
         }
         if (g_hEditModSearch) {
-            SetWindowPos(g_hEditModSearch, NULL, 220 + 24 + 36, 54 + 20 + 68, width - 220 - 48 - 146, 24, SWP_NOZORDER);
-            ShowWindow(g_hEditModSearch, g_currentTab == 1 ? SW_SHOW : SW_HIDE);
+            SetWindowPos(g_hEditModSearch, NULL, 220 + 24 + 36, 54 + 20 + 64, width - 220 - 48 - 146, 22, SWP_NOZORDER);
+            ShowWindow(g_hEditModSearch, (g_currentTab == 1 && g_selectedModDetail == nullptr) ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditRam) {
             SetWindowPos(g_hEditRam, NULL, 220 + 24 + 126, 54 + 20 + 68 + 42, 80, 22, SWP_NOZORDER);
@@ -1364,6 +1586,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
+    case WM_MOUSEWHEEL: {
+        if (g_currentTab == 1 && g_selectedModDetail == nullptr) {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            g_modScrollY -= (delta / WHEEL_DELTA) * 45;
+
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            int mainH = (rc.bottom - rc.top) - 84;
+            int modListY = 54 + 20 + 58 + 42 + 36;
+            int listVisibleH = mainH - modListY - 8;
+            int totalContentH = (int)g_filteredMods.size() * (58 + 8);
+
+            int maxScrollY = std::max(0, totalContentH - listVisibleH);
+            if (g_modScrollY < 0) g_modScrollY = 0;
+            if (g_modScrollY > maxScrollY) g_modScrollY = maxScrollY;
+
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
+        break;
+    }
+
     case WM_MOUSEMOVE: {
         int x = GET_X_LPARAM(lParam);
         int y = GET_Y_LPARAM(lParam);
@@ -1373,7 +1617,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int width = rc.right - rc.left;
         int height = rc.bottom - rc.top;
 
-        // Check sidebar tab hover (5 tabs now)
+        // Check sidebar tab hover (5 tabs)
         int oldTabHover = g_hoveredTab;
         g_hoveredTab = -1;
         if (x < 220 && y >= 88 && y < 88 + 5 * 46) {
@@ -1405,10 +1649,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (mb > 16384) mb = 16384;
 
             if (g_config.memoryMb != mb) {
-                g_config.memoryMb = mb;
-                g_containers[g_activeContainerIndex].memoryMb = mb;
+                SetGlobalRam(mb);
                 if (g_hEditRam) {
+                    g_suppressRamChange = true;
                     SetWindowTextW(g_hEditRam, std::to_wstring(mb).c_str());
+                    g_suppressRamChange = false;
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
             }
@@ -1435,6 +1680,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int clickedTab = (y - 88) / 46;
             if (clickedTab >= 0 && clickedTab < 5) {
                 g_currentTab = clickedTab;
+                g_selectedModDetail = nullptr; // Reset mod detail view
 
                 if (g_hEditModSearch) {
                     ShowWindow(g_hEditModSearch, g_currentTab == 1 ? SW_SHOW : SW_HIDE);
@@ -1448,14 +1694,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
-        // Click top bar active container selector pill
+        // ====================================================================
+        // REAL SELECTION LIST FOR TOP BAR CONTAINER SELECTOR
+        // ====================================================================
         if (x >= 220 + 20 && x <= 220 + 300 && y >= 11 && y <= 43) {
-            if (g_containers.size() > 1) {
-                int nextIdx = (g_activeContainerIndex + 1) % (int)g_containers.size();
-                SetActiveContainer(nextIdx);
-            } else {
-                g_currentTab = 0; // Go to containers tab
-                InvalidateRect(hwnd, NULL, FALSE);
+            HMENU hMenu = CreatePopupMenu();
+            for (size_t i = 0; i < g_containers.size(); ++i) {
+                UINT flags = MF_STRING;
+                if ((int)i == g_activeContainerIndex) flags |= MF_CHECKED;
+                std::wstring itemText = g_containers[i].name + L" (" + g_containers[i].version + L")";
+                AppendMenuW(hMenu, flags, 3000 + (UINT)i, itemText.c_str());
+            }
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(hMenu, MF_STRING, 3999, Tr(L"+ Создать новый контейнер...", L"+ Create New Container..."));
+
+            POINT pt = { 220 + 20, 11 + 34 };
+            ClientToScreen(hwnd, &pt);
+            int cmd = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, pt.x, pt.y, hwnd, NULL);
+            DestroyMenu(hMenu);
+
+            if (cmd >= 3000 && cmd < 3000 + (int)g_containers.size()) {
+                SetActiveContainer(cmd - 3000);
+            } else if (cmd == 3999) {
+                CreateNewContainerDialog();
             }
             return 0;
         }
@@ -1480,16 +1741,33 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
-        // Click Version Selector on dock
+        // ====================================================================
+        // REAL SELECTION LIST FOR GAME VERSION
+        // ====================================================================
         if (x >= 450 && x <= 560 && y >= height - 84 + 34 && y <= height - 84 + 66) {
-            g_selectedVersionIndex = (g_selectedVersionIndex + 1) % (int)g_versions.size();
-            g_activeVersion = g_versions[g_selectedVersionIndex];
-            g_containers[g_activeContainerIndex].version = g_activeVersion;
-            g_containers[g_activeContainerIndex].name = L"Minecraft " + g_activeVersion + L" Vanilla";
-            g_activeContainerName = g_containers[g_activeContainerIndex].name;
-            g_config.version = g_activeVersion;
-            SaveConfig(g_config);
-            InvalidateRect(hwnd, NULL, FALSE);
+            HMENU hMenu = CreatePopupMenu();
+            for (size_t i = 0; i < g_versions.size(); ++i) {
+                UINT flags = MF_STRING;
+                if (g_activeVersion == g_versions[i]) flags |= MF_CHECKED;
+                AppendMenuW(hMenu, flags, 2000 + (UINT)i, g_versions[i].c_str());
+            }
+
+            POINT pt = { 450, height - 84 + 34 };
+            ClientToScreen(hwnd, &pt);
+            int cmd = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD, pt.x, pt.y, hwnd, NULL);
+            DestroyMenu(hMenu);
+
+            if (cmd >= 2000 && cmd < 2000 + (int)g_versions.size()) {
+                int selIdx = cmd - 2000;
+                g_selectedVersionIndex = selIdx;
+                g_activeVersion = g_versions[selIdx];
+                g_containers[g_activeContainerIndex].version = g_activeVersion;
+                g_containers[g_activeContainerIndex].name = L"Minecraft " + g_activeVersion + L" Vanilla";
+                g_activeContainerName = g_containers[g_activeContainerIndex].name;
+                g_config.version = g_activeVersion;
+                SaveConfig(g_config);
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
             return 0;
         }
 
@@ -1503,15 +1781,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int addBtnW = 180;
             int addBtnX = contentX + contentW - addBtnW;
             if (x >= addBtnX && x <= addBtnX + addBtnW && y >= contentY && y <= contentY + 34) {
-                // Add a new profile
-                std::wstring newId = L"c-" + std::to_wstring(g_containers.size() + 1);
-                std::wstring newName = (g_containers.size() == 1) ? L"Fabric 1.20.4 Performance" : L"Forge 1.16.5 Modded";
-                std::wstring newVer = (g_containers.size() == 1) ? L"1.20.4" : L"1.16.5";
-                std::wstring newLdr = (g_containers.size() == 1) ? L"fabric" : L"forge";
-
-                g_containers.push_back({ newId, newName, newVer, newLdr, 4096 });
-                SetActiveContainer((int)g_containers.size() - 1);
-                AppendLog(Tr(L"[Aether] Создан новый профиль: " + newName, L"[Aether] Created new container: " + newName));
+                CreateNewContainerDialog();
                 return 0;
             }
 
@@ -1533,11 +1803,49 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (g_currentTab == 1) {
             int contentX = 220 + 24;
             int contentW = width - 220 - 48;
-            int searchY = 54 + 20 + 62;
+
+            if (g_selectedModDetail != nullptr) {
+                // Mod Detail View Interaction: Back button
+                if (x >= contentX && x <= contentX + 150 && y >= 54 + 20 && y <= 54 + 20 + 30) {
+                    g_selectedModDetail = nullptr;
+                    if (g_hEditModSearch) {
+                        ShowWindow(g_hEditModSearch, SW_SHOW);
+                    }
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+
+                int cardY = 54 + 20 + 44;
+                int mainH = (rc.bottom - rc.top) - 84;
+                int detailH = mainH - cardY - 10;
+                int actY = cardY + detailH - 52;
+
+                // Click Install / Uninstall Button inside Details
+                if (x >= contentX + 24 && x <= contentX + 24 + 160 && y >= actY && y <= actY + 36) {
+                    for (auto& m : g_allMods) {
+                        if (m.name == g_selectedModDetail->name) {
+                            m.installed = !m.installed;
+                            break;
+                        }
+                    }
+                    FilterMods();
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+
+                // Click Web Link to Modrinth
+                if (x >= contentX + 196 && x <= contentX + 196 + 210 && y >= actY && y <= actY + 36) {
+                    ShellExecuteW(NULL, L"open", g_selectedModDetail->url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+                    return 0;
+                }
+                return 0;
+            }
+
+            int searchY = 54 + 20 + 58;
 
             // Click "Найти" button
             int findBtnX = contentX + contentW - 90;
-            if (x >= findBtnX && x <= findBtnX + 90 && y >= searchY && y <= searchY + 36) {
+            if (x >= findBtnX && x <= findBtnX + 90 && y >= searchY && y <= searchY + 34) {
                 if (g_hEditModSearch) {
                     WCHAR buf[128] = { 0 };
                     GetWindowTextW(g_hEditModSearch, buf, 127);
@@ -1548,39 +1856,69 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            // Click Mod Install / Uninstall Button
-            int modListY = searchY + 48;
-            int modItemH = 54;
-            int btnW = 120;
-            int btnX = contentX + contentW - btnW - 14;
+            // Click Category Filter Pills
+            int filterY = searchY + 42;
+            int curFilterX = contentX;
+            for (const auto& cat : g_modCategories) {
+                int pillW = 14 + (int)cat.length() * 9 + 14;
+                if (x >= curFilterX && x <= curFilterX + pillW && y >= filterY && y <= filterY + 26) {
+                    g_selectedCategory = cat;
+                    FilterMods();
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+                curFilterX += pillW + 8;
+            }
 
-            for (size_t i = 0; i < g_filteredMods.size() && i < 6; ++i) {
-                int mY = modListY + (int)i * (modItemH + 8);
-                if (x >= btnX && x <= btnX + btnW && y >= mY + 12 && y <= mY + 40) {
+            // Click Mod List Item: "Инфо", "Установить" or Card Body
+            int modListY = filterY + 36;
+            int listVisibleH = (height - 84) - modListY - 8;
+            int modItemH = 58;
+
+            for (size_t i = 0; i < g_filteredMods.size(); ++i) {
+                int mY = modListY - g_modScrollY + (int)i * (modItemH + 8);
+                if (mY + modItemH < modListY || mY > modListY + listVisibleH) continue;
+
+                int detBtnW = 86;
+                int detBtnX = contentX + contentW - 12 - 120 - detBtnW - 12;
+
+                int btnW = 120;
+                int btnX = contentX + contentW - 12 - btnW - 10;
+
+                // Click Install Button
+                if (x >= btnX && x <= btnX + btnW && y >= mY + 14 && y <= mY + 42) {
                     g_filteredMods[i].installed = !g_filteredMods[i].installed;
-                    // Sync back to master list
                     for (auto& masterMod : g_allMods) {
                         if (masterMod.name == g_filteredMods[i].name) {
                             masterMod.installed = g_filteredMods[i].installed;
                             break;
                         }
                     }
-
-                    AppendLog(Tr(L"[Modrinth] Мод " + g_filteredMods[i].name + (g_filteredMods[i].installed ? L" успешно установлен." : L" отключен."),
+                    AppendLog(Tr(L"[Modrinth] Мод " + g_filteredMods[i].name + (g_filteredMods[i].installed ? L" установлен." : L" отключен."),
                                  L"[Modrinth] Mod " + g_filteredMods[i].name + (g_filteredMods[i].installed ? L" installed." : L" disabled.")));
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+
+                // Click "Инфо" or Card Body to open Description
+                if ((x >= detBtnX && x <= detBtnX + detBtnW && y >= mY + 14 && y <= mY + 42) ||
+                    (x >= contentX && x < detBtnX && y >= mY && y <= mY + modItemH)) {
+                    g_selectedModDetail = &g_filteredMods[i];
+                    if (g_hEditModSearch) {
+                        ShowWindow(g_hEditModSearch, SW_HIDE);
+                    }
                     InvalidateRect(hwnd, NULL, FALSE);
                     return 0;
                 }
             }
         }
 
-        // --- Tab 4: Settings Tab (RAM Slider Drag & Presets) ---
+        // --- Tab 4: Settings Tab (RAM Slider Drag & Presets - Global RAM!) ---
         if (g_currentTab == 4) {
             int contentX = 220 + 24;
             int contentW = width - 220 - 48;
             int setY = 54 + 20 + 68;
 
-            // Check click on RAM slider track
             int sliderX = contentX + 16;
             int sliderY = setY + 74;
             int sliderW = contentW - 32;
@@ -1598,34 +1936,34 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (mb < 1024) mb = 1024;
                 if (mb > 16384) mb = 16384;
 
-                g_config.memoryMb = mb;
-                g_containers[g_activeContainerIndex].memoryMb = mb;
+                SetGlobalRam(mb);
                 if (g_hEditRam) {
+                    g_suppressRamChange = true;
                     SetWindowTextW(g_hEditRam, std::to_wstring(mb).c_str());
+                    g_suppressRamChange = false;
                 }
-                SaveConfig(g_config);
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
 
-            // Check click on quick RAM presets
+            // Click quick RAM presets
             int pillStartX = contentX + 16;
             int pillY = setY + 104;
             for (size_t i = 0; i < g_ramPresets.size(); ++i) {
                 int pX = pillStartX + (int)i * 72;
                 if (x >= pX && x <= pX + 62 && y >= pillY && y <= pillY + 28) {
-                    g_config.memoryMb = g_ramPresets[i];
-                    g_containers[g_activeContainerIndex].memoryMb = g_config.memoryMb;
+                    SetGlobalRam(g_ramPresets[i]);
                     if (g_hEditRam) {
+                        g_suppressRamChange = true;
                         SetWindowTextW(g_hEditRam, std::to_wstring(g_config.memoryMb).c_str());
+                        g_suppressRamChange = false;
                     }
-                    SaveConfig(g_config);
                     InvalidateRect(hwnd, NULL, FALSE);
                     return 0;
                 }
             }
 
-            // Check click on Theme presets
+            // Click Theme presets
             int themeY = setY + 162;
             int thmStartX = contentX + 16;
             for (size_t i = 0; i < g_themes.size(); ++i) {
@@ -1733,7 +2071,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         WS_EX_APPWINDOW,
         L"AetherLauncherNativeGDI",
         L"Aether Launcher (Native Win32 C++)",
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         startX, startY, winWidth, winHeight,
         NULL, NULL, hInstance, NULL
     );
