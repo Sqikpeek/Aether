@@ -99,4 +99,18 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   assert.ok(launcherMain.includes('DwmSetWindowAttribute'), 'Launcher must call DwmSetWindowAttribute for dark titlebar');
   assert.ok(launcherMain.includes('DWMWA_USE_IMMERSIVE_DARK_MODE') || launcherMain.includes('20'), 'Launcher must request DWM dark mode attribute');
   assert.ok(launcherMain.includes('DWMWA_CAPTION_COLOR') || launcherMain.includes('35'), 'Launcher must set caption color to match dark theme');
+
+  // Verify "Native C++ Win32" label is removed as requested by user
+  assert.ok(!launcherMain.includes('L"Native C++ Win32"'), 'Launcher must not display "Native C++ Win32" label');
+
+  // Verify full Java/JVM configuration (custom flags, GC presets, custom Java path)
+  assert.ok(launcherMain.includes('IDC_EDIT_JVMARGS') && launcherMain.includes('g_hEditJvmArgs'), 'Launcher must provide custom JVM arguments input field');
+  assert.ok(configHpp.includes('customJvmArgs'), 'Config must persist custom JVM arguments');
+  assert.ok(launcherMain.includes('PRESET_AIKAR') && launcherMain.includes('PRESET_ZGC') && launcherMain.includes('PRESET_SHENANDOAH'), 'Launcher must provide Aikar, ZGC, and Shenandoah GC presets');
+  assert.ok(launcherMain.includes('IDC_EDIT_JAVAPATH') && launcherMain.includes('g_hEditJavaPath'), 'Launcher must provide custom Java runtime path input field');
+  assert.ok(launcherMain.includes('IDC_EDIT_GAMEWIDTH') && launcherMain.includes('IDC_EDIT_GAMEHEIGHT'), 'Launcher must provide game window resolution inputs');
+
+  // Verify Modrinth download capability for ANY mod
+  assert.ok(launcherMain.includes('DownloadModrinthMod') && launcherMain.includes('TriggerModDownload'), 'Launcher must support downloading any mod from Modrinth');
+  assert.ok(launcherMain.includes('Скачать любой мод'), 'Launcher must provide quick download button for any Modrinth mod');
 });

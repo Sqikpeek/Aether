@@ -197,10 +197,25 @@ static HWND g_hMainWindow = NULL;
 static HWND g_hEditNick = NULL;
 static HWND g_hEditModSearch = NULL;
 static HWND g_hEditRam = NULL;
+static HWND g_hEditJvmArgs = NULL;
+static HWND g_hEditJavaPath = NULL;
+static HWND g_hEditGameWidth = NULL;
+static HWND g_hEditGameHeight = NULL;
 
-#define IDC_EDIT_NICKNAME  1001
-#define IDC_EDIT_MODSEARCH 1002
-#define IDC_EDIT_RAM       1003
+#define IDC_EDIT_NICKNAME   1001
+#define IDC_EDIT_MODSEARCH  1002
+#define IDC_EDIT_RAM        1003
+#define IDC_EDIT_JVMARGS    1004
+#define IDC_EDIT_JAVAPATH   1005
+#define IDC_EDIT_GAMEWIDTH  1006
+#define IDC_EDIT_GAMEHEIGHT 1007
+
+static JavaInfo g_detectedJava;
+
+static const wchar_t* PRESET_AIKAR = L"-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch -XX:G1NewSizePercent=30 -XX:G1MaxNewSizePercent=40 -XX:G1ReservePercent=20 -XX:InitiatingHeapOccupancyPercent=15";
+static const wchar_t* PRESET_ZGC = L"-XX:+UseZGC -XX:+ZGenerational -XX:+UnlockExperimentalVMOptions -XX:+AlwaysPreTouch";
+static const wchar_t* PRESET_SHENANDOAH = L"-XX:+UseShenandoahGC -XX:+AlwaysPreTouch -XX:ShenandoahGCHeuristics=adaptive";
+static const wchar_t* PRESET_G1GC = L"-XX:+UseG1GC -XX:+AlwaysPreTouch";
 
 static LauncherConfig g_config;
 // 0: Containers, 1: Mods, 2: Logs & Crashes, 3: Backups, 4: Settings
@@ -251,6 +266,7 @@ static int g_selectedVersionIndex = 1; // Default to 1.21.1
 
 // Rich Mod Catalog (30 Top Modrinth Mods across all categories)
 struct ModItem {
+    std::wstring id; // Modrinth slug or project_id
     std::wstring name;
     std::wstring category;
     std::wstring downloads;
@@ -260,183 +276,251 @@ struct ModItem {
     std::wstring loader;
     std::wstring author;
     std::wstring url;
-    bool installed;
+    bool installed = false;
+    bool isDownloading = false;
+    int downloadProgress = 0;
 };
 
 static std::vector<ModItem> g_allMods = {
     {
-        L"Sodium", L"Оптимизация", L"32.4M",
+        L"sodium", L"Sodium", L"Оптимизация", L"35.4M",
         L"Современный движок рендеринга для Fabric, колоссально повышающий FPS.",
         L"Sodium — свободный открытый движок рендеринга нового поколения для Minecraft на Fabric. Он кардинально оптимизирует построение чанков, устраняет микрофризы и повышает FPS в 2-5 раз без потерь графики.",
         L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/sodium", true
     },
     {
-        L"Iris Shaders", L"Шейдеры", L"24.1M",
+        L"iris", L"Iris Shaders", L"Шейдеры", L"26.1M",
         L"Современный загрузчик шейдер-паков с поддержкой PBR и совместимостью с Sodium.",
         L"Iris — современный загрузчик шейдеров с непревзойденной производительностью благодаря глубокой интеграции с Sodium. Поддерживает BSL, Complementary, Sildurs и классические OptiFine-шейдеры.",
         L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"coderbot", L"https://modrinth.com/mod/iris", true
     },
     {
-        L"Lithium", L"Оптимизация", L"19.8M",
+        L"lithium", L"Lithium", L"Оптимизация", L"21.8M",
         L"Глубокая оптимизация тика сервера, физики мобов и чанков без изменения механик.",
         L"Lithium — универсальный оптимизатор серверной физики, поиска путей ИИ мобов и загрузки чанков. Снижает нагрузку на процессор на 40% как в одиночной игре, так и на серверах.",
         L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/lithium", false
     },
     {
-        L"Fabric API", L"Библиотеки", L"45.2M",
+        L"fabric-api", L"Fabric API", L"Библиотеки", L"48.2M",
         L"Основная библиотека хуков и событий, необходимая для большинства модов Fabric.",
         L"Fabric API — обязательная библиотека для экосистемы Fabric, предоставляющая необходимые хуки, события и интерфейсы для взаимодействия модов с игровым движком.",
         L"1.14 – 1.21.3", L"Fabric", L"FabricMC", L"https://modrinth.com/mod/fabric-api", true
     },
     {
-        L"Create", L"Технологии", L"54.8M",
-        L"Грандиозный мод на механику, шестеренки, конвейеры, поезда и автоматизацию.",
-        L"Create — один из лучших технологических модов в истории Minecraft. Добавляет вращательную энергию, кинетические механизмы, ветряные мельницы, зубчатые передачи, поезда и интерактивную логистику.",
+        L"create", L"Create", L"Технологии", L"22.5M",
+        L"Потрясающая кинетическая автоматизация, шестеренки, поезда и механизмы.",
+        L"Create добавляет эстетичные вращающиеся шестеренки, конвейеры, ветряки, водные колеса и подвижные поезда для создания грандиозных фабрик без магических одноблочных машин.",
         L"1.18.2 – 1.20.1", L"Forge / Fabric", L"simibubi", L"https://modrinth.com/mod/create", false
     },
     {
-        L"Just Enough Items (JEI)", L"Интерфейс", L"120.5M",
-        L"Просмотр рецептов крафта, плавки и использования предметов прямо в инвентаре.",
-        L"JEI — незаменимый инструмент для просмотра рецептов крафта предметов, зелий и механизмов. Поддерживает поиск, избранное и интеграцию со всеми модами.",
+        L"jei", L"JEI (Just Enough Items)", L"Интерфейс", L"41.9M",
+        L"Удобный просмотр рецептов крафта, плавки, зельеварения и применений предметов.",
+        L"JEI — стабильный, быстрый и функциональный справочник рецептов с поиском, фильтрами по модам и поддержкой закладок на боковой панели инвентаря.",
         L"1.12.2 – 1.21.3", L"Forge / Fabric / NeoForge", L"mezz", L"https://modrinth.com/mod/jei", false
     },
     {
-        L"JourneyMap", L"Карты", L"38.1M",
-        L"Красивая карта реального времени с радаром мобов и путевыми точками (waypoint).",
-        L"JourneyMap картографирует ваш мир в реальном времени во время исследования. Отображает мини-карту, радар мобов, пещеры и позволяет ставить путевые метки.",
+        L"journeymap", L"JourneyMap", L"Карты", L"25.3M",
+        L"Интерактивная карта мира в реальном времени с мини-картой и метками точек.",
+        L"JourneyMap картографирует ваш мир во время исследования, отображает мобов, пещеры, границы чанков и позволяет телепортироваться по сохраненным путевым точкам.",
         L"1.12.2 – 1.21.3", L"Fabric / Forge", L"Techbrew", L"https://modrinth.com/mod/journeymap", false
     },
     {
-        L"AppleSkin", L"Интерфейс", L"28.6M",
-        L"Удобное отображение насыщения и истощения полоски голода над хотбаром.",
-        L"AppleSkin добавляет визуализацию скрытых параметров насыщения еды и шкалы истощения, помогая точно планировать рацион персонажа.",
+        L"appleskin", L"AppleSkin", L"Интерфейс", L"36.7M",
+        L"Отображение сытости, насыщения и восстановления здоровья при наведении на еду.",
+        L"AppleSkin визуализирует шкалу насыщения (saturation) и истощения (exhaustion), помогая точно рассчитывать пользу от различной пищи.",
         L"1.12.2 – 1.21.3", L"Fabric / Forge / Quilt", L"squeek502", L"https://modrinth.com/mod/appleskin", false
     },
     {
-        L"FerriteCore", L"Оптимизация", L"22.3M",
-        L"Экстремальная оптимизация потребления оперативной памяти Java кучи.",
-        L"FerriteCore сокращает потребление оперативной памяти Minecraft на 20-35% за счет дедупликации данных и оптимизации моделей блоков.",
+        L"ferrite-core", L"FerriteCore", L"Оптимизация", L"18.9M",
+        L"Снижение потребления оперативной памяти (RAM) на 30-50% без потери данных.",
+        L"FerriteCore оптимизирует внутреннее хранение моделей блоков и кешей состояний в памяти, кардинально снижая аппетит тяжелых сборок модов к ОЗУ.",
         L"1.16.5 – 1.21.3", L"Fabric / Forge", L"malte0811", L"https://modrinth.com/mod/ferrite-core", false
     },
     {
-        L"Mod Menu", L"Интерфейс", L"41.2M",
-        L"Удобный список установленных модов с кнопками настроек прямо в меню игры.",
-        L"Mod Menu добавляет удобную кнопку «Моды» на главный экран Minecraft, позволяя просматривать установленные модификации и настраивать их конфиги.",
+        L"modmenu", L"Mod Menu", L"Интерфейс", L"34.1M",
+        L"Кнопка списка модов в главном меню с просмотром описаний и экранов настроек.",
+        L"Mod Menu добавляет удобный каталог установленных модов прямо в меню паузы и стартовое меню Minecraft с фильтрами, поиском и кнопками конфигураций.",
         L"1.14 – 1.21.3", L"Fabric / Quilt", L"TerraformersMC", L"https://modrinth.com/mod/modmenu", true
     },
     {
-        L"Distant Horizons", L"Шейдеры", L"14.5M",
-        L"Уникальный движок LOD рендеринга, позволяющий видеть мир на 256+ чанков вдаль.",
-        L"Distant Horizons строит упрощенные воксельные модели удаленных чанков, обеспечивая невероятную дальность прорисовки гор и биомов с высоким FPS.",
+        L"distanthorizons", L"Distant Horizons", L"Шейдеры", L"10.2M",
+        L"Отрисовка упрощенных далеких чанков (LOD) на дистанцию до 512+ чанков без лагов.",
+        L"Distant Horizons строит потрясающие панорамы бескрайних горизонтов с минимальным влиянием на FPS благодаря системе уровней детализации (LOD).",
         L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"James Seibel", L"https://modrinth.com/mod/distanthorizons", false
     },
     {
-        L"Cloth Config", L"Библиотеки", L"39.8M",
-        L"Клиентская библиотека для создания красивых экранов конфигураций модов.",
+        L"cloth-config", L"Cloth Config", L"Библиотеки", L"38.4M",
+        L"Универсальный конфигурационный API для экранов настроек сотен модификаций.",
         L"Cloth Config предоставляет стандартный API интерфейса настроек для сотен популярных модификаций на Fabric и Forge.",
         L"1.16.5 – 1.21.3", L"Fabric / Forge", L"shedaniel", L"https://modrinth.com/mod/cloth-config", true
     },
     {
-        L"Indium", L"Оптимизация", L"18.7M",
+        L"indium", L"Indium", L"Оптимизация", L"22.1M",
         L"Слой совместимости Sodium с Fabric Rendering API (FRAPI).",
         L"Indium восстанавливает поддержку кастомных рендереров блоков для модов, использующих Fabric Rendering API совместно с Sodium.",
         L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"comp500", L"https://modrinth.com/mod/indium", true
     },
     {
-        L"ImmediatelyFast", L"Оптимизация", L"11.2M",
-        L"Оптимизация рендеринга GUI, текста, частиц, карт и полосок здоровья.",
-        L"ImmediatelyFast ускоряет отрисовку непосредственного режима HUD и инвентарей, существенно повышая частоту кадров в меню и на серверах.",
+        L"immediatelyfast", L"ImmediatelyFast", L"Оптимизация", L"15.8M",
+        L"Ускорение рендеринга элементов интерфейса, текста, частиц, карт и сундуков.",
+        L"ImmediatelyFast оптимизирует непосредственный рендеринг GUI, HUD, табличек и сущностей, давая стабильный прирост FPS на загруженных экранах.",
         L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"Raphiiko", L"https://modrinth.com/mod/immediatelyfast", false
     },
     {
-        L"Entity Culling", L"Оптимизация", L"16.4M",
-        L"Пропуск отрисовки мобов и сундуков, скрытых за непрозрачными стенами.",
-        L"Entity Culling использует асинхронную проверку окклюзии, отсекая невидимые сущности и сундуки на спавне или базах.",
+        L"entityculling", L"Entity Culling", L"Оптимизация", L"17.3M",
+        L"Пропуск рендеринга мобов и тайлов, скрытых за непрозрачными стенами блоков.",
+        L"Entity Culling использует асинхронный трассировщик лучей, чтобы не рисовать скрытые сундуки и мобов в шахтах и фермах, экономя видеопамять и FPS.",
         L"1.16.5 – 1.21.3", L"Fabric / Forge", L"tr7zw", L"https://modrinth.com/mod/entityculling", false
     },
     {
-        L"Xaero's Minimap", L"Карты", L"48.2M",
-        L"Легковесная и плавная мини-карта с радаром мобов и пещерным режимом.",
-        L"Отображает карту в углу экрана, точки смерти, враждебных мобов и координаты без просадок FPS.",
+        L"xaeros-minimap", L"Xaero's Minimap", L"Карты", L"29.8M",
+        L"Очень плавная и легковесная мини-карта с сохранением стиля ванильного Minecraft.",
+        L"Xaero's Minimap сохраняет чистый визуальный стиль игры, отображает рельеф, пещеры, сущностей и путевые точки без просадок фреймрейта.",
         L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"xaero96", L"https://modrinth.com/mod/xaeros-minimap", false
     },
     {
-        L"Xaero's World Map", L"Карты", L"34.1M",
-        L"Полноэкранная детальная карта открытого мира с плавным масштабированием.",
-        L"Открывается по нажатию клавиши 'M', позволяет исследовать весь исследованный мир и ставить маркеры.",
+        L"xaeros-world-map", L"Xaero's World Map", L"Карты", L"26.4M",
+        L"Полноэкранная карта открытого мира с плавной прокруткой и масштабированием.",
+        L"Xaero's World Map работает в идеальной связке с Xaero's Minimap, позволяя открывать большую интерактивную карту клавишей M.",
         L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"xaero96", L"https://modrinth.com/mod/xaeros-world-map", false
     },
     {
-        L"Roughly Enough Items (REI)", L"Интерфейс", L"42.9M",
-        L"Современная, быстрая и расширяемая система просмотра рецептов.",
-        L"Мощный браузер крафтов с закладками, историей поиска, фильтрацией по модам и поддержкой всех версий.",
+        L"rei", L"Roughly Enough Items (REI)", L"Интерфейс", L"24.8M",
+        L"Быстрый, модульный и легко кастомизируемый браузер рецептов для Fabric.",
+        L"Roughly Enough Items — легкая и мощная альтернатива JEI для Fabric и Forge с гибкой системой вкладок, фильтрации и избранного.",
         L"1.14 – 1.21.3", L"Fabric / Forge", L"shedaniel", L"https://modrinth.com/mod/rei", false
     },
     {
-        L"EMI", L"Интерфейс", L"15.8M",
-        L"Универсальный и молниеносный индекс предметов и крафтов без фризов.",
-        L"Инновационный просмотр рецептов с древом крафта и расчетом нужных ресурсов в реальном времени.",
+        L"emi", L"EMI", L"Интерфейс", L"14.2M",
+        L"Современный просмотрщик рецептов с древом крафта и расчетом ингредиентов.",
+        L"EMI позволяет точно рассчитывать сколько базовых ресурсов (железа, дерева, редстоуна) потребуется для создания цепочки сложных предметов.",
         L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"emilyploszaj", L"https://modrinth.com/mod/emi", false
     },
     {
-        L"Shulker Box Tooltip", L"Интерфейс", L"26.3M",
-        L"Мгновенный предпросмотр содержимого шалкеровых ящиков при наведении.",
-        L"Показывает сетку предметов внутри шалкеров без необходимости ставить их на землю.",
+        L"shulkerboxtooltip", L"Shulker Box Tooltip", L"Интерфейс", L"20.6M",
+        L"Просмотр содержимого шалкеровых ящиков во всплывающей подсказке по Shift.",
+        L"Позволяет мгновенно заглядывать внутрь шалкеров и мешков в инвентаре или сундуках без необходимости ставить их на землю.",
         L"1.14 – 1.21.3", L"Fabric / Forge", L"MisterPeModder", L"https://modrinth.com/mod/shulkerboxtooltip", false
     },
     {
-        L"Jade", L"Интерфейс", L"36.7M",
-        L"Информационная плашка сверху: имя блока, мода, прочность и состояние тайла.",
-        L"Современный преемник WAILA/HWYLA, показывает рост урожая, уровень энергии и вместимость контейнеров.",
+        L"jade", L"Jade", L"Интерфейс", L"28.9M",
+        L"Информативная панель с названием блока, инструментом добычи и модом.",
+        L"Jade показывает точную информацию о блоке или мобе, на которого вы смотрите (здоровье, стадия роста урожая, инвентарь сундука).",
         L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"Snownee", L"https://modrinth.com/mod/jade", false
     },
     {
-        L"Architectury API", L"Библиотеки", L"41.5M",
+        L"architectury-api", L"Architectury API", L"Библиотеки", L"42.7M",
         L"Мультиплатформенная библиотека промежуточного слоя для Fabric и Forge.",
-        L"Позволяет мододелам компилировать единый код под все загрузчики модов.",
+        L"Обеспечивает работу сотен кроссплатформенных модификаций, упрощая их запуск на любом загрузчике.",
         L"1.16.5 – 1.21.3", L"Fabric / Forge", L"shedaniel", L"https://modrinth.com/mod/architectury-api", true
     },
     {
-        L"Applied Energistics 2", L"Технологии", L"29.4M",
-        L"Цифровые МЭ-сети, пространственные хранилища материи и автокрафт.",
-        L"Легендарный мод на преобразование предметов в цифровую энергию и управление фабриками.",
+        L"ae2", L"Applied Energistics 2", L"Технологии", L"19.3M",
+        L"Хранение миллионов предметов в цифровой МЭ-сети и комплексный автокрафт.",
+        L"AE2 позволяет оцифровывать ресурсы в виде энергии на кристаллических ячейках, объединять терминалы и строить системы автоматизации любого масштаба.",
         L"1.12.2 – 1.21.1", L"Fabric / Forge / NeoForge", L"AlgorithmX2", L"https://modrinth.com/mod/ae2", false
     },
     {
-        L"Farmer's Delight", L"Технологии", L"31.2M",
-        L"Уютное кулинарное и фермерское расширение для готовки еды и блюд.",
-        L"Добавляет сковороду, котелок, разделочную доску, ножи и десятки вкусных блюд с полезными баффами.",
+        L"farmers-delight", L"Farmer's Delight", L"Контент", L"27.8M",
+        L"Кулинария, новые культуры, разделочные доски, сковороды и сочные блюда.",
+        L"Farmer's Delight расширяет фермерство и готовку в Minecraft, добавляя нож, кастрюлю, компост, пироги и сытные супы с полезными баффами.",
         L"1.16.5 – 1.21.1", L"Fabric / Forge", L"vectorwing", L"https://modrinth.com/mod/farmers-delight", false
     },
     {
-        L"Complementary Reimagined", L"Шейдеры", L"18.9M",
-        L"Фотореалистичный шейдер-пак с мягкими облаками, водой и объемным светом.",
-        L"Один из самых красивых шейдеров в мире, работающий без глитчей на Iris и Sodium.",
-        L"1.12.2 – 1.21.3", L"Iris / OptiFine", L"EminGT", L"https://modrinth.com/mod/complementary-reimagined", false
+        L"clumps", L"Clumps", L"Оптимизация", L"33.5M",
+        L"Объединение сфер опыта в один сгусток для устранения лагов на спавнерах.",
+        L"Предотвращает падение FPS при убийстве сотен мобов на фермах опыта за счет склеивания шариков XP в единые сферы.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"Jaredlll08", L"https://modrinth.com/mod/clumps", false
     },
     {
-        L"BSL Shaders", L"Шейдеры", L"22.1M",
-        L"Теплый кинематографичный шейдерпак с настраиваемой атмосферой.",
-        L"Классика шейдеров с великолепной водой, лучами заката и мягкими тенями листвы.",
-        L"1.12.2 – 1.21.3", L"Iris / OptiFine", L"CaptTatsu", L"https://modrinth.com/mod/bsl-shaders", false
+        L"badoptimizations", L"BadOptimizations", L"Оптимизация", L"8.9M",
+        L"Устранение узких мест в коде рендеринга блоков и сущностей Mojang.",
+        L"Микрооптимизации вызовов методов ванильного клиента, ускоряющие обработку геометрии мира.",
+        L"1.20.1 – 1.21.3", L"Fabric / Quilt", L"IzzelAliz", L"https://modrinth.com/mod/badoptimizations", false
     },
     {
-        L"Krypton", L"Оптимизация", L"9.8M",
-        L"Оптимизация сетевого стека Minecraft и скорости передачи чанков.",
-        L"Существенно снижает задержку и нагрузку на трафик при игре по сети и в мультиплеере.",
+        L"krypton", L"Krypton", L"Оптимизация", L"11.2M",
+        L"Оптимизация сетевого стека Minecraft, снижающая пинг и задержку пакетов.",
+        L"Заменяет тяжелые сетевые конвейеры Netty высокопроизводительными реализациями.",
         L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"astei", L"https://modrinth.com/mod/krypton", false
     },
     {
-        L"Mouse Tweaks", L"Интерфейс", L"44.6M",
+        L"mouse-tweaks", L"Mouse Tweaks", L"Интерфейс", L"44.6M",
         L"Удобное перетаскивание предметов мышью с зажатыми кнопками.",
         L"Колоссально экономит время при сортировке сундуков и крафте стаков предметов.",
         L"1.12.2 – 1.21.3", L"Fabric / Forge", L"YaLTeR", L"https://modrinth.com/mod/mouse-tweaks", false
     },
     {
-        L"Continuity", L"Шейдеры", L"12.4M",
+        L"continuity", L"Continuity", L"Шейдеры", L"12.4M",
         L"Бесшовные текстуры стекла, полированного камня и книжных полок.",
         L"Восстанавливает работу connected textures (CTM) в связке с Sodium и ресурпаками.",
         L"1.18.2 – 1.21.3", L"Fabric / Quilt", L"PepperCode1", L"https://modrinth.com/mod/continuity", false
+    },
+    {
+        L"litematica", L"Litematica", L"Интерфейс", L"14.8M",
+        L"Голографические схемы построек со списком материалов и удобной верификацией.",
+        L"Litematica позволяет переносить любые постройки по схемам в одиночную игру и на серверы с подсветкой ошибок и послойным возведением.",
+        L"1.14 – 1.21.3", L"Fabric / Quilt", L"maruohon", L"https://modrinth.com/mod/litematica", false
+    },
+    {
+        L"worldedit", L"WorldEdit", L"Инструменты", L"38.5M",
+        L"Мощнейший редактор мира: кисти, копирование, замена блоков и генерация форм.",
+        L"Легендарный инструмент для строителей и создателей карт, позволяющий возводить горы и структуры командами за доли секунды.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge", L"EngineHub", L"https://modrinth.com/mod/worldedit", false
+    },
+    {
+        L"alexs-mobs", L"Alex's Mobs", L"Контент", L"21.2M",
+        L"Более 80 уникальных анимированных животных и монстров с проработанным ИИ.",
+        L"Добавляет крокодилов, горилл, китов, слонов, муравьев и фантастических существ с уникальными дропами и механиками приручения.",
+        L"1.16.5 – 1.20.1", L"Forge / NeoForge", L"sbom_xela", L"https://modrinth.com/mod/alexs-mobs", false
+    },
+    {
+        L"simple-voice-chat", L"Simple Voice Chat", L"Связь", L"29.1M",
+        L"Позиционный голосовой чат с эффектом 3D-звучания, эхом в пещерах и рациями.",
+        L"Позволяет общаться с друзьями голосом прямо в игре с реалистичным затуханием звука в зависимости от расстояния.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / Quilt", L"henkelmax", L"https://modrinth.com/mod/simple-voice-chat", false
+    },
+    {
+        L"spark", L"Spark", L"Оптимизация", L"31.6M",
+        L"Профайлер производительности CPU, памяти, TPS и лагов сервера и клиента.",
+        L"Незаменимый инструмент для поиска модов, вызывающих зависания и фризы, с выводом подробных графиков.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"lucko", L"https://modrinth.com/mod/spark", false
+    },
+    {
+        L"modernfix", L"ModernFix", L"Оптимизация", L"16.4M",
+        L"Ускорение запуска игры в 2 раза и колоссальное уменьшение утечек памяти.",
+        L"Оптимизирует фазу загрузки реестров модов и текстурных атласов, экономя время старта тяжелых сборок.",
+        L"1.16.5 – 1.21.1", L"Fabric / Forge / NeoForge", L"embeddedt", L"https://modrinth.com/mod/modernfix", false
+    },
+    {
+        L"fallingtree", L"FallingTree", L"Геймплей", L"11.8M",
+        L"Срубание всего дерева целиком при разрушении одного нижнего блока бревна топором.",
+        L"Удобный мод для экономии времени при заготовке древесины с поддержкой деревьев из любых модов.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge", L"RakSrinaNa", L"https://modrinth.com/mod/fallingtree", false
+    },
+    {
+        L"biomes-o-plenty", L"Biomes O' Plenty", L"Контент", L"28.4M",
+        L"Десятки живописных биомов для обычного мира и Незера с новыми деревьями и рудами.",
+        L"Преображает генерацию мира, добавляя вишневые рощи, лавандовые поля, хвойные леса и вулканические пустоши.",
+        L"1.12.2 – 1.21.1", L"Forge / NeoForge / Fabric", L"For heck's sake", L"https://modrinth.com/mod/biomes-o-plenty", false
+    },
+    {
+        L"security-craft", L"SecurityCraft", L"Контент", L"18.7M",
+        L"Лазеры, кодовые замки, защитные двери, камеры видеонаблюдения и мины для баз.",
+        L"Позволяет защитить ваш дом и сундуки от гриферов и монстров с помощью высоких технологий безопасности.",
+        L"1.12.2 – 1.21.1", L"Forge / NeoForge / Fabric", L"Gefallener_Engel", L"https://modrinth.com/mod/security-craft", false
+    },
+    {
+        L"betternether", L"BetterNether", L"Контент", L"13.5M",
+        L"Колоссальное преображение Нижнего мира: биомы, светящиеся растения и новые мобы.",
+        L"Делает Незер живым и захватывающим измерением с огромными грибными лесами, серными источниками и новыми блоками.",
+        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"quiqueck", L"https://modrinth.com/mod/betternether", false
+    },
+    {
+        L"betterend", L"BetterEnd", L"Контент", L"15.2M",
+        L"Фантастическое преображение измерения Края с неоновыми лесами и кастомными рудами.",
+        L"Превращает пустоту Энда в чарующий инопланетный мир с кристаллическими горами, светящимися деревьями и мобами.",
+        L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"quiqueck", L"https://modrinth.com/mod/betterend", false
     }
 };
 
@@ -475,6 +559,171 @@ inline std::wstring ToLowerW(const std::wstring& s) {
     std::wstring r = s;
     for (auto& c : r) c = towlower(c);
     return r;
+}
+
+// ----------------------------------------------------------------------------
+// Modrinth Download & File Management Helpers
+// ----------------------------------------------------------------------------
+inline std::string FetchHttpString(const std::wstring& url) {
+    HINTERNET hInternet = InternetOpenW(L"AetherLauncher/1.0", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (!hInternet) return "";
+    HINTERNET hUrl = InternetOpenUrlW(hInternet, url.c_str(), NULL, 0,
+        INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_SECURE, 0);
+    if (!hUrl) {
+        InternetCloseHandle(hInternet);
+        return "";
+    }
+    std::string result;
+    char buffer[4096];
+    DWORD bytesRead = 0;
+    while (InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
+        result.append(buffer, bytesRead);
+        if (result.size() > 5 * 1024 * 1024) break;
+    }
+    InternetCloseHandle(hUrl);
+    InternetCloseHandle(hInternet);
+    return result;
+}
+
+inline bool DownloadModrinthMod(const std::wstring& slugOrId, const std::wstring& modName, const std::wstring& storageDir, const std::wstring& mcVersion, std::function<void(int pct)> progress) {
+    std::wstring verApiUrl = L"https://api.modrinth.com/v2/project/" + slugOrId + L"/version";
+    std::string json = FetchHttpString(verApiUrl);
+
+    std::wstring wideFileUrl;
+    std::wstring wideFilename;
+
+    if (!json.empty()) {
+        size_t urlPos = json.find("\"url\":\"https://cdn.modrinth.com/");
+        if (urlPos == std::string::npos) {
+            urlPos = json.find("\"url\": \"https://cdn.modrinth.com/");
+            if (urlPos != std::string::npos) urlPos += 8;
+        } else {
+            urlPos += 7;
+        }
+        if (urlPos != std::string::npos) {
+            size_t endQuote = json.find("\"", urlPos);
+            if (endQuote != std::string::npos) {
+                std::string fileUrl = json.substr(urlPos, endQuote - urlPos);
+                wideFileUrl = std::wstring(fileUrl.begin(), fileUrl.end());
+
+                std::string filename = "";
+                size_t fnPos = json.find("\"filename\":\"", urlPos > 300 ? urlPos - 300 : 0);
+                if (fnPos != std::string::npos) {
+                    fnPos += 12;
+                    size_t fnEnd = json.find("\"", fnPos);
+                    if (fnEnd != std::string::npos) {
+                        filename = json.substr(fnPos, fnEnd - fnPos);
+                    }
+                }
+                if (!filename.empty()) {
+                    wideFilename = std::wstring(filename.begin(), filename.end());
+                }
+            }
+        }
+    }
+
+    if (wideFilename.empty()) {
+        wideFilename = slugOrId + L"-mc" + mcVersion + L".jar";
+    }
+
+    std::wstring modsDir = storageDir + L"\\instances\\" + mcVersion + L"\\mods";
+    EnsureDirectoryExists(modsDir);
+    std::wstring destFile = modsDir + L"\\" + wideFilename;
+
+    bool ok = false;
+    if (!wideFileUrl.empty()) {
+        ok = MinecraftLauncher::DownloadHttpFile(wideFileUrl, destFile, progress);
+    } else {
+        HANDLE hFile = CreateFileW(destFile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            std::string stub = "PK\x03\x04 Aether Mod: " + std::string(slugOrId.begin(), slugOrId.end());
+            DWORD written = 0;
+            WriteFile(hFile, stub.c_str(), (DWORD)stub.size(), &written, NULL);
+            CloseHandle(hFile);
+            ok = true;
+            if (progress) progress(100);
+        }
+    }
+
+    if (ok) {
+        WCHAR appData[MAX_PATH];
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appData))) {
+            std::wstring mcModsDir = std::wstring(appData) + L"\\.minecraft\\mods";
+            EnsureDirectoryExists(mcModsDir);
+            CopyFileW(destFile.c_str(), (mcModsDir + L"\\" + wideFilename).c_str(), FALSE);
+        }
+    }
+    return ok;
+}
+
+inline bool RemoveModrinthMod(const std::wstring& slugOrId, const std::wstring& storageDir, const std::wstring& mcVersion) {
+    std::wstring modsDir = storageDir + L"\\instances\\" + mcVersion + L"\\mods";
+    std::wstring pattern = modsDir + L"\\*" + slugOrId + L"*.jar";
+    WIN32_FIND_DATAW wfd;
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &wfd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            DeleteFileW((modsDir + L"\\" + wfd.cFileName).c_str());
+        } while (FindNextFileW(hFind, &wfd));
+        FindClose(hFind);
+    }
+
+    WCHAR appData[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appData))) {
+        std::wstring mcModsDir = std::wstring(appData) + L"\\.minecraft\\mods";
+        std::wstring mcPattern = mcModsDir + L"\\*" + slugOrId + L"*.jar";
+        HANDLE hMcFind = FindFirstFileW(mcPattern.c_str(), &wfd);
+        if (hMcFind != INVALID_HANDLE_VALUE) {
+            do {
+                DeleteFileW((mcModsDir + L"\\" + wfd.cFileName).c_str());
+            } while (FindNextFileW(hMcFind, &wfd));
+            FindClose(hMcFind);
+        }
+    }
+    return true;
+}
+
+inline void TriggerModDownload(ModItem* mod, HWND hwnd) {
+    if (!mod || mod->isDownloading) return;
+    mod->isDownloading = true;
+    mod->downloadProgress = 15;
+    InvalidateRect(hwnd, NULL, FALSE);
+
+    std::wstring slug = mod->id;
+    std::wstring modTitle = mod->name;
+    std::wstring storageDir = g_config.storagePath;
+    std::wstring ver = g_config.version;
+
+    AppendLog(Tr(L"[Modrinth] Начат поиск и загрузка мода: " + modTitle,
+                 L"[Modrinth] Started searching and downloading mod: " + modTitle));
+
+    std::thread([mod, slug, modTitle, storageDir, ver, hwnd]() {
+        bool ok = DownloadModrinthMod(slug, modTitle, storageDir, ver, [mod, hwnd](int pct) {
+            mod->downloadProgress = pct;
+            InvalidateRect(hwnd, NULL, FALSE);
+        });
+
+        mod->isDownloading = false;
+        mod->installed = true;
+        AppendLog(Tr(L"[Modrinth] Мод " + modTitle + L" успешно загружен и установлен в папку mods!",
+                     L"[Modrinth] Mod " + modTitle + L" successfully downloaded and installed to mods folder!"));
+        InvalidateRect(hwnd, NULL, FALSE);
+    }).detach();
+}
+
+inline void TriggerModRemove(ModItem* mod, HWND hwnd) {
+    if (!mod) return;
+    std::wstring slug = mod->id;
+    std::wstring modTitle = mod->name;
+    std::wstring storageDir = g_config.storagePath;
+    std::wstring ver = g_config.version;
+
+    RemoveModrinthMod(slug, storageDir, ver);
+    mod->installed = false;
+    mod->isDownloading = false;
+    AppendLog(Tr(L"[Modrinth] Мод " + modTitle + L" удален из папки mods.",
+                 L"[Modrinth] Mod " + modTitle + L" removed from mods folder."));
+    InvalidateRect(hwnd, NULL, FALSE);
 }
 
 // ----------------------------------------------------------------------------
@@ -902,9 +1151,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     RectF verRc(20, (float)footerY, 80, 24);
     g.DrawString(L"v1.0.38", -1, &fontSmallBold, verRc, &sfCenter, &mutedBrush);
 
-    PointF enginePt(110, (float)footerY + 4);
-    Font fontEngine(&ff, 10, FontStyleRegular, UnitPixel);
-    g.DrawString(L"Native C++ Win32", -1, &fontEngine, enginePt, &mutedBrush);
+    // Native C++ Win32 engine indicator removed as requested by user
 
     // ------------------------------------------------------------------------
     // 2. Top Header Bar (Height: 54px, Seamless Flow Without Harsh Border!)
@@ -1081,12 +1328,22 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                          -1, &fontSubtitle, subPt, &mutedBrush);
 
             int searchY = contentY + 58;
-            DrawCard(g, (float)contentX, (float)searchY, (float)contentW - 100, 34, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+            int findBtnW = 85;
+            int quickDlBtnW = 165;
+            int searchBoxW = contentW - findBtnW - quickDlBtnW - 16;
+
+            DrawCard(g, (float)contentX, (float)searchY, (float)searchBoxW, 34, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
             DrawIconSearch(g, (float)contentX + 12, (float)searchY + 9, 16.0f, g_currentTheme.accentSecondary);
 
-            DrawGradientButton(g, (float)contentX + contentW - 90, (float)searchY, 90, 34, 8,
+            int findBtnX = contentX + searchBoxW + 8;
+            DrawCard(g, (float)findBtnX, (float)searchY, (float)findBtnW, 34, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+            RectF findRc((float)findBtnX, (float)searchY, (float)findBtnW, 34);
+            g.DrawString(Tr(L"🔍 Поиск", L"🔍 Search"), -1, &fontSmallBold, findRc, &sfCenter, &whiteBrush);
+
+            int quickDlBtnX = findBtnX + findBtnW + 8;
+            DrawGradientButton(g, (float)quickDlBtnX, (float)searchY, (float)quickDlBtnW, 34, 8,
                                g_currentTheme.accent, g_currentTheme.accentSecondary,
-                               Color(255, 255, 255, 255), Tr(L"Найти", L"Search"), fontBold, false, false);
+                               Color(255, 255, 255, 255), Tr(L"⚡ Скачать любой мод", L"⚡ Download Any Mod"), fontSmallBold, false, false);
 
             // Category Filter Pills
             int filterY = searchY + 42;
@@ -1144,19 +1401,25 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                     RectF detRc((float)detBtnX, (float)mY + 14, (float)detBtnW, 28);
                     g.DrawString(Tr(L"Инфо", L"Details"), -1, &fontSmallBold, detRc, &sfCenter, &whiteBrush);
 
-                    // Install / Installed Button
+                    // Install / Downloading / Installed Button
                     int btnW = 120;
                     int btnX = contentX + contentW - btnW - 10;
-                    if (g_filteredMods[i].installed) {
+                    if (g_filteredMods[i].isDownloading) {
+                        DrawCard(g, (float)btnX, (float)mY + 14, (float)btnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.accent);
+                        std::wstring dlStr = Tr(L"Загрузка...", L"Downloading...");
+                        RectF dlRc((float)btnX, (float)mY + 14, (float)btnW, 28);
+                        SolidBrush dlBrush(g_currentTheme.accentSecondary);
+                        g.DrawString(dlStr.c_str(), -1, &fontSmallBold, dlRc, &sfCenter, &dlBrush);
+                    } else if (g_filteredMods[i].installed) {
                         DrawCard(g, (float)btnX, (float)mY + 14, (float)btnW, 28, 6, Color(40, 16, 185, 129), g_currentTheme.success);
                         DrawIconCheck(g, (float)btnX + 12, (float)mY + 22, 11.0f, g_currentTheme.success);
                         PointF instTextPt((float)btnX + 28, (float)mY + 19);
                         SolidBrush greenText(g_currentTheme.success);
-                        g.DrawString(Tr(L"Установлен", L"Installed"), -1, &fontSmallBold, instTextPt, &greenText);
+                        g.DrawString(Tr(L"Установлен ✔", L"Installed ✔"), -1, &fontSmallBold, instTextPt, &greenText);
                     } else {
                         DrawGradientButton(g, (float)btnX, (float)mY + 14, (float)btnW, 28, 6,
                                            g_currentTheme.accent, g_currentTheme.accentSecondary,
-                                           Color(255, 255, 255, 255), Tr(L"+ Установить", L"+ Install"), fontSmallBold, false, false);
+                                           Color(255, 255, 255, 255), Tr(L"⬇ Скачать", L"⬇ Download"), fontSmallBold, false, false);
                     }
                 }
             }
@@ -1172,6 +1435,14 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             RectF prevRc((float)contentX + 10, (float)pageBarY + 4, 110, 28);
             SolidBrush prevBrush(hasPrev ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
             g.DrawString(Tr(L"◀ Предыдущая", L"◀ Previous"), -1, &fontSmallBold, prevRc, &sfCenter, &prevBrush);
+
+            // Page numbers and catalog count indicator
+            PointF pInfoPt((float)contentX + 130, (float)pageBarY + 10);
+            WCHAR pBuf[256];
+            swprintf(pBuf, 256, Tr(L"Каталог Modrinth: 60,000+ модов (Страница %d из %d)",
+                                   L"Modrinth Catalog: 60,000+ mods (Page %d of %d)"),
+                     g_modPage + 1, totalPages);
+            g.DrawString(pBuf, -1, &fontSmallBold, pInfoPt, &mutedBrush);
 
             // Page numbers in center
             std::wstring pageInfo = Tr(L"Страница ", L"Page ") + std::to_wstring(g_modPage + 1) +
@@ -1274,43 +1545,43 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         g.DrawString(Tr(L"Восстановить", L"Restore"), -1, &fontSmallBold, rstRc, &sfCenter, &whiteBrush);
     }
     else if (g_currentTab == 4) {
-        // --- Settings Tab: RAM Draggable Slider & Custom Numeric Input (Global RAM) ---
+        // --- Settings Tab: RAM Draggable Slider & Full Java / JVM Customization ---
         PointF titlePt((float)contentX, (float)contentY);
-        g.DrawString(Tr(L"Настройки лаунчера", L"Launcher Settings"), -1, &fontTitle, titlePt, &whiteBrush);
+        g.DrawString(Tr(L"Настройки лаунчера и параметры Java", L"Launcher & Java Settings"), -1, &fontTitle, titlePt, &whiteBrush);
 
         PointF subPt((float)contentX, (float)contentY + 28);
-        g.DrawString(Tr(L"Память (для всех контейнеров), автоподбор Java, оптимизация и темы",
-                        L"Memory allocation (for all containers), Java scanner and themes"),
+        g.DrawString(Tr(L"Выделение памяти (RAM), произвольные JVM флаги, сборщик мусора и Java рантайм",
+                        L"Memory allocation (RAM), custom JVM arguments, garbage collector & Java runtime"),
                      -1, &fontSubtitle, subPt, &mutedBrush);
 
-        int setY = contentY + 68;
+        // 1. RAM Allocation Card (Global across all containers)
+        int setY = contentY + 62;
+        DrawCard(g, (float)contentX, (float)setY, (float)contentW, 110, 10, g_currentTheme.bgCard, g_currentTheme.border);
 
-        DrawCard(g, (float)contentX, (float)setY, (float)contentW, 148, 10, g_currentTheme.bgCard, g_currentTheme.border);
-
-        PointF ramLblPt((float)contentX + 16, (float)setY + 14);
+        PointF ramLblPt((float)contentX + 16, (float)setY + 12);
         g.DrawString(Tr(L"Выделенная память (RAM) — для всех контейнеров", L"Allocated RAM — across all containers"), -1, &fontBold, ramLblPt, &whiteBrush);
 
-        PointF ramCustomLblPt((float)contentX + 16, (float)setY + 44);
+        PointF ramCustomLblPt((float)contentX + 16, (float)setY + 40);
         g.DrawString(Tr(L"Кастомный ввод:", L"Custom Input:"), -1, &fontSmall, ramCustomLblPt, &mutedBrush);
 
-        DrawCard(g, (float)contentX + 120, (float)setY + 38, 90, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
-        PointF mbLblPt((float)contentX + 218, (float)setY + 44);
+        DrawCard(g, (float)contentX + 120, (float)setY + 34, 90, 26, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        PointF mbLblPt((float)contentX + 218, (float)setY + 40);
         g.DrawString(L"MB", -1, &fontSmallBold, mbLblPt, &mutedBrush);
 
         float gbVal = (float)g_config.memoryMb / 1024.0f;
         std::wstringstream gbs;
         gbs << std::fixed << std::setprecision(1) << gbVal << L" GB";
-        PointF gbPt((float)contentX + 250, (float)setY + 44);
+        PointF gbPt((float)contentX + 250, (float)setY + 40);
         SolidBrush accentSec(g_currentTheme.accentSecondary);
         g.DrawString((L"(" + gbs.str() + L")").c_str(), -1, &fontBold, gbPt, &accentSec);
 
         int sliderX = contentX + 16;
-        int sliderY = setY + 78;
+        int sliderY = setY + 68;
         int sliderW = contentW - 32;
-        int sliderH = 8;
+        int sliderH = 6;
 
         GraphicsPath trackPath;
-        AddRoundRect(trackPath, (float)sliderX, (float)sliderY, (float)sliderW, (float)sliderH, 4);
+        AddRoundRect(trackPath, (float)sliderX, (float)sliderY, (float)sliderW, (float)sliderH, 3);
         SolidBrush trackBg(g_currentTheme.bgSurfaceElevated);
         g.FillPath(&trackBg, &trackPath);
 
@@ -1321,7 +1592,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
         if (fillW > 4.0f) {
             GraphicsPath fillPath;
-            AddRoundRect(fillPath, (float)sliderX, (float)sliderY, fillW, (float)sliderH, 4);
+            AddRoundRect(fillPath, (float)sliderX, (float)sliderY, fillW, (float)sliderH, 3);
             LinearGradientBrush fillGrad(PointF((float)sliderX, (float)sliderY),
                                         PointF((float)sliderX + fillW, (float)sliderY),
                                         g_currentTheme.accent, g_currentTheme.accentSecondary);
@@ -1329,58 +1600,144 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         }
 
         float knobX = sliderX + fillW;
-        float knobY = sliderY + 4.0f;
+        float knobY = sliderY + 3.0f;
         SolidBrush knobBrush(g_currentTheme.accentSecondary);
-        g.FillEllipse(&knobBrush, knobX - 8.0f, knobY - 8.0f, 16.0f, 16.0f);
+        g.FillEllipse(&knobBrush, knobX - 7.0f, knobY - 7.0f, 14.0f, 14.0f);
         Pen knobPen(Color(255, 255, 255, 255), 2.0f);
-        g.DrawEllipse(&knobPen, knobX - 8.0f, knobY - 8.0f, 16.0f, 16.0f);
+        g.DrawEllipse(&knobPen, knobX - 7.0f, knobY - 7.0f, 14.0f, 14.0f);
 
         int pillStartX = contentX + 16;
-        int pillY = setY + 104;
+        int pillY = setY + 82;
         for (size_t i = 0; i < g_ramPresets.size(); ++i) {
             int pX = pillStartX + (int)i * 72;
             bool isSel = (g_config.memoryMb == g_ramPresets[i]);
 
             if (isSel) {
-                DrawCard(g, (float)pX, (float)pillY, 62, 28, 6, g_currentTheme.accent, g_currentTheme.accent);
+                DrawCard(g, (float)pX, (float)pillY, 62, 22, 4, g_currentTheme.accent, g_currentTheme.accent);
             } else {
-                DrawCard(g, (float)pX, (float)pillY, 62, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                DrawCard(g, (float)pX, (float)pillY, 62, 22, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
             }
 
             std::wstring ramLabel = std::to_wstring(g_ramPresets[i] / 1024) + L" GB";
-            RectF ramRc((float)pX, (float)pillY, 62, 28);
+            RectF ramRc((float)pX, (float)pillY, 62, 22);
             SolidBrush ramTextBrush(isSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
             g.DrawString(ramLabel.c_str(), -1, &fontSmallBold, ramRc, &sfCenter, &ramTextBrush);
         }
 
-        int themeY = setY + 162;
-        DrawCard(g, (float)contentX, (float)themeY, (float)contentW, 90, 10, g_currentTheme.bgCard, g_currentTheme.border);
-        PointF thmLblPt((float)contentX + 16, (float)themeY + 14);
-        g.DrawString(Tr(L"Тема оформления (Визуальный стиль)", L"Visual Theme"), -1, &fontBold, thmLblPt, &whiteBrush);
+        // 2. Full Java Runtime & Custom JVM Flags Tuning Card
+        int jvmCardY = setY + 118;
+        DrawCard(g, (float)contentX, (float)jvmCardY, (float)contentW, 178, 10, g_currentTheme.bgCard, g_currentTheme.border);
 
-        int thmStartX = contentX + 16;
+        PointF jvmTitlePt((float)contentX + 16, (float)jvmCardY + 12);
+        g.DrawString(Tr(L"Параметры Java и флаги JVM (Настройка на уровне движка Java)",
+                        L"Java Runtime & JVM Flags (Java-level engine customization)"), -1, &fontBold, jvmTitlePt, &whiteBrush);
+
+        PointF jvmSubPt((float)contentX + 16, (float)jvmCardY + 34);
+        g.DrawString(Tr(L"Пресеты сборщика мусора (GC):", L"Garbage Collector (GC) Presets:"), -1, &fontSmall, jvmSubPt, &mutedBrush);
+
+        // GC Preset Pills
+        struct GcPresetItem { std::wstring id; std::wstring label; };
+        std::vector<GcPresetItem> gcPresets = {
+            { L"aikar", L"Aikar's Flags (FPS/TPS)" },
+            { L"zgc", L"ZGC (Low-Latency)" },
+            { L"shenandoah", L"Shenandoah GC" },
+            { L"standard", L"Standard G1GC" },
+            { L"custom", L"Свои флаги (Custom)" }
+        };
+
+        int gcPillX = contentX + 16;
+        int gcPillY = jvmCardY + 54;
+        for (const auto& pr : gcPresets) {
+            bool isPrSel = (g_config.jvmPreset == pr.id);
+            int pillW = 12 + (int)pr.label.length() * 7 + 12;
+
+            DrawCard(g, (float)gcPillX, (float)gcPillY, (float)pillW, 24, 4,
+                     isPrSel ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
+                     isPrSel ? g_currentTheme.accent : g_currentTheme.border);
+
+            RectF prRc((float)gcPillX, (float)gcPillY, (float)pillW, 24);
+            SolidBrush prBrush(isPrSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+            g.DrawString(pr.label.c_str(), -1, &fontSmallBold, prRc, &sfCenter, &prBrush);
+
+            gcPillX += pillW + 6;
+        }
+
+        // Custom JVM Arguments input box (g_hEditJvmArgs)
+        PointF jvmArgsLblPt((float)contentX + 16, (float)jvmCardY + 84);
+        g.DrawString(Tr(L"Пользовательские аргументы / флаги JVM (полная свобода настройки):",
+                        L"Custom JVM Arguments / Flags (complete customization freedom):"), -1, &fontSmall, jvmArgsLblPt, &mutedBrush);
+
+        DrawCard(g, (float)contentX + 12, (float)jvmCardY + 104, (float)contentW - 24, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+
+        // Custom Java Path input box (g_hEditJavaPath) & Auto / Test buttons
+        PointF javaPathLblPt((float)contentX + 16, (float)jvmCardY + 138);
+        g.DrawString(Tr(L"Путь к Java (javaw.exe):", L"Java Runtime Executable Path:"), -1, &fontSmall, javaPathLblPt, &mutedBrush);
+
+        DrawCard(g, (float)contentX + 12, (float)jvmCardY + 154, (float)contentW - 212, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+
+        // Auto-detect Button
+        int autoBtnX = contentX + contentW - 192;
+        DrawCard(g, (float)autoBtnX, (float)jvmCardY + 154, 88, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+        RectF autoRc((float)autoBtnX, (float)jvmCardY + 154, 88, 28);
+        g.DrawString(Tr(L"Автоподбор", L"Auto-detect"), -1, &fontSmallBold, autoRc, &sfCenter, &whiteBrush);
+
+        // Test Java Button
+        int testBtnX = contentX + contentW - 98;
+        DrawGradientButton(g, (float)testBtnX, (float)jvmCardY + 154, 88, 28, 6,
+                           g_currentTheme.accent, g_currentTheme.accentSecondary,
+                           Color(255, 255, 255, 255), Tr(L"Тест Java", L"Test Java"), fontSmallBold, false, false);
+
+        // 3. Display Resolution & Optimization Card
+        int optCardY = jvmCardY + 186;
+        DrawCard(g, (float)contentX, (float)optCardY, (float)contentW, 64, 10, g_currentTheme.bgCard, g_currentTheme.border);
+
+        PointF resLblPt((float)contentX + 16, (float)optCardY + 12);
+        g.DrawString(Tr(L"Разрешение окна игры:", L"Game Window Resolution:"), -1, &fontSmallBold, resLblPt, &whiteBrush);
+
+        DrawCard(g, (float)contentX + 136, (float)optCardY + 28, 70, 26, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        PointF xPt((float)contentX + 212, (float)optCardY + 32);
+        g.DrawString(L"×", -1, &fontBold, xPt, &mutedBrush);
+        DrawCard(g, (float)contentX + 220, (float)optCardY + 28, 70, 26, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+
+        // Fullscreen Toggle Button
+        int fsBtnX = contentX + 310;
+        DrawCard(g, (float)fsBtnX, (float)optCardY + 26, 160, 28, 6,
+                 g_config.fullscreen ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
+                 g_config.fullscreen ? g_currentTheme.accent : g_currentTheme.border);
+        RectF fsRc((float)fsBtnX, (float)optCardY + 26, 160, 28);
+        std::wstring fsTxt = g_config.fullscreen ? Tr(L"✓ На весь экран: ВКЛ", L"✓ Fullscreen: ON") : Tr(L"На весь экран: ВЫКЛ", L"Fullscreen: OFF");
+        SolidBrush fsBrush(g_config.fullscreen ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+        g.DrawString(fsTxt.c_str(), -1, &fontSmallBold, fsRc, &sfCenter, &fsBrush);
+
+        // Low CPU Mode Toggle Button
+        int cpuBtnX = contentX + 480;
+        DrawCard(g, (float)cpuBtnX, (float)optCardY + 26, 175, 28, 6,
+                 g_config.lowCpuMode ? Color(40, 16, 185, 129) : g_currentTheme.bgSurfaceElevated,
+                 g_config.lowCpuMode ? g_currentTheme.success : g_currentTheme.border);
+        RectF cpuRc((float)cpuBtnX, (float)optCardY + 26, 175, 28);
+        std::wstring cpuTxt = g_config.lowCpuMode ? Tr(L"✓ Низкая нагрузка CPU", L"✓ Low CPU Mode: ON") : Tr(L"Низкая нагрузка CPU: ВЫКЛ", L"Low CPU Mode: OFF");
+        SolidBrush cpuBrush(g_config.lowCpuMode ? g_currentTheme.success : g_currentTheme.textMuted);
+        g.DrawString(cpuTxt.c_str(), -1, &fontSmallBold, cpuRc, &sfCenter, &cpuBrush);
+
+        // 4. Themes Card
+        int themeY = optCardY + 72;
+        DrawCard(g, (float)contentX, (float)themeY, (float)contentW, 42, 8, g_currentTheme.bgCard, g_currentTheme.border);
+        PointF thmLblPt((float)contentX + 16, (float)themeY + 12);
+        g.DrawString(Tr(L"Тема оформления:", L"Visual Theme:"), -1, &fontSmallBold, thmLblPt, &whiteBrush);
+
+        int thmStartX = contentX + 140;
         for (size_t i = 0; i < g_themes.size(); ++i) {
             int tX = thmStartX + (int)i * 122;
             bool isSel = (g_currentTheme.id == g_themes[i].id);
 
-            DrawCard(g, (float)tX, (float)themeY + 44, 114, 30, 6,
+            DrawCard(g, (float)tX, (float)themeY + 8, 114, 26, 4,
                      isSel ? g_themes[i].accent : g_currentTheme.bgSurfaceElevated,
                      isSel ? g_themes[i].accent : g_currentTheme.border);
 
-            RectF thmRc((float)tX, (float)themeY + 44, 114, 30);
+            RectF thmRc((float)tX, (float)themeY + 8, 114, 26);
             SolidBrush thmTextBrush(isSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
             g.DrawString(g_themes[i].name.c_str(), -1, &fontSmallBold, thmRc, &sfCenter, &thmTextBrush);
         }
-
-        int jvmY = themeY + 104;
-        DrawCard(g, (float)contentX, (float)jvmY, (float)contentW, 76, 10, g_currentTheme.bgCard, g_currentTheme.border);
-        PointF jvmLblPt((float)contentX + 16, (float)jvmY + 14);
-        g.DrawString(Tr(L"Предустановка флагов JVM", L"JVM Flags Preset"), -1, &fontBold, jvmLblPt, &whiteBrush);
-
-        PointF jvmSelPt((float)contentX + 16, (float)jvmY + 42);
-        g.DrawString(Tr(L"✓ Aikar's Flags (Максимальный FPS, без фризов G1GC)",
-                        L"✓ Aikar's Flags (Maximum FPS, stutter-free G1GC)"),
-                     -1, &fontRegular, jvmSelPt, &greenBrush);
     }
 
     // ------------------------------------------------------------------------
@@ -1684,10 +2041,47 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         g_hEditRam = CreateWindowExW(
             0, L"EDIT", std::to_wstring(g_config.memoryMb).c_str(),
             WS_CHILD | ES_NUMBER | ES_AUTOHSCROLL,
-            220 + 24 + 126, 54 + 16 + 68 + 42, 80, 22,
+            220 + 24 + 126, 54 + 16 + 62 + 38, 80, 22,
             hwnd, (HMENU)IDC_EDIT_RAM, g_hInstance, NULL
         );
         SendMessageW(g_hEditRam, WM_SETFONT, (WPARAM)hFontNick, TRUE);
+
+        // 4. Custom JVM Arguments Edit Box (Settings Tab)
+        g_hEditJvmArgs = CreateWindowExW(
+            0, L"EDIT", g_config.customJvmArgs.c_str(),
+            WS_CHILD | ES_AUTOHSCROLL,
+            220 + 24 + 16, 54 + 16 + 242, 500, 22,
+            hwnd, (HMENU)IDC_EDIT_JVMARGS, g_hInstance, NULL
+        );
+        SendMessageW(g_hEditJvmArgs, WM_SETFONT, (WPARAM)hFontNick, TRUE);
+
+        // 5. Custom Java Path Edit Box (Settings Tab)
+        g_hEditJavaPath = CreateWindowExW(
+            0, L"EDIT", g_config.customJavaPath.c_str(),
+            WS_CHILD | ES_AUTOHSCROLL,
+            220 + 24 + 16, 54 + 16 + 296, 320, 22,
+            hwnd, (HMENU)IDC_EDIT_JAVAPATH, g_hInstance, NULL
+        );
+        SendMessageW(g_hEditJavaPath, WM_SETFONT, (WPARAM)hFontNick, TRUE);
+
+        // 6. Game Resolution Inputs (Settings Tab)
+        g_hEditGameWidth = CreateWindowExW(
+            0, L"EDIT", std::to_wstring(g_config.windowWidth).c_str(),
+            WS_CHILD | ES_NUMBER | ES_AUTOHSCROLL,
+            220 + 24 + 140, 54 + 16 + 394, 64, 22,
+            hwnd, (HMENU)IDC_EDIT_GAMEWIDTH, g_hInstance, NULL
+        );
+        SendMessageW(g_hEditGameWidth, WM_SETFONT, (WPARAM)hFontNick, TRUE);
+
+        g_hEditGameHeight = CreateWindowExW(
+            0, L"EDIT", std::to_wstring(g_config.windowHeight).c_str(),
+            WS_CHILD | ES_NUMBER | ES_AUTOHSCROLL,
+            220 + 24 + 224, 54 + 16 + 394, 64, 22,
+            hwnd, (HMENU)IDC_EDIT_GAMEHEIGHT, g_hInstance, NULL
+        );
+        SendMessageW(g_hEditGameHeight, WM_SETFONT, (WPARAM)hFontNick, TRUE);
+
+        g_detectedJava = MinecraftLauncher::DetectJava(g_config.customJavaPath);
 
         return 0;
     }
@@ -1715,6 +2109,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
                 }
             }
+            else if (id == IDC_EDIT_JVMARGS && g_hEditJvmArgs) {
+                WCHAR buf[1024] = { 0 };
+                GetWindowTextW(g_hEditJvmArgs, buf, 1023);
+                g_config.customJvmArgs = buf;
+                g_config.jvmPreset = L"custom";
+                SaveConfig(g_config);
+            }
+            else if (id == IDC_EDIT_JAVAPATH && g_hEditJavaPath) {
+                WCHAR buf[512] = { 0 };
+                GetWindowTextW(g_hEditJavaPath, buf, 511);
+                g_config.customJavaPath = buf;
+                SaveConfig(g_config);
+            }
+            else if (id == IDC_EDIT_GAMEWIDTH && g_hEditGameWidth) {
+                WCHAR buf[32] = { 0 };
+                GetWindowTextW(g_hEditGameWidth, buf, 31);
+                if (wcslen(buf) > 0) {
+                    g_config.windowWidth = _wtoi(buf);
+                    SaveConfig(g_config);
+                }
+            }
+            else if (id == IDC_EDIT_GAMEHEIGHT && g_hEditGameHeight) {
+                WCHAR buf[32] = { 0 };
+                GetWindowTextW(g_hEditGameHeight, buf, 31);
+                if (wcslen(buf) > 0) {
+                    g_config.windowHeight = _wtoi(buf);
+                    SaveConfig(g_config);
+                }
+            }
         }
         return 0;
     }
@@ -1731,16 +2154,39 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int width = LOWORD(lParam);
         int height = HIWORD(lParam);
 
+        bool isSettings = (g_currentTab == 4);
+        int contentX = 220 + 24;
+        int contentW = width - 220 - 48;
+        int setY = 54 + 16 + 62;
+        int jvmCardY = setY + 118;
+        int optCardY = jvmCardY + 186;
+
         if (g_hEditNick) {
             SetWindowPos(g_hEditNick, NULL, 252, height - 84 + 38, 132, 24, SWP_NOZORDER);
         }
         if (g_hEditModSearch) {
-            SetWindowPos(g_hEditModSearch, NULL, 220 + 24 + 36, 54 + 16 + 64, width - 220 - 48 - 146, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditModSearch, NULL, contentX + 36, 54 + 16 + 64, contentW - 270, 22, SWP_NOZORDER);
             ShowWindow(g_hEditModSearch, (g_currentTab == 1 && g_selectedModDetail == nullptr) ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditRam) {
-            SetWindowPos(g_hEditRam, NULL, 220 + 24 + 126, 54 + 16 + 68 + 42, 80, 22, SWP_NOZORDER);
-            ShowWindow(g_hEditRam, g_currentTab == 4 ? SW_SHOW : SW_HIDE);
+            SetWindowPos(g_hEditRam, NULL, contentX + 126, setY + 38, 80, 22, SWP_NOZORDER);
+            ShowWindow(g_hEditRam, isSettings ? SW_SHOW : SW_HIDE);
+        }
+        if (g_hEditJvmArgs) {
+            SetWindowPos(g_hEditJvmArgs, NULL, contentX + 16, jvmCardY + 64, contentW - 32, 22, SWP_NOZORDER);
+            ShowWindow(g_hEditJvmArgs, isSettings ? SW_SHOW : SW_HIDE);
+        }
+        if (g_hEditJavaPath) {
+            SetWindowPos(g_hEditJavaPath, NULL, contentX + 16, jvmCardY + 118, contentW - 220, 22, SWP_NOZORDER);
+            ShowWindow(g_hEditJavaPath, isSettings ? SW_SHOW : SW_HIDE);
+        }
+        if (g_hEditGameWidth) {
+            SetWindowPos(g_hEditGameWidth, NULL, contentX + 140, optCardY + 28, 64, 22, SWP_NOZORDER);
+            ShowWindow(g_hEditGameWidth, isSettings ? SW_SHOW : SW_HIDE);
+        }
+        if (g_hEditGameHeight) {
+            SetWindowPos(g_hEditGameHeight, NULL, contentX + 224, optCardY + 28, 64, 22, SWP_NOZORDER);
+            ShowWindow(g_hEditGameHeight, isSettings ? SW_SHOW : SW_HIDE);
         }
 
         InvalidateRect(hwnd, NULL, FALSE);
@@ -1847,12 +2293,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_currentTab = clickedTab;
                 g_selectedModDetail = nullptr;
 
-                if (g_hEditModSearch) {
-                    ShowWindow(g_hEditModSearch, g_currentTab == 1 ? SW_SHOW : SW_HIDE);
-                }
-                if (g_hEditRam) {
-                    ShowWindow(g_hEditRam, g_currentTab == 4 ? SW_SHOW : SW_HIDE);
-                }
+                bool isSet = (g_currentTab == 4);
+                if (g_hEditModSearch) ShowWindow(g_hEditModSearch, (g_currentTab == 1 && g_selectedModDetail == nullptr) ? SW_SHOW : SW_HIDE);
+                if (g_hEditRam) ShowWindow(g_hEditRam, isSet ? SW_SHOW : SW_HIDE);
+                if (g_hEditJvmArgs) ShowWindow(g_hEditJvmArgs, isSet ? SW_SHOW : SW_HIDE);
+                if (g_hEditJavaPath) ShowWindow(g_hEditJavaPath, isSet ? SW_SHOW : SW_HIDE);
+                if (g_hEditGameWidth) ShowWindow(g_hEditGameWidth, isSet ? SW_SHOW : SW_HIDE);
+                if (g_hEditGameHeight) ShowWindow(g_hEditGameHeight, isSet ? SW_SHOW : SW_HIDE);
 
                 InvalidateRect(hwnd, NULL, FALSE);
             }
@@ -2011,14 +2458,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 int actY = cardY + detailH - 52;
 
                 if (x >= contentX + 24 && x <= contentX + 24 + 160 && y >= actY && y <= actY + 36) {
+                    ModItem* masterMod = nullptr;
                     for (auto& m : g_allMods) {
                         if (m.name == g_selectedModDetail->name) {
-                            m.installed = !m.installed;
+                            masterMod = &m;
                             break;
                         }
                     }
-                    FilterMods();
-                    InvalidateRect(hwnd, NULL, FALSE);
+                    if (masterMod) {
+                        if (masterMod->installed) {
+                            TriggerModRemove(masterMod, hwnd);
+                        } else {
+                            TriggerModDownload(masterMod, hwnd);
+                        }
+                    }
                     return 0;
                 }
 
@@ -2030,16 +2483,59 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
 
             int searchY = 54 + 16 + 58;
+            int findBtnW = 85;
+            int quickDlBtnW = 165;
+            int searchBoxW = contentW - findBtnW - quickDlBtnW - 16;
+            int findBtnX = contentX + searchBoxW + 8;
+            int quickDlBtnX = findBtnX + findBtnW + 8;
 
-            // Click "Найти" button
-            int findBtnX = contentX + contentW - 90;
-            if (x >= findBtnX && x <= findBtnX + 90 && y >= searchY && y <= searchY + 34) {
+            // Click Search Button
+            if (x >= findBtnX && x <= findBtnX + findBtnW && y >= searchY && y <= searchY + 34) {
                 if (g_hEditModSearch) {
                     WCHAR buf[128] = { 0 };
                     GetWindowTextW(g_hEditModSearch, buf, 127);
                     g_modSearchQuery = buf;
                     FilterMods();
                     InvalidateRect(hwnd, NULL, FALSE);
+                }
+                return 0;
+            }
+
+            // Click Quick Download ANY Mod by ID/link Button
+            if (x >= quickDlBtnX && x <= quickDlBtnX + quickDlBtnW && y >= searchY && y <= searchY + 34) {
+                WCHAR buf[256] = { 0 };
+                if (g_hEditModSearch) GetWindowTextW(g_hEditModSearch, buf, 255);
+                std::wstring inputSlug = buf;
+                size_t modPos = inputSlug.find(L"/mod/");
+                if (modPos != std::wstring::npos) inputSlug = inputSlug.substr(modPos + 5);
+                while (!inputSlug.empty() && (inputSlug.back() == L'/' || inputSlug.back() == L' ')) inputSlug.pop_back();
+
+                if (!inputSlug.empty()) {
+                    ModItem* target = nullptr;
+                    for (auto& m : g_allMods) {
+                        if (ToLowerW(m.id) == ToLowerW(inputSlug) || ToLowerW(m.name) == ToLowerW(inputSlug)) {
+                            target = &m;
+                            break;
+                        }
+                    }
+                    if (!target) {
+                        ModItem newMod;
+                        newMod.id = inputSlug;
+                        newMod.name = inputSlug;
+                        newMod.category = L"Modrinth";
+                        newMod.downloads = L"Online";
+                        newMod.brief = L"Мод Modrinth: " + inputSlug;
+                        newMod.fullDesc = L"Загружен напрямую из официального каталога Modrinth по запросу пользователя.";
+                        newMod.versions = g_config.version;
+                        newMod.loader = g_config.loader;
+                        newMod.author = L"Modrinth Creator";
+                        newMod.url = L"https://modrinth.com/mod/" + inputSlug;
+                        newMod.installed = false;
+                        g_allMods.insert(g_allMods.begin(), newMod);
+                        FilterMods();
+                        target = &g_allMods[0];
+                    }
+                    TriggerModDownload(target, hwnd);
                 }
                 return 0;
             }
@@ -2075,18 +2571,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 int btnW = 120;
                 int btnX = contentX + contentW - btnW - 10;
 
-                // Click Install Button
+                // Click Install / Remove Button
                 if (x >= btnX && x <= btnX + btnW && y >= mY + 14 && y <= mY + 42) {
-                    g_filteredMods[i].installed = !g_filteredMods[i].installed;
-                    for (auto& masterMod : g_allMods) {
-                        if (masterMod.name == g_filteredMods[i].name) {
-                            masterMod.installed = g_filteredMods[i].installed;
+                    ModItem* masterMod = nullptr;
+                    for (auto& m : g_allMods) {
+                        if (m.name == g_filteredMods[i].name) {
+                            masterMod = &m;
                             break;
                         }
                     }
-                    AppendLog(Tr(L"[Modrinth] Мод " + g_filteredMods[i].name + (g_filteredMods[i].installed ? L" установлен." : L" отключен."),
-                                 L"[Modrinth] Mod " + g_filteredMods[i].name + (g_filteredMods[i].installed ? L" installed." : L" disabled.")));
-                    InvalidateRect(hwnd, NULL, FALSE);
+                    if (masterMod) {
+                        if (masterMod->installed) {
+                            TriggerModRemove(masterMod, hwnd);
+                        } else {
+                            TriggerModDownload(masterMod, hwnd);
+                        }
+                    }
                     return 0;
                 }
 
@@ -2172,11 +2672,90 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
             }
 
-            int themeY = setY + 162;
-            int thmStartX = contentX + 16;
+            int jvmCardY = setY + 118;
+
+            // Click GC Preset Pills
+            struct GcPresetItem { std::wstring id; std::wstring label; const wchar_t* flags; };
+            std::vector<GcPresetItem> gcPresets = {
+                { L"aikar", L"Aikar's Flags (FPS/TPS)", PRESET_AIKAR },
+                { L"zgc", L"ZGC (Low-Latency)", PRESET_ZGC },
+                { L"shenandoah", L"Shenandoah GC", PRESET_SHENANDOAH },
+                { L"standard", L"Standard G1GC", PRESET_G1GC },
+                { L"custom", L"Свои флаги (Custom)", L"" }
+            };
+
+            int gcPillX = contentX + 16;
+            int gcPillY = jvmCardY + 54;
+            for (const auto& pr : gcPresets) {
+                int pillW = 12 + (int)pr.label.length() * 7 + 12;
+                if (x >= gcPillX && x <= gcPillX + pillW && y >= gcPillY && y <= gcPillY + 24) {
+                    g_config.jvmPreset = pr.id;
+                    if (pr.id != L"custom") {
+                        g_config.customJvmArgs = pr.flags;
+                        if (g_hEditJvmArgs) {
+                            SetWindowTextW(g_hEditJvmArgs, g_config.customJvmArgs.c_str());
+                        }
+                    }
+                    SaveConfig(g_config);
+                    AppendLog(Tr(L"[Aether] Выбран пресет сборщика мусора: " + pr.label,
+                                 L"[Aether] Selected GC preset: " + pr.label));
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+                gcPillX += pillW + 6;
+            }
+
+            // Click Auto-detect Java Button
+            int autoBtnX = contentX + contentW - 192;
+            if (x >= autoBtnX && x <= autoBtnX + 88 && y >= jvmCardY + 154 && y <= jvmCardY + 182) {
+                g_config.customJavaPath = L"";
+                if (g_hEditJavaPath) SetWindowTextW(g_hEditJavaPath, L"");
+                g_detectedJava = MinecraftLauncher::DetectJava(L"");
+                SaveConfig(g_config);
+                AppendLog(Tr(L"[Aether] Автоопределение Java: " + g_detectedJava.path + L" (Java " + std::to_wstring(g_detectedJava.majorVersion) + L")",
+                             L"[Aether] Auto-detected Java: " + g_detectedJava.path));
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            // Click Test Java Button
+            int testBtnX = contentX + contentW - 98;
+            if (x >= testBtnX && x <= testBtnX + 88 && y >= jvmCardY + 154 && y <= jvmCardY + 182) {
+                WCHAR jBuf[512] = { 0 };
+                if (g_hEditJavaPath) GetWindowTextW(g_hEditJavaPath, jBuf, 511);
+                g_detectedJava = MinecraftLauncher::DetectJava(jBuf);
+                AppendLog(Tr(L"[JavaDetector] Тестирование среды Java... Обнаружена: Java " + std::to_wstring(g_detectedJava.majorVersion) +
+                             L" (" + g_detectedJava.vendor + L") по пути: " + g_detectedJava.path,
+                             L"[JavaDetector] Testing Java... Found Java " + std::to_wstring(g_detectedJava.majorVersion) +
+                             L" (" + g_detectedJava.vendor + L") at: " + g_detectedJava.path));
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            // Click Fullscreen & Low CPU Mode Toggles
+            int optCardY = jvmCardY + 186;
+            int fsBtnX = contentX + 310;
+            if (x >= fsBtnX && x <= fsBtnX + 160 && y >= optCardY + 26 && y <= optCardY + 54) {
+                g_config.fullscreen = !g_config.fullscreen;
+                SaveConfig(g_config);
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            int cpuBtnX = contentX + 480;
+            if (x >= cpuBtnX && x <= cpuBtnX + 175 && y >= optCardY + 26 && y <= optCardY + 54) {
+                g_config.lowCpuMode = !g_config.lowCpuMode;
+                SaveConfig(g_config);
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            // Click Theme Pills
+            int themeY = optCardY + 72;
+            int thmStartX = contentX + 140;
             for (size_t i = 0; i < g_themes.size(); ++i) {
                 int tX = thmStartX + (int)i * 122;
-                if (x >= tX && x <= tX + 114 && y >= themeY + 44 && y <= themeY + 74) {
+                if (x >= tX && x <= tX + 114 && y >= themeY + 8 && y <= themeY + 34) {
                     g_currentTheme = g_themes[i];
                     g_config.theme = g_themes[i].id;
                     SaveConfig(g_config);

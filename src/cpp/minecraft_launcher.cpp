@@ -402,15 +402,21 @@ bool MinecraftLauncher::LaunchMinecraft(
     if (jvmPreset == L"low-ram") {
         selectedPresetFlags = L"-XX:+UseSerialGC -XX:+AlwaysPreTouch";
     } else if (jvmPreset == L"standard") {
-        selectedPresetFlags = L"-XX:+UseG1GC";
+        selectedPresetFlags = L"-XX:+UseG1GC -XX:+AlwaysPreTouch";
+    } else if (jvmPreset == L"zgc") {
+        selectedPresetFlags = L"-XX:+UseZGC -XX:+ZGenerational -XX:+UnlockExperimentalVMOptions -XX:+AlwaysPreTouch";
+    } else if (jvmPreset == L"shenandoah") {
+        selectedPresetFlags = L"-XX:+UseShenandoahGC -XX:+AlwaysPreTouch -XX:ShenandoahGCHeuristics=adaptive";
+    } else if (jvmPreset == L"custom") {
+        selectedPresetFlags = L"";
     }
 
     std::wstring finalNickname = nickname.empty() ? L"Player" : nickname;
+    std::wstring flagsToUse = customArgs.empty() ? selectedPresetFlags : customArgs;
 
     std::wstring cmdLine = L"\"" + java.path + L"\" " +
         memArg + L" " +
-        selectedPresetFlags + L" " +
-        (customArgs.empty() ? L"" : (customArgs + L" ")) +
+        (flagsToUse.empty() ? L"" : (flagsToUse + L" ")) +
         L"-Djava.library.path=\"" + nativesDir + L"\" " +
         L"-Dminecraft.launcher.brand=Aether " +
         L"-Dminecraft.launcher.version=1.0.38 " +
@@ -426,7 +432,10 @@ bool MinecraftLauncher::LaunchMinecraft(
         L"--userType mojang " +
         L"--versionType Aether-" + loader;
 
-    if (callbacks.onLog) callbacks.onLog(L"[Aether Launcher] Командная строка запуска сформирована", false);
+    if (callbacks.onLog) {
+        callbacks.onLog(L"[Aether Launcher] JVM Аргументы: " + flagsToUse, false);
+        callbacks.onLog(L"[Aether Launcher] Командная строка запуска сформирована", false);
+    }
     if (callbacks.onProgress) callbacks.onProgress(L"Запуск процесса игры...", 90);
 
     // 6. Spawn process with stdout/stderr redirection

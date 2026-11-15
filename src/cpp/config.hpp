@@ -14,7 +14,10 @@ struct LauncherConfig {
     std::wstring theme = L"void-purple"; // void-purple, crimson, cyan-neon, emerald
     std::wstring customJavaPath = L"";
     std::wstring jvmPreset = L"aikar";
-    std::wstring customJvmArgs = L"";
+    std::wstring customJvmArgs = L"-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch";
+    int windowWidth = 1280;
+    int windowHeight = 720;
+    bool fullscreen = false;
     bool lowCpuMode = true;
     std::wstring storagePath = L"";
 };
@@ -69,9 +72,14 @@ inline LauncherConfig LoadConfig() {
     GetPrivateProfileStringW(L"Aether", L"JvmPreset", L"aikar", buf, 512, iniFile.c_str());
     cfg.jvmPreset = buf;
 
-    GetPrivateProfileStringW(L"Aether", L"CustomJvmArgs", L"", buf, 512, iniFile.c_str());
+    GetPrivateProfileStringW(L"Aether", L"CustomJvmArgs",
+        L"-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch",
+        buf, 512, iniFile.c_str());
     cfg.customJvmArgs = buf;
 
+    cfg.windowWidth = GetPrivateProfileIntW(L"Aether", L"WindowWidth", 1280, iniFile.c_str());
+    cfg.windowHeight = GetPrivateProfileIntW(L"Aether", L"WindowHeight", 720, iniFile.c_str());
+    cfg.fullscreen = GetPrivateProfileIntW(L"Aether", L"Fullscreen", 0, iniFile.c_str()) != 0;
     cfg.lowCpuMode = GetPrivateProfileIntW(L"Aether", L"LowCpuMode", 1, iniFile.c_str()) != 0;
 
     return cfg;
@@ -89,5 +97,8 @@ inline void SaveConfig(const LauncherConfig& cfg) {
     WritePrivateProfileStringW(L"Aether", L"JavaPath", cfg.customJavaPath.c_str(), iniFile.c_str());
     WritePrivateProfileStringW(L"Aether", L"JvmPreset", cfg.jvmPreset.c_str(), iniFile.c_str());
     WritePrivateProfileStringW(L"Aether", L"CustomJvmArgs", cfg.customJvmArgs.c_str(), iniFile.c_str());
+    WritePrivateProfileStringW(L"Aether", L"WindowWidth", std::to_wstring(cfg.windowWidth).c_str(), iniFile.c_str());
+    WritePrivateProfileStringW(L"Aether", L"WindowHeight", std::to_wstring(cfg.windowHeight).c_str(), iniFile.c_str());
+    WritePrivateProfileStringW(L"Aether", L"Fullscreen", cfg.fullscreen ? L"1" : L"0", iniFile.c_str());
     WritePrivateProfileStringW(L"Aether", L"LowCpuMode", cfg.lowCpuMode ? L"1" : L"0", iniFile.c_str());
 }
