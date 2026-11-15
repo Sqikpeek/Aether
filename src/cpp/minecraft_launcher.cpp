@@ -170,10 +170,6 @@ static std::vector<VersionLibInfo> GetStandardFallbackLibraries() {
 }
 
 int MinecraftLauncher::GetRequiredJavaVersion(const std::wstring& mcVersion) {
-    // 1.20.5+ requires Java 21
-    // 1.18 - 1.20.4 requires Java 17
-    // 1.17 requires Java 16
-    // <= 1.16.5 requires Java 8
     int minor = 0, patch = 0;
     swscanf(mcVersion.c_str(), L"1.%d.%d", &minor, &patch);
     if (minor == 0) {
@@ -273,7 +269,6 @@ JavaInfo MinecraftLauncher::DetectJava(const std::wstring& customPath) {
                 info.vendor = L"Java Runtime";
                 info.is64Bit = (versionOutput.find("64-Bit") != std::string::npos);
 
-                // Parse version (e.g., "17.0.8", "21.0.1", "1.8.0_381")
                 size_t vpos = versionOutput.find("version \"");
                 if (vpos != std::string::npos) {
                     vpos += 9;
@@ -333,7 +328,6 @@ bool MinecraftLauncher::DownloadHttpFile(
     DWORD index = 0;
     HttpQueryInfoW(hUrl, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &contentLength, &sizeOfLen, &index);
 
-    // Create destination directories
     WCHAR dirBuf[MAX_PATH];
     wcsncpy(dirBuf, destPath.c_str(), MAX_PATH);
     WCHAR* lastSlash = wcsrchr(dirBuf, L'\\');
@@ -374,6 +368,7 @@ bool MinecraftLauncher::DownloadHttpFile(
 bool MinecraftLauncher::PrepareMinecraftFiles(
     const std::wstring& storageDir,
     const std::wstring& mcVersion,
+    const std::wstring& loader,
     std::function<void(const std::wstring& status, int percent)> progress
 ) {
     std::wstring versionDir = storageDir + L"\\versions\\" + mcVersion;
@@ -472,6 +467,115 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         });
     }
 
+    // Step 2.5: Ensure sound asset index is prepared (Fixes in-game sound!)
+    std::wstring assetIndexId = mcVersion;
+    std::wstring assetIndexUrl = L"";
+    if (!versionJsonContent.empty()) {
+        size_t aPos = versionJsonContent.find("\"assetIndex\":");
+        if (aPos != std::string::npos) {
+            size_t idPos = versionJsonContent.find("\"id\": \"", aPos);
+            if (idPos != std::string::npos && idPos < aPos + 200) {
+                idPos += 7;
+                size_t idEnd = versionJsonContent.find("\"", idPos);
+                if (idEnd != std::string::npos) {
+                    std::string aid = versionJsonContent.substr(idPos, idEnd - idPos);
+                    assetIndexId = std::wstring(aid.begin(), aid.end());
+                }
+            }
+            size_t uPos = versionJsonContent.find("\"url\": \"", aPos);
+            if (uPos != std::string::npos && uPos < aPos + 300) {
+                uPos += 8;
+                size_t uEnd = versionJsonContent.find("\"", uPos);
+                if (uEnd != std::string::npos) {
+                    std::string au = versionJsonContent.substr(uPos, uEnd - uPos);
+                    assetIndexUrl = std::wstring(au.begin(), au.end());
+                }
+            }
+        }
+    }
+    if (assetIndexId == mcVersion) {
+        int minor = 0;
+        swscanf(mcVersion.c_str(), L"1.%d", &minor);
+        if (minor >= 21) assetIndexId = L"17";
+        else if (minor == 20) assetIndexId = L"16";
+        else if (minor == 19) assetIndexId = L"8";
+        else if (minor == 18) assetIndexId = L"1.18";
+        else if (minor == 17) assetIndexId = L"1.17";
+        else if (minor == 16) assetIndexId = L"1.16";
+        else if (minor == 12) assetIndexId = L"1.12";
+        else assetIndexId = L"legacy";
+    }
+
+    std::wstring assetIndexesDir = storageDir + L"\\assets\\indexes";
+    EnsureDirTree(assetIndexesDir);
+    std::wstring localIndexFile = assetIndexesDir + L"\\" + assetIndexId + L".json";
+
+    if (!CheckFileExists(localIndexFile)) {
+        bool foundInAppData = false;
+        if (!mojangLibsDir.empty()) {
+            WCHAR appDataAssets[MAX_PATH] = { 0 };
+            if (GetEnvironmentVariableW(L"APPDATA", appDataAssets, MAX_PATH) > 0) {
+                std::wstring appDataIndex = std::wstring(appDataAssets) + L"\\.minecraft\\assets\\indexes\\" + assetIndexId + L".json";
+                if (CheckFileExists(appDataIndex)) {
+                    CopyFileW(appDataIndex.c_str(), localIndexFile.c_str(), FALSE);
+                    foundInAppData = true;
+                }
+            }
+        }
+        if (!foundInAppData && !assetIndexUrl.empty()) {
+            DownloadHttpFile(assetIndexUrl, localIndexFile, nullptr);
+        }
+    }
+
+    // Step 2.6: If Fabric loader is selected, ensure Fabric libraries are present!
+    if (loader == L"fabric") {
+        if (progress) progress(L"Подготовка библиотек Fabric...", 50);
+        std::vector<VersionLibInfo> fabricLibs = {
+            { L"net\\fabricmc\\fabric-loader\\0.16.9\\fabric-loader-0.16.9.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar" },
+            { L"net\\fabricmc\\intermediary\\" + mcVersion + L"\\intermediary-" + mcVersion + L".jar",
+              L"https://maven.fabricmc.net/net/fabricmc/intermediary/" + mcVersion + L"/intermediary-" + mcVersion + L".jar" },
+            { L"net\\fabricmc\\sponge-mixin\\0.15.3+mixin.0.8.7\\sponge-mixin-0.15.3+mixin.0.8.7.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.15.3+mixin.0.8.7/sponge-mixin-0.15.3+mixin.0.8.7.jar" },
+            { L"net\\fabricmc\\tiny-mappings-parser\\0.3.0+build.17\\tiny-mappings-parser-0.3.0+build.17.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/tiny-mappings-parser/0.3.0+build.17/tiny-mappings-parser-0.3.0+build.17.jar" },
+            { L"net\\fabricmc\\tiny-remapper\\0.10.4\\tiny-remapper-0.10.4.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/tiny-remapper/0.10.4/tiny-remapper-0.10.4.jar" },
+            { L"net\\fabricmc\\access-widener\\2.1.0\\access-widener-2.1.0.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/access-widener/2.1.0/access-widener-2.1.0.jar" },
+            { L"net\\fabricmc\\mapping-io\\0.6.1\\mapping-io-0.6.1.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/mapping-io/0.6.1/mapping-io-0.6.1.jar" },
+            { L"org\\ow2\\asm\\asm\\9.7.1\\asm-9.7.1.jar",
+              L"https://maven.fabricmc.net/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar" },
+            { L"org\\ow2\\asm\\asm-analysis\\9.7.1\\asm-analysis-9.7.1.jar",
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar" },
+            { L"org\\ow2\\asm\\asm-commons\\9.7.1\\asm-commons-9.7.1.jar",
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar" },
+            { L"org\\ow2\\asm\\asm-tree\\9.7.1\\asm-tree-9.7.1.jar",
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar" },
+            { L"org\\ow2\\asm\\asm-util\\9.7.1\\asm-util-9.7.1.jar",
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar" }
+        };
+
+        for (const auto& flib : fabricLibs) {
+            std::wstring targetPath = libDir + L"\\" + flib.path;
+            if (!CheckFileExists(targetPath)) {
+                bool found = false;
+                if (!mojangLibsDir.empty()) {
+                    std::wstring appDataLib = mojangLibsDir + L"\\" + flib.path;
+                    if (CheckFileExists(appDataLib)) {
+                        EnsureDirTree(targetPath);
+                        CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE);
+                        found = true;
+                    }
+                }
+                if (!found && !flib.url.empty()) {
+                    DownloadHttpFile(flib.url, targetPath, nullptr);
+                }
+            }
+        }
+    }
+
     // Step 3: Parse and ensure ALL Minecraft Libraries (e.g. joptsimple, guava, gson, lwjgl)
     std::vector<VersionLibInfo> libsToEnsure;
     if (!versionJsonContent.empty()) {
@@ -489,19 +593,16 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         std::wstring targetPath = libDir + L"\\" + lib.path;
 
         if (!CheckFileExists(targetPath)) {
-            // Check if available in standard %APPDATA%\.minecraft\libraries
             bool foundInAppData = false;
             if (!mojangLibsDir.empty()) {
                 std::wstring appDataLibPath = mojangLibsDir + L"\\" + lib.path;
                 if (CheckFileExists(appDataLibPath)) {
-                    // Copy existing library locally
                     EnsureDirTree(targetPath);
                     CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE);
                     foundInAppData = true;
                 }
             }
 
-            // If not found in local AppData, download from Mojang CDN
             if (!foundInAppData && !lib.url.empty()) {
                 DownloadHttpFile(lib.url, targetPath, nullptr);
             }
@@ -550,9 +651,9 @@ bool MinecraftLauncher::LaunchMinecraft(
         if (callbacks.onLog) callbacks.onLog(warnBuf, true);
     }
 
-    // 2. Prepare Game Files (client.jar and Mojang libraries)
+    // 2. Prepare Game Files (client.jar, Mojang libraries, Fabric loader)
     if (callbacks.onProgress) callbacks.onProgress(L"Подготовка файлов игры и библиотек...", 15);
-    bool filesOk = PrepareMinecraftFiles(storageDir, mcVersion, callbacks.onProgress);
+    bool filesOk = PrepareMinecraftFiles(storageDir, mcVersion, loader, callbacks.onProgress);
     if (!filesOk) {
         if (callbacks.onLog) callbacks.onLog(L"[Aether Launcher] Ошибка: Не удалось подготовить файлы для версии " + mcVersion, true);
         if (callbacks.onProgress) callbacks.onProgress(L"Ошибка загрузки файлов", 0);
@@ -567,8 +668,35 @@ bool MinecraftLauncher::LaunchMinecraft(
 
     EnsureDirTree(storageDir + L"\\instances");
     EnsureDirTree(instanceDir);
+    EnsureDirTree(instanceDir + L"\\mods");
+    EnsureDirTree(instanceDir + L"\\screenshots");
+    EnsureDirTree(instanceDir + L"\\saves");
     EnsureDirTree(assetsDir);
     EnsureDirTree(nativesDir);
+
+    // Audio / Sound: Check for complete sound objects in %APPDATA%\.minecraft\assets
+    std::wstring effectiveAssetsDir = assetsDir;
+    WCHAR appDataAssets[MAX_PATH] = { 0 };
+    if (GetEnvironmentVariableW(L"APPDATA", appDataAssets, MAX_PATH) > 0) {
+        std::wstring mojangAssets = std::wstring(appDataAssets) + L"\\.minecraft\\assets";
+        if (PathFileExistsW((mojangAssets + L"\\indexes").c_str()) && PathFileExistsW((mojangAssets + L"\\objects").c_str())) {
+            effectiveAssetsDir = mojangAssets;
+        }
+        // Copy user mods from %APPDATA%\.minecraft\mods to instanceDir\mods
+        std::wstring userModsDir = std::wstring(appDataAssets) + L"\\.minecraft\\mods";
+        WIN32_FIND_DATAW mfd;
+        HANDLE hModFind = FindFirstFileW((userModsDir + L"\\*.jar").c_str(), &mfd);
+        if (hModFind != INVALID_HANDLE_VALUE) {
+            do {
+                std::wstring src = userModsDir + L"\\" + mfd.cFileName;
+                std::wstring dst = instanceDir + L"\\mods\\" + mfd.cFileName;
+                if (!CheckFileExists(dst)) {
+                    CopyFileW(src.c_str(), dst.c_str(), FALSE);
+                }
+            } while (FindNextFileW(hModFind, &mfd));
+            FindClose(hModFind);
+        }
+    }
 
     // 4. Build Complete Classpath Recursively (Resolving joptsimple, guava, lwjgl, etc.)
     std::vector<std::wstring> allJars;
@@ -617,8 +745,23 @@ bool MinecraftLauncher::LaunchMinecraft(
         callbacks.onLog(cpMsg, false);
     }
 
-    // Determine Main Class
+    // Determine Main Class and Asset Index
     std::wstring mainClass = L"net.minecraft.client.main.Main";
+    if (loader == L"fabric" || loader == L"quilt") {
+        mainClass = L"net.fabricmc.loader.impl.launch.knot.KnotClient";
+    }
+
+    std::wstring assetIndexId = mcVersion;
+    int mcMinor = 0;
+    swscanf(mcVersion.c_str(), L"1.%d", &mcMinor);
+    if (mcMinor >= 21) assetIndexId = L"17";
+    else if (mcMinor == 20) assetIndexId = L"16";
+    else if (mcMinor == 19) assetIndexId = L"8";
+    else if (mcMinor == 18) assetIndexId = L"1.18";
+    else if (mcMinor == 17) assetIndexId = L"1.17";
+    else if (mcMinor == 16) assetIndexId = L"1.16";
+    else if (mcMinor == 12) assetIndexId = L"1.12";
+
     std::wstring versionJsonPath = storageDir + L"\\versions\\" + mcVersion + L"\\" + mcVersion + L".json";
     FILE* vfp = _wfopen(versionJsonPath.c_str(), L"rb");
     if (vfp) {
@@ -629,13 +772,27 @@ bool MinecraftLauncher::LaunchMinecraft(
             std::vector<char> vbuf(vsz + 1, 0);
             fread(vbuf.data(), 1, vsz, vfp);
             std::string content = vbuf.data();
-            size_t mcPos = content.find("\"mainClass\": \"");
-            if (mcPos != std::string::npos) {
-                mcPos += 14;
-                size_t mcEnd = content.find("\"", mcPos);
-                if (mcEnd != std::string::npos) {
-                    std::string mcs = content.substr(mcPos, mcEnd - mcPos);
-                    mainClass = std::wstring(mcs.begin(), mcs.end());
+            if (loader == L"vanilla") {
+                size_t mcPos = content.find("\"mainClass\": \"");
+                if (mcPos != std::string::npos) {
+                    mcPos += 14;
+                    size_t mcEnd = content.find("\"", mcPos);
+                    if (mcEnd != std::string::npos) {
+                        std::string mcs = content.substr(mcPos, mcEnd - mcPos);
+                        mainClass = std::wstring(mcs.begin(), mcs.end());
+                    }
+                }
+            }
+            size_t aPos = content.find("\"assetIndex\":");
+            if (aPos != std::string::npos) {
+                size_t idPos = content.find("\"id\": \"", aPos);
+                if (idPos != std::string::npos && idPos < aPos + 200) {
+                    idPos += 7;
+                    size_t idEnd = content.find("\"", idPos);
+                    if (idEnd != std::string::npos) {
+                        std::string aid = content.substr(idPos, idEnd - idPos);
+                        assetIndexId = std::wstring(aid.begin(), aid.end());
+                    }
                 }
             }
         }
@@ -661,28 +818,30 @@ bool MinecraftLauncher::LaunchMinecraft(
 
     std::wstring finalNickname = nickname.empty() ? L"Player" : nickname;
     std::wstring flagsToUse = customArgs.empty() ? selectedPresetFlags : customArgs;
+    std::wstring versionType = (loader == L"vanilla") ? L"release" : loader;
 
     std::wstring cmdLine = L"\"" + java.path + L"\" " +
         memArg + L" " +
         (flagsToUse.empty() ? L"" : (flagsToUse + L" ")) +
         L"-Djava.library.path=\"" + nativesDir + L"\" " +
-        L"-Dminecraft.launcher.brand=Aether " +
+        L"-Dminecraft.launcher.brand=minecraft " +
         L"-Dminecraft.launcher.version=1.0.38 " +
         L"-cp " + classpath + L" " +
         mainClass + L" " +
         L"--username \"" + finalNickname + L"\" " +
         L"--version \"" + mcVersion + L"\" " +
         L"--gameDir \"" + instanceDir + L"\" " +
-        L"--assetsDir \"" + assetsDir + L"\" " +
-        L"--assetIndex \"" + mcVersion + L"\" " +
+        L"--assetsDir \"" + effectiveAssetsDir + L"\" " +
+        L"--assetIndex \"" + assetIndexId + L"\" " +
         L"--uuid 00000000-0000-0000-0000-000000000000 " +
         L"--accessToken 0 " +
         L"--userType mojang " +
-        L"--versionType Aether-" + loader;
+        L"--versionType " + versionType;
 
     if (callbacks.onLog) {
         callbacks.onLog(L"[Aether Launcher] JVM Аргументы: " + (flagsToUse.empty() ? L"(по умолчанию)" : flagsToUse), false);
         callbacks.onLog(L"[Aether Launcher] Главный класс клиента: " + mainClass, false);
+        callbacks.onLog(L"[Aether Launcher] Индекс аудиоресурсов: " + assetIndexId, false);
     }
     if (callbacks.onProgress) callbacks.onProgress(L"Запуск процесса игры...", 90);
 

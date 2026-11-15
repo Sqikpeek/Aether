@@ -248,11 +248,11 @@ static std::wstring g_lastCrashSolution = L"";
 
 // Mod Loaders
 static std::vector<std::pair<std::wstring, std::wstring>> g_loaders = {
-    { L"vanilla", L"Vanilla (Чистый)" },
-    { L"fabric", L"Fabric Loader" },
+    { L"vanilla", L"Vanilla" },
+    { L"fabric", L"Fabric" },
     { L"forge", L"Forge" },
     { L"neoforge", L"NeoForge" },
-    { L"quilt", L"Quilt Loader" }
+    { L"quilt", L"Quilt" }
 };
 
 // Expanded Minecraft Versions (21 Popular Releases)
@@ -1155,7 +1155,7 @@ static const int MODS_PER_PAGE = 4;
 static const ModItem* g_selectedModDetail = nullptr;
 
 static std::vector<std::wstring> g_modCategories = {
-    L"Все", L"Оптимизация", L"Шейдеры", L"Интерфейс", L"Технологии", L"Библиотеки", L"Карты", L"Приключения", L"Декор", L"Магия", L"Мобы"
+    L"Все", L"Установленные", L"Оптимизация", L"Шейдеры", L"Интерфейс", L"Технологии", L"Библиотеки", L"Карты", L"Приключения", L"Декор", L"Магия", L"Мобы"
 };
 
 // Quick RAM presets (MB)
@@ -1257,15 +1257,8 @@ inline bool DownloadModrinthMod(const std::wstring& slugOrId, const std::wstring
     if (!wideFileUrl.empty()) {
         ok = MinecraftLauncher::DownloadHttpFile(wideFileUrl, destFile, progress);
     } else {
-        HANDLE hFile = CreateFileW(destFile.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile != INVALID_HANDLE_VALUE) {
-            std::string stub = "PK\x03\x04 Aether Mod: " + std::string(slugOrId.begin(), slugOrId.end());
-            DWORD written = 0;
-            WriteFile(hFile, stub.c_str(), (DWORD)stub.size(), &written, NULL);
-            CloseHandle(hFile);
-            ok = true;
-            if (progress) progress(100);
-        }
+        // Do NOT create corrupt dummy files that break mod loaders!
+        ok = false;
     }
 
     if (ok) {
@@ -1326,7 +1319,7 @@ inline void SetModState(const std::wstring& slugOrName, bool installed, bool dow
 
 inline void FetchModrinthOnlineMods(const std::wstring& query, int offset, const std::wstring& loader, HWND hwnd) {
     std::thread([query, offset, loader, hwnd]() {
-        std::wstring apiUrl = L"https://api.modrinth.com/v2/search?limit=20&offset=" + std::to_wstring(offset);
+        std::wstring apiUrl = L"https://api.modrinth.com/v2/search?limit=100&offset=" + std::to_wstring(offset);
         if (!query.empty()) {
             apiUrl += L"&query=" + query;
         }
@@ -1729,7 +1722,9 @@ void FilterMods() {
 
     for (const auto& m : g_allMods) {
         // Category filter
-        if (g_selectedCategory != L"Все" && m.category != g_selectedCategory) {
+        if (g_selectedCategory == L"Установленные") {
+            if (!m.installed) continue;
+        } else if (g_selectedCategory != L"Все" && m.category != g_selectedCategory) {
             continue;
         }
 
@@ -1760,6 +1755,24 @@ void FilterMods() {
         g_filteredMods.push_back(m);
     }
     g_modPage = 0;
+}
+
+
+static std::vector<std::wstring> GetInstalledModFiles(const std::wstring& storageDir, const std::wstring& mcVersion) {
+    std::vector<std::wstring> result;
+    std::wstring modsDir = storageDir + L"\\instances\\" + mcVersion + L"\\mods";
+    std::wstring pattern = modsDir + L"\\*.jar";
+    WIN32_FIND_DATAW wfd;
+    HANDLE hFind = FindFirstFileW(pattern.c_str(), &wfd);
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(wfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                result.push_back(wfd.cFileName);
+            }
+        } while (FindNextFileW(hFind, &wfd));
+        FindClose(hFind);
+    }
+    return result;
 }
 
 // ----------------------------------------------------------------------------
@@ -1987,20 +2000,37 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                                  L"  •  " + Tr(L"Статус: Готов", L"Status: Ready");
             g.DrawString(stats.c_str(), -1, &fontSmall, cStatsPt, &mutedBrush);
 
-            int btnW = 150;
-            int btnX = contentX + cardW - btnW - 20;
-            int btnY = cY + (cardH - 32) / 2;
+            std::vector<std::wstring> instJars = GetInstalledModFiles(g_config.storagePath, g_containers[i].version);
+            std::wstring modCountText = std::wstring(L"📦 ") + Tr(L"Моды (", L"Mods (") + std::to_wstring(instJars.size()) + L")";
 
+            int btnW = 160;
+            int btnX = contentX + cardW - btnW - 16;
+
+            // 1. Active / Select Button (Top)
+            int actBtnY = cY + 14;
             if (isActive) {
-                DrawCard(g, (float)btnX, (float)btnY, (float)btnW, 32, 6, g_currentTheme.accent, g_currentTheme.accent);
-                DrawIconCheck(g, (float)btnX + 18, (float)btnY + 10, 12.0f, Color(255, 255, 255, 255));
-                PointF selTextPt((float)btnX + 38, (float)btnY + 7);
-                g.DrawString(Tr(L"Активен", L"Active"), -1, &fontSmallBold, selTextPt, &whiteBrush);
+                DrawCard(g, (float)btnX, (float)actBtnY, (float)btnW, 28, 6, g_currentTheme.accent, g_currentTheme.accent);
+                DrawIconCheck(g, (float)btnX + 16, (float)actBtnY + 8, 12.0f, Color(255, 255, 255, 255));
+                PointF selTextPt((float)btnX + 36, (float)actBtnY + 6);
+                g.DrawString(Tr(L"Активен ✔", L"Active ✔"), -1, &fontSmallBold, selTextPt, &whiteBrush);
             } else {
-                DrawCard(g, (float)btnX, (float)btnY, (float)btnW, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-                RectF selRc((float)btnX, (float)btnY, (float)btnW, 32);
-                g.DrawString(Tr(L"Выбрать контейнер", L"Select Container"), -1, &fontSmallBold, selRc, &sfCenter, &mutedBrush);
+                DrawCard(g, (float)btnX, (float)actBtnY, (float)btnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                RectF selRc((float)btnX, (float)actBtnY, (float)btnW, 28);
+                g.DrawString(Tr(L"Выбрать профиль", L"Select Profile"), -1, &fontSmallBold, selRc, &sfCenter, &mutedBrush);
             }
+
+            // 2. Separate Installed Mods Button (Middle)
+            int modsBtnY = cY + 48;
+            DrawCard(g, (float)btnX, (float)modsBtnY, (float)btnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+            RectF modsRc((float)btnX, (float)modsBtnY, (float)btnW, 28);
+            SolidBrush cyanPillBrush(Color(255, 56, 189, 248));
+            g.DrawString(modCountText.c_str(), -1, &fontSmallBold, modsRc, &sfCenter, &cyanPillBrush);
+
+            // 3. Quick Game Folder Button (Bottom - Screenshots, Saves, Mods)
+            int folderBtnY = cY + 82;
+            DrawCard(g, (float)btnX, (float)folderBtnY, (float)btnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+            RectF folderRc((float)btnX, (float)folderBtnY, (float)btnW, 28);
+            g.DrawString(Tr(L"📁 Папка с игрой", L"📁 Game Folder"), -1, &fontSmallBold, folderRc, &sfCenter, &whiteBrush);
         }
     }
     else if (g_currentTab == 1) {
@@ -2597,17 +2627,28 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
     GraphicsPath glowPath;
     AddRoundRect(glowPath, (float)playBtnX - 4, (float)playBtnY - 4, (float)playBtnW + 8, (float)playBtnH + 8, 16);
-    SolidBrush glowBrush(g_currentTheme.accentGlow);
-    g.FillPath(&glowBrush, &glowPath);
 
-    const wchar_t* playText = g_isGameRunning.load()
-        ? Tr(L"■  В ИГРЕ", L"■  RUNNING")
-        : Tr(L"▶  ИГРАТЬ", L"▶  PLAY");
+    if (g_isGameRunning.load()) {
+        SolidBrush glowBrush(Color(70, 239, 68, 68));
+        g.FillPath(&glowBrush, &glowPath);
 
-    DrawGradientButton(g, (float)playBtnX, (float)playBtnY, (float)playBtnW, (float)playBtnH, 14,
-                       g_currentTheme.accent, g_currentTheme.accentSecondary,
-                       Color(255, 255, 255, 255), playText, fontPlayBtn,
-                       g_hoverPlayBtn, g_pressPlayBtn);
+        const wchar_t* stopText = Tr(L"⏹  ОСТАНОВИТЬ", L"⏹  STOP GAME");
+        Color stopGrad1(255, 239, 68, 68);
+        Color stopGrad2(255, 185, 28, 28);
+        DrawGradientButton(g, (float)playBtnX, (float)playBtnY, (float)playBtnW, (float)playBtnH, 14,
+                           stopGrad1, stopGrad2,
+                           Color(255, 255, 255, 255), stopText, fontPlayBtn,
+                           g_hoverPlayBtn, g_pressPlayBtn);
+    } else {
+        SolidBrush glowBrush(g_currentTheme.accentGlow);
+        g.FillPath(&glowBrush, &glowPath);
+
+        const wchar_t* playText = Tr(L"▶  ИГРАТЬ", L"▶  PLAY");
+        DrawGradientButton(g, (float)playBtnX, (float)playBtnY, (float)playBtnW, (float)playBtnH, 14,
+                           g_currentTheme.accent, g_currentTheme.accentSecondary,
+                           Color(255, 255, 255, 255), playText, fontPlayBtn,
+                           g_hoverPlayBtn, g_pressPlayBtn);
+    }
 
     BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
 
@@ -2671,6 +2712,7 @@ void StartMinecraftLaunch() {
         bool prepared = MinecraftLauncher::PrepareMinecraftFiles(
             g_config.storagePath,
             g_activeVersion,
+            g_config.loader,
             [](const std::wstring& status, int pct) {
                 g_launchStatus = status;
                 g_launchProgressPct = pct;
@@ -2860,6 +2902,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         );
         SendMessageW(g_hEditGameHeight, WM_SETFONT, (WPARAM)hFontNick, TRUE);
 
+        // Auto-fetch full live online Modrinth catalog (hundreds of mods)
+        std::thread([hwnd]() {
+            FetchModrinthOnlineMods(L"", 0, g_config.loader, hwnd);
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            FetchModrinthOnlineMods(L"", 100, g_config.loader, hwnd);
+        }).detach();
+
         return 0;
     }
 
@@ -2873,6 +2922,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 GetWindowTextW(g_hEditModSearch, buf, 127);
                 g_modSearchQuery = buf;
                 FilterMods();
+                if (wcslen(buf) >= 2) {
+                    FetchModrinthOnlineMods(g_modSearchQuery, 0, g_config.loader, hwnd);
+                }
                 InvalidateRect(hwnd, NULL, FALSE);
             }
             else if (id == IDC_EDIT_RAM && g_hEditRam && !g_isDraggingSlider && !g_suppressRamChange) {
@@ -3127,12 +3179,25 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
-        // Click Play button
+        // Click Play / Stop button
         int playBtnW = 190;
         int playBtnH = 52;
         int playBtnX = width - playBtnW - 20;
         int playBtnY = height - 84 + 16;
         if (x >= playBtnX && x <= playBtnX + playBtnW && y >= playBtnY && y <= playBtnY + playBtnH) {
+            if (g_isGameRunning.load()) {
+                AppendLog(Tr(L"[Aether] Остановка процесса Minecraft по запросу игрока...",
+                             L"[Aether] Terminating Minecraft process on player request..."));
+                if (g_hGameProcess && g_hGameProcess != INVALID_HANDLE_VALUE) {
+                    MinecraftLauncher::TerminateRunningGame(g_hGameProcess);
+                    g_hGameProcess = NULL;
+                }
+                g_isGameRunning.store(false);
+                g_launchStatus = Tr(L"Игра остановлена", L"Game stopped");
+                AppendLog(Tr(L"[Aether] Игра успешно остановлена.", L"[Aether] Game successfully stopped."));
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
             g_pressPlayBtn = true;
             InvalidateRect(hwnd, NULL, FALSE);
             StartMinecraftLaunch();
@@ -3225,6 +3290,43 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             for (size_t i = 0; i < g_containers.size(); ++i) {
                 int cY = cardY + (int)i * (cardH + 16);
+                int btnW = 160;
+                int btnX = contentX + cardW - btnW - 16;
+                int actBtnY = cY + 14;
+                int modsBtnY = cY + 48;
+                int folderBtnY = cY + 82;
+
+                // Click Active / Select Container
+                if (x >= btnX && x <= btnX + btnW && y >= actBtnY && y <= actBtnY + 28) {
+                    SetActiveContainer((int)i);
+                    return 0;
+                }
+
+                // Click Installed Mods Button -> Switch to Mods tab with "Установленные" filter!
+                if (x >= btnX && x <= btnX + btnW && y >= modsBtnY && y <= modsBtnY + 28) {
+                    SetActiveContainer((int)i);
+                    g_currentTab = 1;
+                    g_selectedCategory = L"Установленные";
+                    FilterMods();
+                    if (g_hEditModSearch) ShowWindow(g_hEditModSearch, SW_SHOW);
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+
+                // Click Game Folder Button -> Open Explorer at instances\<version> (screenshots, mods, saves)
+                if (x >= btnX && x <= btnX + btnW && y >= folderBtnY && y <= folderBtnY + 28) {
+                    std::wstring instDir = g_config.storagePath + L"\\instances\\" + g_containers[i].version;
+                    EnsureDirectoryExists(instDir);
+                    EnsureDirectoryExists(instDir + L"\\screenshots");
+                    EnsureDirectoryExists(instDir + L"\\mods");
+                    EnsureDirectoryExists(instDir + L"\\saves");
+                    ShellExecuteW(NULL, L"open", instDir.c_str(), NULL, NULL, SW_SHOW);
+                    AppendLog(Tr(L"[Aether] Открыта папка игры (скриншоты, моды, сейвы): " + instDir,
+                                 L"[Aether] Opened game folder: " + instDir));
+                    return 0;
+                }
+
+                // Click card body
                 if (x >= contentX && x <= contentX + cardW && y >= cY && y <= cY + cardH) {
                     SetActiveContainer((int)i);
                     return 0;
@@ -3410,13 +3512,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
                 return 0;
             }
-            // Online Modrinth Fetch Button (+20)
-            int moreBtnW = 200;
-            int moreBtnX = contentX + contentW - 120 - moreBtnW - 10;
-            if (x >= moreBtnX && x <= moreBtnX + moreBtnW && y >= pageBarY + 4 && y <= pageBarY + 32) {
-                FetchModrinthOnlineMods(g_modSearchQuery, (int)g_allMods.size(), g_config.loader, hwnd);
-                return 0;
-            }
+
             // Next Button
             if (x >= contentX + contentW - 120 && x <= contentX + contentW - 10 && y >= pageBarY + 4 && y <= pageBarY + 32) {
                 if (g_modPage + 1 < totalPages) {

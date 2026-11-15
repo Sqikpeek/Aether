@@ -35,8 +35,16 @@ public:
     static bool PrepareMinecraftFiles(
         const std::wstring& storageDir,
         const std::wstring& mcVersion,
-        std::function<void(const std::wstring& status, int percent)> progress = nullptr
+        const std::wstring& loader,
+        std::function<void(const std::wstring& status, int percent)> progress
     );
+    static bool PrepareMinecraftFiles(
+        const std::wstring& storageDir,
+        const std::wstring& mcVersion,
+        std::function<void(const std::wstring& status, int percent)> progress = nullptr
+    ) {
+        return PrepareMinecraftFiles(storageDir, mcVersion, L"vanilla", progress);
+    }
     static bool LaunchMinecraft(
         const std::wstring& storageDir,
         const std::wstring& mcVersion,
