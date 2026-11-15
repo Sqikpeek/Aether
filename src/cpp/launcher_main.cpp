@@ -19,6 +19,7 @@
 #include <dwmapi.h>
 #include <shlwapi.h>
 #include <shellapi.h>
+#include <commdlg.h>
 
 #include <string>
 #include <vector>
@@ -38,6 +39,7 @@
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "wininet.lib")
+#pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "shell32.lib")
@@ -245,6 +247,32 @@ static std::mutex g_logsMutex;
 static std::wstring g_lastCrashTitle = L"";
 static std::wstring g_lastCrashCause = L"";
 static std::wstring g_lastCrashSolution = L"";
+static int g_logScrollOffset = -1; // -1 = auto-scroll to bottom
+
+// Forward declarations
+static std::vector<std::wstring> GetInstalledModFiles(const std::wstring& storageDir, const std::wstring& containerId);
+static void SyncInstalledModsWithDisk(const std::wstring& storageDir, const std::wstring& containerId);
+void SaveLogsToFile(HWND hwnd);
+void CopyLogsToClipboard(HWND hwnd);
+
+
+inline std::wstring GetContainerDir(const std::wstring& storageDir, const std::wstring& containerId) {
+    return MinecraftLauncher::CleanPath(storageDir + L"\\instances\\" + containerId);
+}
+
+inline std::wstring GetContainerModsDir(const std::wstring& storageDir, const std::wstring& containerId) {
+    return MinecraftLauncher::CleanPath(GetContainerDir(storageDir, containerId) + L"\\mods");
+}
+
+inline void EnsureContainerStructure(const std::wstring& storageDir, const std::wstring& containerId) {
+    std::wstring cDir = GetContainerDir(storageDir, containerId);
+    EnsureDirectoryExists(storageDir + L"\\instances");
+    EnsureDirectoryExists(cDir);
+    EnsureDirectoryExists(cDir + L"\\mods");
+    EnsureDirectoryExists(cDir + L"\\saves");
+    EnsureDirectoryExists(cDir + L"\\screenshots");
+    EnsureDirectoryExists(cDir + L"\\config");
+}
 
 // Mod Loaders
 static std::vector<std::pair<std::wstring, std::wstring>> g_loaders = {
@@ -290,13 +318,13 @@ static std::vector<ModItem> g_allMods = {
         L"sodium", L"Sodium", L"Оптимизация", L"35.4M",
         L"Современный движок рендеринга для Fabric, колоссально повышающий FPS.",
         L"Sodium — свободный открытый движок рендеринга нового поколения для Minecraft на Fabric. Он кардинально оптимизирует построение чанков, устраняет микрофризы и повышает FPS в 2-5 раз без потерь графики.",
-        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/sodium", true
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"CaffeineMC", L"https://modrinth.com/mod/sodium", false
     },
     {
         L"iris", L"Iris Shaders", L"Шейдеры", L"26.1M",
         L"Современный загрузчик шейдер-паков с поддержкой PBR и совместимостью с Sodium.",
         L"Iris — современный загрузчик шейдеров с непревзойденной производительностью благодаря глубокой интеграции с Sodium. Поддерживает BSL, Complementary, Sildurs и классические OptiFine-шейдеры.",
-        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"coderbot", L"https://modrinth.com/mod/iris", true
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"coderbot", L"https://modrinth.com/mod/iris", false
     },
     {
         L"lithium", L"Lithium", L"Оптимизация", L"21.8M",
@@ -308,7 +336,7 @@ static std::vector<ModItem> g_allMods = {
         L"fabric-api", L"Fabric API", L"Библиотеки", L"48.2M",
         L"Основная библиотека хуков и событий, необходимая для большинства модов Fabric.",
         L"Fabric API — обязательная библиотека для экосистемы Fabric, предоставляющая необходимые хуки, события и интерфейсы для взаимодействия модов с игровым движком.",
-        L"1.14 – 1.21.3", L"Fabric", L"FabricMC", L"https://modrinth.com/mod/fabric-api", true
+        L"1.14 – 1.21.3", L"Fabric", L"FabricMC", L"https://modrinth.com/mod/fabric-api", false
     },
     {
         L"create", L"Create", L"Технологии", L"22.5M",
@@ -1188,16 +1216,17 @@ inline std::wstring ToLowerW(const std::wstring& s) {
 // Modrinth Download & File Management Helpers
 // ----------------------------------------------------------------------------
 inline std::string FetchHttpString(const std::wstring& url) {
-    HINTERNET hInternet = InternetOpenW(L"AetherLauncher/1.0", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    HINTERNET hInternet = InternetOpenW(L"Sqikpeek-Aether/1.0.38 (admin@sqikpeek.com)", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if (!hInternet) return "";
-    HINTERNET hUrl = InternetOpenUrlW(hInternet, url.c_str(), NULL, 0,
+    const wchar_t* headers = L"User-Agent: Sqikpeek-Aether/1.0.38 (admin@sqikpeek.com)\r\nAccept: application/json\r\n";
+    HINTERNET hUrl = InternetOpenUrlW(hInternet, url.c_str(), headers, (DWORD)wcslen(headers),
         INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_SECURE, 0);
     if (!hUrl) {
         InternetCloseHandle(hInternet);
         return "";
     }
     std::string result;
-    char buffer[4096];
+    char buffer[8192];
     DWORD bytesRead = 0;
     while (InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
         result.append(buffer, bytesRead);
@@ -1208,40 +1237,112 @@ inline std::string FetchHttpString(const std::wstring& url) {
     return result;
 }
 
-inline bool DownloadModrinthMod(const std::wstring& slugOrId, const std::wstring& modName, const std::wstring& storageDir, const std::wstring& mcVersion, std::function<void(int pct)> progress) {
-    std::wstring verApiUrl = L"https://api.modrinth.com/v2/project/" + slugOrId + L"/version";
-    std::string json = FetchHttpString(verApiUrl);
+inline bool DownloadModrinthMod(
+    const std::wstring& slugOrId,
+    const std::wstring& modName,
+    const std::wstring& containerModsDir,
+    const std::wstring& mcVersion,
+    const std::wstring& loader,
+    std::function<void(int pct)> progress
+) {
+    EnsureDirectoryExists(containerModsDir);
 
     std::wstring wideFileUrl;
     std::wstring wideFilename;
 
-    if (!json.empty()) {
-        size_t urlPos = json.find("\"url\":\"https://cdn.modrinth.com/");
-        if (urlPos == std::string::npos) {
-            urlPos = json.find("\"url\": \"https://cdn.modrinth.com/");
-            if (urlPos != std::string::npos) urlPos += 8;
-        } else {
-            urlPos += 7;
-        }
-        if (urlPos != std::string::npos) {
-            size_t endQuote = json.find("\"", urlPos);
-            if (endQuote != std::string::npos) {
-                std::string fileUrl = json.substr(urlPos, endQuote - urlPos);
-                wideFileUrl = std::wstring(fileUrl.begin(), fileUrl.end());
+    // 1. Query Modrinth API with loader & mcVersion filter
+    std::wstring verApiUrl = L"https://api.modrinth.com/v2/project/" + slugOrId + L"/version?loaders=[%22" + loader + L"%22]&game_versions=[%22" + mcVersion + L"%22]";
+    std::string json = FetchHttpString(verApiUrl);
 
-                std::string filename = "";
-                size_t fnPos = json.find("\"filename\":\"", urlPos > 300 ? urlPos - 300 : 0);
-                if (fnPos != std::string::npos) {
-                    fnPos += 12;
-                    size_t fnEnd = json.find("\"", fnPos);
-                    if (fnEnd != std::string::npos) {
-                        filename = json.substr(fnPos, fnEnd - fnPos);
+    if (json.empty() || json.find("\"url\"") == std::string::npos) {
+        verApiUrl = L"https://api.modrinth.com/v2/project/" + slugOrId + L"/version";
+        json = FetchHttpString(verApiUrl);
+    }
+
+    if (!json.empty()) {
+        size_t cur = 0;
+        while ((cur = json.find("\"url\"", cur)) != std::string::npos) {
+            size_t colon = json.find(":", cur);
+            if (colon == std::string::npos) break;
+            size_t q1 = json.find("\"", colon);
+            if (q1 == std::string::npos) break;
+            size_t q2 = json.find("\"", q1 + 1);
+            if (q2 == std::string::npos) break;
+            std::string candidateUrl = json.substr(q1 + 1, q2 - q1 - 1);
+            if (candidateUrl.find("https://cdn.modrinth.com/") != std::string::npos ||
+                candidateUrl.find(".jar") != std::string::npos) {
+                wideFileUrl = std::wstring(candidateUrl.begin(), candidateUrl.end());
+
+                size_t fnCur = json.rfind("\"filename\"", q1);
+                if (fnCur == std::string::npos || q1 - fnCur > 400) {
+                    fnCur = json.find("\"filename\"", q2);
+                }
+                if (fnCur != std::string::npos && std::abs((long long)fnCur - (long long)q1) < 400) {
+                    size_t fnColon = json.find(":", fnCur);
+                    if (fnColon != std::string::npos) {
+                        size_t fnQ1 = json.find("\"", fnColon);
+                        if (fnQ1 != std::string::npos) {
+                            size_t fnQ2 = json.find("\"", fnQ1 + 1);
+                            if (fnQ2 != std::string::npos) {
+                                std::string fnStr = json.substr(fnQ1 + 1, fnQ2 - fnQ1 - 1);
+                                if (fnStr.find(".jar") != std::string::npos) {
+                                    wideFilename = std::wstring(fnStr.begin(), fnStr.end());
+                                }
+                            }
+                        }
                     }
                 }
-                if (!filename.empty()) {
-                    wideFilename = std::wstring(filename.begin(), filename.end());
-                }
+                break;
             }
+            cur = q2 + 1;
+        }
+    }
+
+    // 2. High-speed Direct Fallback Map for top popular Modrinth mods
+    if (wideFileUrl.empty()) {
+        std::wstring lSlug = ToLowerW(slugOrId);
+        if (lSlug == L"sodium") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/AANobbMI/versions/mc1.21.1-0.5.11/sodium-fabric-0.5.11+mc1.21.1.jar";
+            wideFilename = L"sodium-fabric-0.5.11+mc1.21.1.jar";
+        } else if (lSlug == L"fabric-api") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/P7dR8mIH/versions/0.102.0+1.21.1/fabric-api-0.102.0+1.21.1.jar";
+            wideFilename = L"fabric-api-0.102.0+1.21.1.jar";
+        } else if (lSlug == L"iris") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/YL57xq9U/versions/1.7.5+1.21.1/iris-1.7.5+1.21.1.jar";
+            wideFilename = L"iris-1.7.5+1.21.1.jar";
+        } else if (lSlug == L"lithium") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/gvQqBUqZ/versions/mc1.21.1-0.12.7/lithium-fabric-0.12.7+mc1.21.1.jar";
+            wideFilename = L"lithium-fabric-0.12.7+mc1.21.1.jar";
+        } else if (lSlug == L"ferrite-core" || lSlug == L"ferritecore") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/uXXizFIs/versions/7.0.0-fabric/ferritecore-7.0.0-fabric.jar";
+            wideFilename = L"ferritecore-7.0.0-fabric.jar";
+        } else if (lSlug == L"indium") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/Orvt0mRa/versions/1.0.34+mc1.21/indium-1.0.34+mc1.21.jar";
+            wideFilename = L"indium-1.0.34+mc1.21.jar";
+        } else if (lSlug == L"modmenu") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/mOgUt4GM/versions/11.0.1/modmenu-11.0.1.jar";
+            wideFilename = L"modmenu-11.0.1.jar";
+        } else if (lSlug == L"entityculling") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/NNAgCjsB/versions/1.7.0/entityculling-fabric-1.7.0-mc1.21.jar";
+            wideFilename = L"entityculling-fabric-1.7.0-mc1.21.jar";
+        } else if (lSlug == L"cloth-config") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/9s6Sm8Za/versions/15.0.127+fabric/cloth-config-15.0.127-fabric.jar";
+            wideFilename = L"cloth-config-15.0.127-fabric.jar";
+        } else if (lSlug == L"continuity") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/1IjD5062/versions/3.0.0-beta.5+1.21/continuity-3.0.0-beta.5+1.21.jar";
+            wideFilename = L"continuity-3.0.0-beta.5+1.21.jar";
+        } else if (lSlug == L"appleskin") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/EsAfCjCV/versions/mc1.21-3.0.4/appleskin-fabric-mc1.21-3.0.4.jar";
+            wideFilename = L"appleskin-fabric-mc1.21-3.0.4.jar";
+        } else if (lSlug == L"dynamic-fps") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/LQ3K71Q1/versions/v3.6.3-1.21/dynamic-fps-3.6.3+minecraft-1.21.jar";
+            wideFilename = L"dynamic-fps-3.6.3+minecraft-1.21.jar";
+        } else if (lSlug == L"immediatelyfast") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/5ZwdcRci/versions/1.2.18+1.21.1/ImmediatelyFast-Fabric-1.2.18+1.21.1.jar";
+            wideFilename = L"ImmediatelyFast-Fabric-1.2.18+1.21.1.jar";
+        } else if (lSlug == L"no-chat-reports") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/qQyHxfxd/versions/Fabric-1.21-v2.8.0/NoChatReports-FABRIC-1.21-v2.8.0.jar";
+            wideFilename = L"NoChatReports-FABRIC-1.21-v2.8.0.jar";
         }
     }
 
@@ -1249,27 +1350,32 @@ inline bool DownloadModrinthMod(const std::wstring& slugOrId, const std::wstring
         wideFilename = slugOrId + L"-mc" + mcVersion + L".jar";
     }
 
-    std::wstring modsDir = storageDir + L"\\instances\\" + mcVersion + L"\\mods";
-    EnsureDirectoryExists(modsDir);
-    std::wstring destFile = modsDir + L"\\" + wideFilename;
-
-    bool ok = false;
-    if (!wideFileUrl.empty()) {
-        ok = MinecraftLauncher::DownloadHttpFile(wideFileUrl, destFile, progress);
-    } else {
-        // Do NOT create corrupt dummy files that break mod loaders!
-        ok = false;
+    std::wstring destFile = containerModsDir + L"\\" + wideFilename;
+    if (wideFileUrl.empty()) {
+        return false;
     }
 
-    if (ok) {
-        WCHAR appData[MAX_PATH];
-        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, appData))) {
-            std::wstring mcModsDir = std::wstring(appData) + L"\\.minecraft\\mods";
-            EnsureDirectoryExists(mcModsDir);
-            CopyFileW(destFile.c_str(), (mcModsDir + L"\\" + wideFilename).c_str(), FALSE);
-        }
+    bool downloadOk = MinecraftLauncher::DownloadHttpFile(wideFileUrl, destFile, progress);
+    if (!downloadOk) {
+        DeleteFileW(destFile.c_str());
+        return false;
     }
-    return ok;
+
+    // Verify downloaded file exists and is not empty / corrupted
+    HANDLE hCheck = CreateFileW(destFile.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hCheck == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER fsz;
+    GetFileSizeEx(hCheck, &fsz);
+    CloseHandle(hCheck);
+
+    if (fsz.QuadPart < 500) {
+        DeleteFileW(destFile.c_str());
+        return false;
+    }
+
+    return true;
 }
 
 inline bool RemoveModrinthMod(const std::wstring& slugOrId, const std::wstring& storageDir, const std::wstring& mcVersion) {
@@ -1414,35 +1520,58 @@ inline void FetchModrinthOnlineMods(const std::wstring& query, int offset, const
     }).detach();
 }
 inline void TriggerModDownload(const std::wstring& slug, const std::wstring& modTitle, HWND hwnd) {
-    SetModState(slug, false, true, 20);
+    SetModState(slug, false, true, 10);
     AppendLog(Tr(L"[Modrinth] Начат поиск и скачивание мода: " + modTitle,
                  L"[Modrinth] Started searching and downloading mod: " + modTitle));
     InvalidateRect(hwnd, NULL, FALSE);
 
     std::wstring storageDir = g_config.storagePath;
-    std::wstring ver = g_config.version;
+    std::wstring ver = g_activeVersion;
+    std::wstring loader = g_config.loader;
+    std::wstring containerId = g_containers[g_activeContainerIndex].id;
+    std::wstring containerModsDir = GetContainerModsDir(storageDir, containerId);
 
-    std::thread([slug, modTitle, storageDir, ver, hwnd]() {
-        bool ok = DownloadModrinthMod(slug, modTitle, storageDir, ver, [slug, hwnd](int pct) {
+    std::thread([slug, modTitle, storageDir, containerId, containerModsDir, ver, loader, hwnd]() {
+        bool ok = DownloadModrinthMod(slug, modTitle, containerModsDir, ver, loader, [slug, hwnd](int pct) {
             SetModState(slug, false, true, pct);
             InvalidateRect(hwnd, NULL, FALSE);
         });
 
-        SetModState(slug, true, false, 100);
-        AppendLog(Tr(L"[Modrinth] Мод " + modTitle + L" успешно загружен и установлен в папку mods!",
-                     L"[Modrinth] Mod " + modTitle + L" successfully downloaded and installed to mods folder!"));
+        if (ok) {
+            SetModState(slug, true, false, 100);
+            SyncInstalledModsWithDisk(storageDir, containerId);
+            AppendLog(Tr(L"[Modrinth] Мод «" + modTitle + L"» успешно загружен и сохранен в папку mods контейнера!",
+                         L"[Modrinth] Mod «" + modTitle + L"» successfully saved to container mods folder!"));
+        } else {
+            SetModState(slug, false, false, 0);
+            AppendLog(Tr(L"[Modrinth] [ОШИБКА] Не удалось скачать «" + modTitle + L"»! Проверьте соединение или доступ к Modrinth.",
+                         L"[Modrinth] [ERROR] Failed to download «" + modTitle + L"»! Check network or Modrinth access."));
+        }
         InvalidateRect(hwnd, NULL, FALSE);
     }).detach();
 }
 
 inline void TriggerModRemove(const std::wstring& slug, const std::wstring& modTitle, HWND hwnd) {
     std::wstring storageDir = g_config.storagePath;
-    std::wstring ver = g_config.version;
+    std::wstring containerId = g_containers[g_activeContainerIndex].id;
+    std::wstring containerModsDir = GetContainerModsDir(storageDir, containerId);
 
-    RemoveModrinthMod(slug, storageDir, ver);
+    std::vector<std::wstring> jars = GetInstalledModFiles(storageDir, containerId);
+    std::wstring lSlug = ToLowerW(slug);
+    std::wstring lTitle = ToLowerW(modTitle);
+
+    for (const auto& jar : jars) {
+        std::wstring lJar = ToLowerW(jar);
+        if (lJar.find(lSlug) != std::wstring::npos || lJar.find(lTitle) != std::wstring::npos) {
+            std::wstring fullPath = containerModsDir + L"\\" + jar;
+            DeleteFileW(fullPath.c_str());
+        }
+    }
+
     SetModState(slug, false, false, 0);
-    AppendLog(Tr(L"[Modrinth] Мод " + modTitle + L" удален из папки mods.",
-                 L"[Modrinth] Mod " + modTitle + L" removed from mods folder."));
+    SyncInstalledModsWithDisk(storageDir, containerId);
+    AppendLog(Tr(L"[Modrinth] Мод «" + modTitle + L"» удален из папки контейнера.",
+                 L"[Modrinth] Mod «" + modTitle + L"» removed from container folder."));
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
@@ -1666,6 +1795,8 @@ void SetActiveContainer(int index) {
         else if (g_config.loader == L"neoforge") g_selectedLoaderFilter = L"NeoForge";
         else if (g_config.loader == L"quilt") g_selectedLoaderFilter = L"Quilt";
         else g_selectedLoaderFilter = L"Все";
+        EnsureContainerStructure(g_config.storagePath, g_containers[index].id);
+        SyncInstalledModsWithDisk(g_config.storagePath, g_containers[index].id);
         SaveConfig(g_config);
         FilterMods();
 
@@ -1707,6 +1838,7 @@ void CreateNewContainerDialog() {
     else return;
 
     std::wstring newId = L"c-" + std::to_wstring(g_containers.size() + 1);
+    EnsureContainerStructure(g_config.storagePath, newId);
     g_containers.push_back({ newId, newName, newVer, newLdr, g_config.memoryMb });
     SetActiveContainer((int)g_containers.size() - 1);
     AppendLog(Tr(L"[Aether] Создан новый контейнер: " + newName, L"[Aether] Created new container: " + newName));
@@ -1758,9 +1890,10 @@ void FilterMods() {
 }
 
 
-static std::vector<std::wstring> GetInstalledModFiles(const std::wstring& storageDir, const std::wstring& mcVersion) {
+static std::vector<std::wstring> GetInstalledModFiles(const std::wstring& storageDir, const std::wstring& containerId) {
     std::vector<std::wstring> result;
-    std::wstring modsDir = storageDir + L"\\instances\\" + mcVersion + L"\\mods";
+    EnsureContainerStructure(storageDir, containerId);
+    std::wstring modsDir = GetContainerModsDir(storageDir, containerId);
     std::wstring pattern = modsDir + L"\\*.jar";
     WIN32_FIND_DATAW wfd;
     HANDLE hFind = FindFirstFileW(pattern.c_str(), &wfd);
@@ -1773,6 +1906,75 @@ static std::vector<std::wstring> GetInstalledModFiles(const std::wstring& storag
         FindClose(hFind);
     }
     return result;
+}
+
+static void SyncInstalledModsWithDisk(const std::wstring& storageDir, const std::wstring& containerId) {
+    std::vector<std::wstring> jars = GetInstalledModFiles(storageDir, containerId);
+    for (auto& m : g_allMods) {
+        m.installed = false;
+        std::wstring mId = ToLowerW(m.id);
+        std::wstring mName = ToLowerW(m.name);
+        for (const auto& jar : jars) {
+            std::wstring lJar = ToLowerW(jar);
+            if (lJar.find(mId) != std::wstring::npos || lJar.find(mName) != std::wstring::npos) {
+                m.installed = true;
+                break;
+            }
+        }
+    }
+    FilterMods();
+}
+
+void SaveLogsToFile(HWND hwnd) {
+    WCHAR szFile[MAX_PATH] = L"aether-minecraft.log";
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = sizeof(szFile) / sizeof(WCHAR);
+    ofn.lpstrFilter = L"Log Files (*.log)\0*.log\0Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrDefExt = L"log";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+
+    if (GetSaveFileNameW(&ofn)) {
+        FILE* fp = _wfopen(szFile, L"w, ccs=UTF-8");
+        if (fp) {
+            std::lock_guard<std::mutex> lock(g_logsMutex);
+            for (const auto& line : g_logs) {
+                fputws(line.c_str(), fp);
+                fputws(L"\n", fp);
+            }
+            fclose(fp);
+            AppendLog(Tr(L"[Aether] Лог успешно сохранен в файл: " + std::wstring(szFile),
+                         L"[Aether] Logs successfully saved to file: " + std::wstring(szFile)));
+        }
+    }
+}
+
+void CopyLogsToClipboard(HWND hwnd) {
+    std::wstring allText;
+    {
+        std::lock_guard<std::mutex> lock(g_logsMutex);
+        for (const auto& line : g_logs) {
+            allText += line + L"\r\n";
+        }
+    }
+    if (OpenClipboard(hwnd)) {
+        EmptyClipboard();
+        size_t bytes = (allText.size() + 1) * sizeof(wchar_t);
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (hMem) {
+            void* pMem = GlobalLock(hMem);
+            memcpy(pMem, allText.c_str(), bytes);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+        CloseClipboard();
+        AppendLog(Tr(L"[Aether] Все логи скопированы в буфер обмена!",
+                     L"[Aether] All logs copied to clipboard!"));
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -2000,8 +2202,8 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                                  L"  •  " + Tr(L"Статус: Готов", L"Status: Ready");
             g.DrawString(stats.c_str(), -1, &fontSmall, cStatsPt, &mutedBrush);
 
-            std::vector<std::wstring> instJars = GetInstalledModFiles(g_config.storagePath, g_containers[i].version);
-            std::wstring modCountText = std::wstring(L"📦 ") + Tr(L"Моды (", L"Mods (") + std::to_wstring(instJars.size()) + L")";
+            std::vector<std::wstring> instJars = GetInstalledModFiles(g_config.storagePath, g_containers[i].id);
+            std::wstring modCountText = Tr(L"Моды (", L"Mods (") + std::to_wstring(instJars.size()) + L")";
 
             int btnW = 160;
             int btnX = contentX + cardW - btnW - 16;
@@ -2030,7 +2232,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             int folderBtnY = cY + 82;
             DrawCard(g, (float)btnX, (float)folderBtnY, (float)btnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
             RectF folderRc((float)btnX, (float)folderBtnY, (float)btnW, 28);
-            g.DrawString(Tr(L"📁 Папка с игрой", L"📁 Game Folder"), -1, &fontSmallBold, folderRc, &sfCenter, &whiteBrush);
+            g.DrawString(Tr(L"Папка с игрой", L"Game Folder"), -1, &fontSmallBold, folderRc, &sfCenter, &whiteBrush);
         }
     }
     else if (g_currentTab == 1) {
@@ -2096,7 +2298,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
             DrawCard(g, (float)contentX + 196, (float)actY, 210, 36, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
             PointF linkPt((float)contentX + 210, (float)actY + 8);
-            g.DrawString(Tr(L"🌐 Страница на Modrinth", L"🌐 Page on Modrinth"), -1, &fontSmallBold, linkPt, &whiteBrush);
+            g.DrawString(Tr(L"Страница на Modrinth ↗", L"Modrinth Page ↗"), -1, &fontSmallBold, linkPt, &whiteBrush);
         }
         else {
             PointF titlePt((float)contentX, (float)contentY);
@@ -2118,12 +2320,12 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             int findBtnX = contentX + searchBoxW + 8;
             DrawCard(g, (float)findBtnX, (float)searchY, (float)findBtnW, 34, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
             RectF findRc((float)findBtnX, (float)searchY, (float)findBtnW, 34);
-            g.DrawString(Tr(L"🔍 Поиск", L"🔍 Search"), -1, &fontSmallBold, findRc, &sfCenter, &whiteBrush);
+            g.DrawString(Tr(L"Поиск", L"Search"), -1, &fontSmallBold, findRc, &sfCenter, &whiteBrush);
 
             int quickDlBtnX = findBtnX + findBtnW + 8;
             DrawGradientButton(g, (float)quickDlBtnX, (float)searchY, (float)quickDlBtnW, 34, 8,
                                g_currentTheme.accent, g_currentTheme.accentSecondary,
-                               Color(255, 255, 255, 255), Tr(L"⚡ Скачать любой мод", L"⚡ Download Any Mod"), fontSmallBold, false, false);
+                               Color(255, 255, 255, 255), Tr(L"+ Скачать любой мод", L"+ Download Any Mod"), fontSmallBold, false, false);
 
             // 1. Mod Loader Filter Pills (Separate mods by loader!)
             int loaderFilterY = searchY + 42;
@@ -2147,7 +2349,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             }
 
             // Sync with active profile hint
-            std::wstring syncText = Tr(L"⚡ Текущий профиль: " + g_config.loader, L"⚡ Profile loader: " + g_config.loader);
+            std::wstring syncText = Tr(L"Профиль: " + g_config.loader, L"Profile: " + g_config.loader);
             PointF syncPt((float)curLdrX + 10, (float)loaderFilterY + 3);
             SolidBrush cyanSyncBrush(Color(255, 56, 189, 248));
             g.DrawString(syncText.c_str(), -1, &fontSmall, syncPt, &cyanSyncBrush);
@@ -2294,18 +2496,42 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             logY += 88;
         }
 
-        int termH = mainH - logY - 10;
+        // Save & Copy Buttons
+        int saveBtnW = 140;
+        int copyBtnW = 110;
+        int btnGap = 8;
+        int copyBtnX = contentX + contentW - copyBtnW;
+        int saveBtnX = copyBtnX - saveBtnW - btnGap;
+        int logBtnY = contentY + 12;
+
+        DrawCard(g, (float)saveBtnX, (float)logBtnY, (float)saveBtnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        RectF saveRc((float)saveBtnX, (float)logBtnY, (float)saveBtnW, 28);
+        g.DrawString(Tr(L"Скачать лог", L"Download Log"), -1, &fontSmallBold, saveRc, &sfCenter, &whiteBrush);
+
+        DrawCard(g, (float)copyBtnX, (float)logBtnY, (float)copyBtnW, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+        RectF copyRc((float)copyBtnX, (float)logBtnY, (float)copyBtnW, 28);
+        g.DrawString(Tr(L"Копировать", L"Copy All"), -1, &fontSmallBold, copyRc, &sfCenter, &mutedBrush);
+
+        int termH = mainH - logY - 14;
         DrawCard(g, (float)contentX, (float)logY, (float)contentW, (float)termH, 8, Color(255, 10, 11, 16), g_currentTheme.border);
 
         FontFamily ffMono(L"Consolas");
         Font fontMono(&ffMono, 11, FontStyleRegular, UnitPixel);
 
         std::lock_guard<std::mutex> lock(g_logsMutex);
-        int maxLines = (termH - 20) / 18;
-        int startIdx = std::max(0, (int)g_logs.size() - maxLines);
+        int totalLogs = (int)g_logs.size();
+        int visibleLines = (termH - 24) / 18;
+        if (visibleLines < 1) visibleLines = 1;
+        int maxOffset = std::max(0, totalLogs - visibleLines);
 
-        for (int i = startIdx; i < (int)g_logs.size(); ++i) {
-            int lineY = logY + 10 + (i - startIdx) * 18;
+        int curOffset = g_logScrollOffset;
+        if (curOffset < 0 || curOffset > maxOffset) {
+            curOffset = maxOffset;
+        }
+
+        int endIdx = std::min(totalLogs, curOffset + visibleLines);
+        for (int i = curOffset; i < endIdx; ++i) {
+            int lineY = logY + 12 + (i - curOffset) * 18;
             PointF logPt((float)contentX + 14, (float)lineY);
 
             Color lineCol = g_currentTheme.textMain;
@@ -2319,6 +2545,32 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
             SolidBrush lineBrush(lineCol);
             g.DrawString(g_logs[i].c_str(), -1, &fontMono, logPt, &lineBrush);
+        }
+
+        // Draw Interactive Scrollbar
+        if (totalLogs > visibleLines) {
+            int sbX = contentX + contentW - 12;
+            int sbY = logY + 4;
+            int sbH = termH - 8;
+            int thumbH = std::max(20, (visibleLines * sbH) / totalLogs);
+            int thumbY = sbY + (curOffset * (sbH - thumbH)) / maxOffset;
+
+            SolidBrush sbTrackBrush(Color(40, 255, 255, 255));
+            g.FillRectangle(&sbTrackBrush, sbX + 2, sbY, 4, sbH);
+
+            SolidBrush sbThumbBrush(g_currentTheme.accent);
+            GraphicsPath thumbPath;
+            AddRoundRect(thumbPath, (float)sbX, (float)thumbY, 8.0f, (float)thumbH, 4);
+            g.FillPath(&sbThumbBrush, &thumbPath);
+
+            // Floating "Down" pill button if scrolled up
+            if (curOffset < maxOffset) {
+                int downBtnX = contentX + contentW - 100;
+                int downBtnY = logY + termH - 34;
+                DrawCard(g, (float)downBtnX, (float)downBtnY, 85, 24, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+                RectF dRc((float)downBtnX, (float)downBtnY, 85, 24);
+                g.DrawString(Tr(L"В конец", L"To bottom"), -1, &fontSmallBold, dRc, &sfCenter, &whiteBrush);
+            }
         }
     }
     else if (g_currentTab == 3) {
@@ -2771,6 +3023,10 @@ void StartMinecraftLaunch() {
             PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
         };
 
+        std::wstring containerId = g_containers[g_activeContainerIndex].id;
+        std::wstring containerDir = GetContainerDir(g_config.storagePath, containerId);
+        EnsureContainerStructure(g_config.storagePath, containerId);
+
         bool launched = MinecraftLauncher::LaunchMinecraft(
             g_config.storagePath,
             g_activeVersion,
@@ -2781,7 +3037,8 @@ void StartMinecraftLaunch() {
             g_config.jvmPreset,
             g_config.customJvmArgs,
             callbacks,
-            &g_hGameProcess
+            &g_hGameProcess,
+            containerDir
         );
 
         if (!launched) {
@@ -2892,7 +3149,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         );
         SendMessageW(g_hEditGameWidth, WM_SETFONT, (WPARAM)hFontNick, TRUE);
 
+        g_config.customJavaPath = MinecraftLauncher::CleanPath(g_config.customJavaPath);
         g_detectedJava = MinecraftLauncher::DetectJava(g_config.customJavaPath);
+        g_detectedJava.path = MinecraftLauncher::CleanPath(g_detectedJava.path);
+        EnsureContainerStructure(g_config.storagePath, g_containers[0].id);
+        SyncInstalledModsWithDisk(g_config.storagePath, g_containers[0].id);
 
         g_hEditGameHeight = CreateWindowExW(
             0, L"EDIT", std::to_wstring(g_config.windowHeight).c_str(),
@@ -3043,8 +3304,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     case WM_MOUSEWHEEL: {
+        int delta = GET_WHEEL_DELTA_WPARAM(wParam);
         if (g_currentTab == 1 && g_selectedModDetail == nullptr) {
-            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
             int totalPages = std::max(1, (int)(g_filteredMods.size() + MODS_PER_PAGE - 1) / MODS_PER_PAGE);
 
             if (delta < 0 && g_modPage + 1 < totalPages) {
@@ -3054,6 +3315,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_modPage--;
                 InvalidateRect(hwnd, NULL, FALSE);
             }
+            return 0;
+        } else if (g_currentTab == 2) {
+            std::lock_guard<std::mutex> lock(g_logsMutex);
+            int totalLogs = (int)g_logs.size();
+            int termH = 460;
+            int visibleLines = (termH - 24) / 18;
+            int maxOffset = std::max(0, totalLogs - visibleLines);
+
+            if (g_logScrollOffset < 0) g_logScrollOffset = maxOffset;
+
+            int linesToScroll = (delta / WHEEL_DELTA) * 3;
+            g_logScrollOffset -= linesToScroll;
+            if (g_logScrollOffset < 0) g_logScrollOffset = 0;
+            if (g_logScrollOffset >= maxOffset) g_logScrollOffset = -1;
+
+            InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
         break;
@@ -3305,6 +3582,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 // Click Installed Mods Button -> Switch to Mods tab with "Установленные" filter!
                 if (x >= btnX && x <= btnX + btnW && y >= modsBtnY && y <= modsBtnY + 28) {
                     SetActiveContainer((int)i);
+                    SyncInstalledModsWithDisk(g_config.storagePath, g_containers[i].id);
                     g_currentTab = 1;
                     g_selectedCategory = L"Установленные";
                     FilterMods();
@@ -3313,16 +3591,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     return 0;
                 }
 
-                // Click Game Folder Button -> Open Explorer at instances\<version> (screenshots, mods, saves)
+                // Click Game Folder Button -> Open Explorer at instances\<containerId> (isolated container folder)
                 if (x >= btnX && x <= btnX + btnW && y >= folderBtnY && y <= folderBtnY + 28) {
-                    std::wstring instDir = g_config.storagePath + L"\\instances\\" + g_containers[i].version;
-                    EnsureDirectoryExists(instDir);
-                    EnsureDirectoryExists(instDir + L"\\screenshots");
-                    EnsureDirectoryExists(instDir + L"\\mods");
-                    EnsureDirectoryExists(instDir + L"\\saves");
+                    std::wstring instDir = GetContainerDir(g_config.storagePath, g_containers[i].id);
+                    EnsureContainerStructure(g_config.storagePath, g_containers[i].id);
                     ShellExecuteW(NULL, L"open", instDir.c_str(), NULL, NULL, SW_SHOW);
-                    AppendLog(Tr(L"[Aether] Открыта папка игры (скриншоты, моды, сейвы): " + instDir,
-                                 L"[Aether] Opened game folder: " + instDir));
+                    AppendLog(Tr(L"[Aether] Открыта изолированная папка контейнера: " + instDir,
+                                 L"[Aether] Opened container folder: " + instDir));
                     return 0;
                 }
 
@@ -3519,6 +3794,43 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     g_modPage++;
                     InvalidateRect(hwnd, NULL, FALSE);
                 }
+                return 0;
+            }
+        }
+
+        
+        // --- Tab 2: Logs Tab Interaction (Download & Copy Logs) ---
+        if (g_currentTab == 2) {
+            int contentX = 220 + 24;
+            int contentW = width - 220 - 48;
+            int contentY = 54 + 16;
+            int saveBtnW = 140;
+            int copyBtnW = 110;
+            int btnGap = 8;
+            int copyBtnX = contentX + contentW - copyBtnW;
+            int saveBtnX = copyBtnX - saveBtnW - btnGap;
+            int logBtnY = contentY + 12;
+
+            if (x >= saveBtnX && x <= saveBtnX + saveBtnW && y >= logBtnY && y <= logBtnY + 28) {
+                SaveLogsToFile(hwnd);
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            if (x >= copyBtnX && x <= copyBtnX + copyBtnW && y >= logBtnY && y <= logBtnY + 28) {
+                CopyLogsToClipboard(hwnd);
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            int logY = contentY + 60;
+            if (!g_lastCrashCause.empty()) logY += 88;
+            int termH = (rc.bottom - rc.top - 84) - logY - 14;
+            int downBtnX = contentX + contentW - 100;
+            int downBtnY = logY + termH - 34;
+            if (x >= downBtnX && x <= downBtnX + 85 && y >= downBtnY && y <= downBtnY + 24) {
+                g_logScrollOffset = -1;
+                InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
         }

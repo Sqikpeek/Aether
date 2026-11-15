@@ -5,6 +5,32 @@
 #include <algorithm>
 #include <unordered_set>
 
+std::wstring MinecraftLauncher::CleanPath(const std::wstring& path) {
+    if (path.empty()) return path;
+    std::wstring result;
+    bool lastWasSlash = false;
+    for (size_t i = 0; i < path.size(); ++i) {
+        wchar_t c = path[i];
+        if (c == L'/') c = L'\\';
+        if (c == L'\\') {
+            if (i == 1 && path[0] == L'\\') {
+                // UNC path root: \\server\share
+                result.push_back(c);
+            } else if (!lastWasSlash) {
+                result.push_back(c);
+                lastWasSlash = true;
+            }
+        } else {
+            result.push_back(c);
+            lastWasSlash = false;
+        }
+    }
+    while (result.size() > 3 && result.back() == L'\\') {
+        result.pop_back();
+    }
+    return result;
+}
+
 static bool CheckFileExists(const std::wstring& path) {
     DWORD dwAttrib = GetFileAttributesW(path.c_str());
     return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
@@ -186,20 +212,20 @@ JavaInfo MinecraftLauncher::DetectJava(const std::wstring& customPath) {
     std::vector<std::wstring> candidates;
 
     if (!customPath.empty() && CheckFileExists(customPath)) {
-        candidates.push_back(customPath);
+        candidates.push_back(CleanPath(customPath));
     }
 
     // Check JAVA_HOME
     WCHAR javaHome[MAX_PATH];
     if (GetEnvironmentVariableW(L"JAVA_HOME", javaHome, MAX_PATH) > 0) {
-        std::wstring bin = std::wstring(javaHome) + L"\\bin\\java.exe";
+        std::wstring bin = CleanPath(std::wstring(javaHome) + L"\\bin\\java.exe");
         if (CheckFileExists(bin)) candidates.push_back(bin);
     }
 
     // Check PATH
     WCHAR pathBuf[MAX_PATH];
     if (SearchPathW(NULL, L"java.exe", NULL, MAX_PATH, pathBuf, NULL) > 0) {
-        candidates.push_back(pathBuf);
+        candidates.push_back(CleanPath(pathBuf));
     }
 
     // Common installation folders on Windows
@@ -220,9 +246,9 @@ JavaInfo MinecraftLauncher::DetectJava(const std::wstring& customPath) {
             do {
                 if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                     if (wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0) {
-                        std::wstring sub = base + L"\\" + fd.cFileName + L"\\bin\\java.exe";
+                        std::wstring sub = CleanPath(base + L"\\" + fd.cFileName + L"\\bin\\java.exe");
                         if (CheckFileExists(sub)) candidates.push_back(sub);
-                        std::wstring subJre = base + L"\\" + fd.cFileName + L"\\jre\\bin\\java.exe";
+                        std::wstring subJre = CleanPath(base + L"\\" + fd.cFileName + L"\\jre\\bin\\java.exe");
                         if (CheckFileExists(subJre)) candidates.push_back(subJre);
                     }
                 }
@@ -232,7 +258,8 @@ JavaInfo MinecraftLauncher::DetectJava(const std::wstring& customPath) {
     }
 
     // Inspect first working candidate
-    for (const auto& cand : candidates) {
+    for (const auto& rawCand : candidates) {
+        std::wstring cand = CleanPath(rawCand);
         SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
         HANDLE hRead, hWrite;
         if (CreatePipe(&hRead, &hWrite, &sa, 0)) {
@@ -306,14 +333,15 @@ bool MinecraftLauncher::DownloadHttpFile(
     const std::wstring& destPath,
     std::function<void(int percent)> progress
 ) {
-    HINTERNET hInternet = InternetOpenW(L"AetherLauncher/1.0", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    HINTERNET hInternet = InternetOpenW(L"Sqikpeek-Aether/1.0.38 (admin@sqikpeek.com)", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if (!hInternet) return false;
 
+    const wchar_t* customHeaders = L"User-Agent: Sqikpeek-Aether/1.0.38 (admin@sqikpeek.com)\r\nAccept: */*\r\n";
     HINTERNET hUrl = InternetOpenUrlW(
         hInternet,
         url.c_str(),
-        NULL,
-        0,
+        customHeaders,
+        (DWORD)wcslen(customHeaders),
         INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_SECURE,
         0
     );
@@ -630,7 +658,8 @@ bool MinecraftLauncher::LaunchMinecraft(
     const std::wstring& jvmPreset,
     const std::wstring& customArgs,
     LaunchProgressCallback callbacks,
-    HANDLE* outProcessHandle
+    HANDLE* outProcessHandle,
+    const std::wstring& instanceDirOverride
 ) {
     if (callbacks.onProgress) callbacks.onProgress(L"Проверка среды Java...", 5);
     if (callbacks.onLog) callbacks.onLog(L"[Aether Launcher] Инициализация запуска Minecraft " + mcVersion, false);
@@ -660,8 +689,8 @@ bool MinecraftLauncher::LaunchMinecraft(
         return false;
     }
 
-    // 3. Assemble directories and paths
-    std::wstring instanceDir = storageDir + L"\\instances\\" + mcVersion;
+    // 3. Assemble directories and paths (Container isolation)
+    std::wstring instanceDir = instanceDirOverride.empty() ? (storageDir + L"\\instances\\" + mcVersion) : instanceDirOverride;
     std::wstring assetsDir = storageDir + L"\\assets";
     std::wstring nativesDir = storageDir + L"\\versions\\" + mcVersion + L"\\natives";
     std::wstring clientJar = storageDir + L"\\versions\\" + mcVersion + L"\\" + mcVersion + L".jar";
@@ -671,6 +700,7 @@ bool MinecraftLauncher::LaunchMinecraft(
     EnsureDirTree(instanceDir + L"\\mods");
     EnsureDirTree(instanceDir + L"\\screenshots");
     EnsureDirTree(instanceDir + L"\\saves");
+    EnsureDirTree(instanceDir + L"\\config");
     EnsureDirTree(assetsDir);
     EnsureDirTree(nativesDir);
 
@@ -681,20 +711,6 @@ bool MinecraftLauncher::LaunchMinecraft(
         std::wstring mojangAssets = std::wstring(appDataAssets) + L"\\.minecraft\\assets";
         if (PathFileExistsW((mojangAssets + L"\\indexes").c_str()) && PathFileExistsW((mojangAssets + L"\\objects").c_str())) {
             effectiveAssetsDir = mojangAssets;
-        }
-        // Copy user mods from %APPDATA%\.minecraft\mods to instanceDir\mods
-        std::wstring userModsDir = std::wstring(appDataAssets) + L"\\.minecraft\\mods";
-        WIN32_FIND_DATAW mfd;
-        HANDLE hModFind = FindFirstFileW((userModsDir + L"\\*.jar").c_str(), &mfd);
-        if (hModFind != INVALID_HANDLE_VALUE) {
-            do {
-                std::wstring src = userModsDir + L"\\" + mfd.cFileName;
-                std::wstring dst = instanceDir + L"\\mods\\" + mfd.cFileName;
-                if (!CheckFileExists(dst)) {
-                    CopyFileW(src.c_str(), dst.c_str(), FALSE);
-                }
-            } while (FindNextFileW(hModFind, &mfd));
-            FindClose(hModFind);
         }
     }
 
@@ -842,6 +858,7 @@ bool MinecraftLauncher::LaunchMinecraft(
         callbacks.onLog(L"[Aether Launcher] JVM Аргументы: " + (flagsToUse.empty() ? L"(по умолчанию)" : flagsToUse), false);
         callbacks.onLog(L"[Aether Launcher] Главный класс клиента: " + mainClass, false);
         callbacks.onLog(L"[Aether Launcher] Индекс аудиоресурсов: " + assetIndexId, false);
+        callbacks.onLog(L"[Aether Launcher] Папка экземпляра игры: " + instanceDir, false);
     }
     if (callbacks.onProgress) callbacks.onProgress(L"Запуск процесса игры...", 90);
 

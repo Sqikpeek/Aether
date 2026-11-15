@@ -1,14 +1,11 @@
 #pragma once
-#define UNICODE
-#define _UNICODE
-#include <windows.h>
-#include <wininet.h>
 #include <string>
 #include <vector>
 #include <functional>
+#include <windows.h>
+#include <wininet.h>
 #include <thread>
 #include <atomic>
-#include <sstream>
 
 struct JavaInfo {
     std::wstring path;
@@ -19,12 +16,13 @@ struct JavaInfo {
 
 struct LaunchProgressCallback {
     std::function<void(const std::wstring& status, int percent)> onProgress;
-    std::function<void(const std::wstring& logLine, bool isError)> onLog;
+    std::function<void(const std::wstring& line, bool isError)> onLog;
     std::function<void(int exitCode)> onGameExited;
 };
 
 class MinecraftLauncher {
 public:
+    static std::wstring CleanPath(const std::wstring& path);
     static JavaInfo DetectJava(const std::wstring& customPath = L"");
     static int GetRequiredJavaVersion(const std::wstring& mcVersion);
     static bool DownloadHttpFile(
@@ -55,7 +53,8 @@ public:
         const std::wstring& jvmPreset,
         const std::wstring& customArgs,
         LaunchProgressCallback callbacks,
-        HANDLE* outProcessHandle
+        HANDLE* outProcessHandle = nullptr,
+        const std::wstring& instanceDirOverride = L""
     );
     static void TerminateRunningGame(HANDLE hProcess);
     static std::wstring AnalyzeCrashLog(const std::wstring& logText);
