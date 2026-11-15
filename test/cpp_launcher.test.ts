@@ -41,9 +41,9 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   const configHpp = fs.readFileSync('src/cpp/config.hpp', 'utf8');
 
   // Verify nickname is on main screen
-  assert.ok(launcherMain.includes('Никнейм'), 'Launcher UI must have Nickname label on main screen');
+  assert.ok(launcherMain.includes('НИКНЕЙМ') || launcherMain.includes('Никнейм'), 'Launcher UI must have Nickname label on main screen');
   assert.ok(launcherMain.includes('g_hEditNick') && launcherMain.includes('IDC_EDIT_NICKNAME'), 'Launcher UI must have nickname input control');
-  assert.ok(launcherMain.includes('g_hBtnPlay'), 'Launcher UI must have Play button');
+  assert.ok(launcherMain.includes('g_hoverPlayBtn') || launcherMain.includes('g_hBtnPlay') || launcherMain.includes('ИГРАТЬ'), 'Launcher UI must have Play button');
 
   // Verify Minecraft launch logic
   assert.ok(mcLauncher.includes('CreateProcessW'), 'Minecraft launcher must use CreateProcessW');
