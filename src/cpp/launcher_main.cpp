@@ -521,6 +521,486 @@ static std::vector<ModItem> g_allMods = {
         L"Фантастическое преображение измерения Края с неоновыми лесами и кастомными рудами.",
         L"Превращает пустоту Энда в чарующий инопланетный мир с кристаллическими горами, светящимися деревьями и мобами.",
         L"1.16.5 – 1.21.1", L"Fabric / Quilt", L"quiqueck", L"https://modrinth.com/mod/betterend", false
+    },
+    {
+        L"mekanism", L"Mekanism", L"Технологии", L"24.6M",
+        L"Высокотехнологичные фабрики, переработка руд 5x, джетпаки, реакторы и цифровая добыча.",
+        L"Mekanism — легендарный технологический мод, предоставляющий многоблочные термоядерные реакторы, лазеры, химические заводы, джетпаки и передовую броню Мека-костюма.",
+        L"1.16.5 – 1.21.1", L"Forge / NeoForge", L"aidancbrady", L"https://modrinth.com/mod/mekanism", false
+    },
+    {
+        L"botania", L"Botania", L"Магия", L"18.3M",
+        L"Естественная магия цветов, генерация маны, мистические руны и древние реликвии.",
+        L"Botania — необычный магический мод с акцентом на автоматизацию без традиционных числовых GUI. Вся мана и крафты управляются через лепестки цветов и распространители маны.",
+        L"1.12.2 – 1.20.1", L"Forge / Fabric", L"Vazkii", L"https://modrinth.com/mod/botania", false
+    },
+    {
+        L"terralith", L"Terralith", L"Карты", L"22.1M",
+        L"Грандиозное преображение генерации мира: каньоны, вулканы и 100+ новых биомов.",
+        L"Terralith кардинально преображает Overworld, создавая потрясающие реалистичные горы, пещеры и биомы без добавления новых блоков, гарантируя полную ванильную совместимость.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge / Quilt", L"Starmute", L"https://modrinth.com/mod/terralith", false
+    },
+    {
+        L"incendium", L"Incendium", L"Карты", L"11.7M",
+        L"Переработка Нижнего мира: гигантские вулканы, новые замки Незера и адские биомы.",
+        L"Incendium превращает Незер в опасный и захватывающий мир с новыми структурами Sanctum, крепостями пиглинов и уникальным оружием.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge", L"Starmute", L"https://modrinth.com/mod/incendium", false
+    },
+    {
+        L"nullscape", L"Nullscape", L"Карты", L"10.4M",
+        L"Глубокая переработка измерения Энда: кристаллические хребты и бездны пустоты.",
+        L"Nullscape делает измерение Края мистическим и опасным, возводя гигантские кристаллические пики высотой до 384 блоков.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge", L"Starmute", L"https://modrinth.com/mod/nullscape", false
+    },
+    {
+        L"twilightforest", L"The Twilight Forest", L"Приключения", L"31.8M",
+        L"Таинственный Сумеречный Лес: лабиринты, замки, уникальные боссы и сокровища.",
+        L"Классическое измерение вечных сумерек с Нагой, Личем, Гидрой, Ужасным Рыцарем и Замком на вершине плато ледников.",
+        L"1.12.2 – 1.20.4", L"Forge / NeoForge / Fabric", L"Benimatic", L"https://modrinth.com/mod/twilightforest", false
+    },
+    {
+        L"mowziesmobs", L"Mowzie's Mobs", L"Мобы", L"15.2M",
+        L"Эпические боссы с уникальными 3D-анимациями: Баракоа, Морозные Пасти и Рыцари.",
+        L"Mowzie's Mobs добавляет существ с непревзойденной проработкой анимаций, ИИ и уникальными паттернами атак.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"BobMowzie", L"https://modrinth.com/mod/mowziesmobs", false
+    },
+    {
+        L"cataclysm", L"L_Ender's Cataclysm", L"Боссы", L"13.9M",
+        L"Грандиозные подземелья и боссы: Незеритовый Монстр, Левиафан и Игниус.",
+        L"Добавляет смертоносные структуры и хардкорных многофазных боссов с уникальными анимациями и мощнейшим лутом.",
+        L"1.16.5 – 1.20.1", L"Forge / NeoForge", L"lender_c", L"https://modrinth.com/mod/cataclysm", false
+    },
+    {
+        L"dungeons-arise", L"When Dungeons Arise", L"Приключения", L"18.7M",
+        L"Колоссальные подземелья: летающие дирижабли, храмы пустынь и заброшенные города.",
+        L"Dungeons Arise генерирует масштабные структуры невиданных ранее размеров, наполненные ловушками, спавнерами и сокровищами.",
+        L"1.16.5 – 1.21.1", L"Fabric / Forge", L"Aureljz", L"https://modrinth.com/mod/dungeons-arise", false
+    },
+    {
+        L"yungs-better-mineshafts", L"YUNG's Better Mineshafts", L"Приключения", L"23.4M",
+        L"Полная переработка заброшенных шахт: вариации по биомам и скрытые тоннели.",
+        L"Заменяет скучные ванильные шахты динамичными лабиринтами с уникальным оформлением для каждого биома.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"YUNGNICKYOUNG", L"https://modrinth.com/mod/yungs-better-mineshafts", false
+    },
+    {
+        L"yungs-better-dungeons", L"YUNG's Better Dungeons", L"Приключения", L"19.2M",
+        L"Масштабная переработка спавнеров: склепы, храмы нежити и логова пауков.",
+        L"Превращает маленькие спавнеры ванильного майнкрафта в захватывающие подземные комплексы.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"YUNGNICKYOUNG", L"https://modrinth.com/mod/yungs-better-dungeons", false
+    },
+    {
+        L"c2me", L"C2ME (Chunk Pregenerator)", L"Оптимизация", L"9.8M",
+        L"Многопоточный расчет генерации и загрузки чанков на всех ядрах CPU.",
+        L"C2ME переносит генерацию чанков на все доступные потоки процессора, устраняя зависания при полете на элитрах.",
+        L"1.18.2 – 1.21.3", L"Fabric / Quilt", L"ishland", L"https://modrinth.com/mod/c2me-fabric", false
+    },
+    {
+        L"dynamic-fps", L"Dynamic FPS", L"Оптимизация", L"18.4M",
+        L"Снижение частоты кадров до 1 FPS при сворачивании игры для экономии ресурсов.",
+        L"Предотвращает перегрев видеокарты и снижает нагрузку на процессор, когда Minecraft свернут в трей.",
+        L"1.14 – 1.21.3", L"Fabric / Forge / NeoForge", L"jellysquid_", L"https://modrinth.com/mod/dynamic-fps", false
+    },
+    {
+        L"memoryleakfix", L"Memory Leak Fix", L"Оптимизация", L"12.1M",
+        L"Исправление утечек памяти в ванильном клиенте и библиотеках модов.",
+        L"Предотвращает постепенное разрастание используемой оперативной памяти во время длительных игровых сессий.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"TargetNotFound", L"https://modrinth.com/mod/memoryleakfix", false
+    },
+    {
+        L"simply-swords", L"Simply Swords", L"Оружие", L"16.5M",
+        L"Двуручные клинки, рапиры, копья, глефы и уникальные легендарные реликвии.",
+        L"Simply Swords добавляет десятки новых видов холодного оружия с кастомными анимациями атак и пассивными способностями.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge", L"Sweenus", L"https://modrinth.com/mod/simply-swords", false
+    },
+    {
+        L"better-combat", L"Better Combat", L"Оружие", L"22.8M",
+        L"Переработка боевой системы в стиле action-RPG: комбо-атаки, взмахи и тайминги.",
+        L"Позволяет наносить красивые комбо-удары оружием с плавной анимацией взмахов и попаданий по нескольким целям.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge", L"ZsoltFabian", L"https://modrinth.com/mod/better-combat", false
+    },
+    {
+        L"mrcrayfish-furniture", L"MrCrayfish's Furniture Mod", L"Декор", L"27.3M",
+        L"Современная мебель: диваны, столы, стулья, телевизоры, компьютеры и кухни.",
+        L"MrCrayfish's Furniture добавляет функциональную мебель для обустройства красивых современных комнат.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge / Fabric", L"MrCrayfish", L"https://modrinth.com/mod/mrcrayfish-furniture", false
+    },
+    {
+        L"supplementaries", L"Supplementaries", L"Декор", L"24.1M",
+        L"Анимированные вывески, флюгеры, клетки для мобов, краны, фляги и декор.",
+        L"Универсальный мод, гармонично дополняющий ванильный геймплей полезными декоративными и редстоун-блоками.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"MehVahdJukaar", L"https://modrinth.com/mod/supplementaries", false
+    },
+    {
+        L"chipped", L"Chipped", L"Декор", L"19.8M",
+        L"Тысячи новых вариантов текстур для ванильных блоков через верстак резчика.",
+        L"Chipped расширяет палитру строителя, добавляя витражи, резной кирпич, узорчатое дерево и плитку.",
+        L"1.16.5 – 1.21.1", L"Fabric / Forge / NeoForge", L"terrariumearth", L"https://modrinth.com/mod/chipped", false
+    },
+    {
+        L"ambient-sounds", L"AmbientSounds", L"Звук", L"17.6M",
+        L"Живое звуковое окружение: пение птиц в лесу, шелест ветра и эхо в пещерах.",
+        L"AmbientSounds наполняет мир Minecraft реалистичными фоновыми звуками дикой природы и подземелий.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge", L"CreativeMD", L"https://modrinth.com/mod/ambientsounds", false
+    },
+    {
+        L"sound-physics-remastered", L"Sound Physics Remastered", L"Звук", L"15.4M",
+        L"Реалистичная физика звука: эхо в больших пещерах, приглушение через стены и реверберация.",
+        L"Просчитывает распространение звуковых волн в пространстве, создавая глубокое погружение в атмосферу шахт.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"henkelmax", L"https://modrinth.com/mod/sound-physics-remastered", false
+    },
+    {
+        L"presence-footsteps", L"Presence Footsteps", L"Звук", L"13.2M",
+        L"Богатые и реалистичные звуки шагов по различным поверхностям и материалам.",
+        L"Заменяет стандартные звуки ходьбы динамичной акустической палитрой для дерева, камня, песка и травы.",
+        L"1.14 – 1.21.3", L"Fabric / Quilt", L"Sollace", L"https://modrinth.com/mod/presence-footsteps", false
+    },
+    {
+        L"sophisticated-backpacks", L"Sophisticated Backpacks", L"Инструменты", L"23.9M",
+        L"Улучшаемые рюкзаки с автосортировкой, магнитом, плавкой и крафтом внутри.",
+        L"Рюкзаки можно носить на спине, красить в любые цвета и оснащать десятками полезных модулей улучшений.",
+        L"1.16.5 – 1.21.1", L"Forge / NeoForge / Fabric", L"P3pp3rF1y", L"https://modrinth.com/mod/sophisticated-backpacks", false
+    },
+    {
+        L"iron-chests", L"Iron Chests", L"Инструменты", L"28.7M",
+        L"Сундуки повышенной вместимости: железные, золотые, алмазные и обсидиановые.",
+        L"Классический мод на компактное хранение сотен стаков предметов в пределах одного блока.",
+        L"1.12.2 – 1.21.3", L"Forge / NeoForge / Fabric", L"progwml6", L"https://modrinth.com/mod/iron-chests", false
+    },
+    {
+        L"curios", L"Curios API", L"Библиотеки", L"46.5M",
+        L"Слоты аксессуаров для колец, амулетов, плащей, поясов и магических реликвий.",
+        L"Стандартный фреймворк слотов экипировки, используемый сотнями модификаций на оружие и магию.",
+        L"1.12.2 – 1.21.1", L"Forge / NeoForge", L"TheIllusiveC4", L"https://modrinth.com/mod/curios", true
+    },
+    {
+        L"geckolib", L"GeckoLib", L"Библиотеки", L"41.2M",
+        L"Библиотека плавной 3D-анимации моделей мобов, брони и предметов.",
+        L"Предоставляет движок физической скелетной анимации для создания потрясающих существ и боссов.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"Gecko", L"https://modrinth.com/mod/geckolib", true
+    },
+    {
+        L"patchouli", L"Patchouli", L"Библиотеки", L"39.4M",
+        L"Интерактивные иллюстрированные энциклопедии и книги знаний для модов.",
+        L"Позволяет создателям модификаций оформлять подробные обучающие руководства прямо внутри игры.",
+        L"1.12.2 – 1.21.1", L"Forge / Fabric / NeoForge", L"Vazkii", L"https://modrinth.com/mod/patchouli", true
+    },
+    {
+        L"pehkui", L"Pehkui", L"Библиотеки", L"20.3M",
+        L"Динамическое изменение размера игрока, сущностей, предметов и хитбоксов.",
+        L"Позволяет модам уменьшать игрока до размеров муравья или увеличивать до гиганта с изменением физики.",
+        L"1.14 – 1.21.3", L"Fabric / Forge / Quilt", L"Virtuoel", L"https://modrinth.com/mod/pehkui", true
+    },
+    {
+        L"polymorph", L"Polymorph", L"Интерфейс", L"19.5M",
+        L"Удобный выбор рецепта при конфликте одинаковых крафтов из разных модов.",
+        L"Добавляет выпадающее меню над результатом верстака для выбора желаемого предмета.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"TheIllusiveC4", L"https://modrinth.com/mod/polymorph", false
+    },
+    {
+        L"controlling", L"Controlling", L"Интерфейс", L"32.4M",
+        L"Поиск и фильтрация горячих клавиш в меню настроек управления.",
+        L"Упрощает назначение кнопок в больших сборках модов и подсвечивает конфликтующие клавиши.",
+        L"1.12.2 – 1.21.3", L"Forge / NeoForge / Fabric", L"Jaredlll08", L"https://modrinth.com/mod/controlling", false
+    },
+    {
+        L"searchables", L"Searchables", L"Библиотеки", L"25.1M",
+        L"Универсальный компонент строки поиска для любых экранов инвентаря и настроек.",
+        L"Вспомогательная библиотека фильтрации элементов для сотен модификаций интерфейса.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"Jaredlll08", L"https://modrinth.com/mod/searchables", true
+    },
+    {
+        L"macaws-bridges", L"Macaw's Bridges", L"Декор", L"21.6M",
+        L"Красивые деревянные, каменные и веревочные подвесные мосты для рек и каньонов.",
+        L"Позволяет легко соединять берега аккуратными мостами с перилами различных стилей.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"sketch_macaw", L"https://modrinth.com/mod/macaws-bridges", false
+    },
+    {
+        L"macaws-doors", L"Macaw's Doors", L"Декор", L"18.9M",
+        L"Японские сёдзи, металлические люки, двери таверны и современные стеклянные двери.",
+        L"Расширяет набор дверей десятками новых вариаций со звуками и анимациями открытия.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"sketch_macaw", L"https://modrinth.com/mod/macaws-doors", false
+    },
+    {
+        L"macaws-windows", L"Macaw's Windows", L"Декор", L"17.4M",
+        L"Открывающиеся окна, ставни, мозаичные витражи и жалюзи для домов.",
+        L"Делает окна реалистичными, позволяя распахивать рамы кликом правой кнопки мыши.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"sketch_macaw", L"https://modrinth.com/mod/macaws-windows", false
+    },
+    {
+        L"macaws-roofs", L"Macaw's Roofs", L"Декор", L"16.8M",
+        L"Угловые крыши, черепица, водостоки и мансардные скаты для построек.",
+        L"Устраняет ступенчатость крыш ванильного майнкрафта с помощью плавных покатых блоков.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge / NeoForge", L"sketch_macaw", L"https://modrinth.com/mod/macaws-roofs", false
+    },
+    {
+        L"handcrafted", L"Handcrafted", L"Декор", L"14.7M",
+        L"Эстетичная резная мебель, подушки, полки, глиняная посуда и картины.",
+        L"Уютная средневековая и фэнтезийная мебель с текстурами высокого качества.",
+        L"1.18.2 – 1.21.1", L"Fabric / Forge", L"terrariumearth", L"https://modrinth.com/mod/handcrafted", false
+    },
+    {
+        L"visuality", L"Visuality", L"Шейдеры", L"11.9M",
+        L"Маленькие частицы искр, падающих листьев, брызг воды и светлячков.",
+        L"Оживляет мир деликатными визуальными эффектами частиц без влияния на производительность.",
+        L"1.18.2 – 1.21.3", L"Fabric / Quilt", L"Juuz", L"https://modrinth.com/mod/visuality", false
+    },
+    {
+        L"fallingleaves", L"Falling Leaves", L"Шейдеры", L"13.8M",
+        L"Красивое опадание разноцветных листьев с крон деревьев по ветру.",
+        L"Добавляет атмосферные кружащиеся листья под березами, дубами и сакурами.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"CheaterMad", L"https://modrinth.com/mod/fallingleaves", false
+    },
+    {
+        L"3dskinlayers", L"3D Skin Layers", L"Интерфейс", L"19.2M",
+        L"Объемный 3D-рендеринг второго слоя скина игрока вместо плоской текстуры.",
+        L"Делает воротники, очки, капюшоны и прически объемными и реалистичными.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"tr7zw", L"https://modrinth.com/mod/3dskinlayers", false
+    },
+    {
+        L"wavey-capes", L"Wavey Capes", L"Интерфейс", L"14.1M",
+        L"Плавная физика развевающихся на ветру плащей с реалистичной гравитацией.",
+        L"Заменяет картонные плащи Minecraft мягкой анимацией ткани при беге и прыжках.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"tr7zw", L"https://modrinth.com/mod/waveycapes", false
+    },
+    {
+        L"not-enough-animations", L"Not Enough Animations", L"Интерфейс", L"15.9M",
+        L"Анимации третьего лица: еда, питье, гребля, лазание по лестницам и чтение карт.",
+        L"Синхронизирует движения тела персонажа с действиями от первого лица для друзей по мультиплееру.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"tr7zw", L"https://modrinth.com/mod/not-enough-animations", false
+    },
+    {
+        L"first-person-model", L"First-person Model", L"Интерфейс", L"12.6M",
+        L"Видимость рук, ног и тела персонажа при взгляде вниз от первого лица.",
+        L"Позволяет видеть свое снаряжение и броню при взгляде под ноги.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"tr7zw", L"https://modrinth.com/mod/first-person-model", false
+    },
+    {
+        L"reese-sodium-options", L"Reese's Sodium Options", L"Оптимизация", L"21.4M",
+        L"Удобный интерфейс настроек видео для Sodium с вертикальными вкладками и прокруткой.",
+        L"Заменяет стандартное меню настроек Sodium современным адаптивным экраном.",
+        L"1.16.5 – 1.21.3", L"Fabric / Quilt", L"FlashyReese", L"https://modrinth.com/mod/reeses-sodium-options", false
+    },
+    {
+        L"itemphysic", L"ItemPhysic", L"Геймплей", L"16.1M",
+        L"Реалистичная физика упавших предметов: бросание, скольжение и плавучесть.",
+        L"Предметы реалистично падают на землю, не вращаясь в воздухе, и плавают на поверхности воды.",
+        L"1.12.2 – 1.20.1", L"Forge / Fabric", L"CreativeMD", L"https://modrinth.com/mod/itemphysic", false
+    },
+    {
+        L"fast-ip-ping", L"Fast IP Ping", L"Оптимизация", L"8.2M",
+        L"Мгновенный пинг серверов в сетевой игре без зависания меню паузы.",
+        L"Оптимизирует асинхронные сокеты опроса состояния серверов в списке миров.",
+        L"1.18.2 – 1.21.3", L"Fabric / Quilt", L"astei", L"https://modrinth.com/mod/fast-ip-ping", false
+    },
+    {
+        L"aquaculture", L"Aquaculture 2", L"Контент", L"18.4M",
+        L"Более 30 новых видов рыб для разных биомов, наживки, снасти и сокровища в воде.",
+        L"Превращает рыбалку в увлекательную охоту на редкую рыбу со спиннингами и крючками.",
+        L"1.12.2 – 1.21.1", L"Forge / NeoForge / Fabric", L"Shadows_of_Fire", L"https://modrinth.com/mod/aquaculture", false
+    },
+    {
+        L"the-aether", L"The Aether", L"Приключения", L"29.4M",
+        L"Легендарный Рай: парящие небесные острова, моа, бронзовые и серебряные подземелья.",
+        L"Портал из светящегося камня и воды переносит в Небесный мир с летающими китами и боссом Солнечного Духа.",
+        L"1.12.2 – 1.20.4", L"Forge / NeoForge", L"GildedGames", L"https://modrinth.com/mod/aether", false
+    },
+    {
+        L"undergarden", L"The Undergarden", L"Приключения", L"11.5M",
+        L"Глубокий подземный мир вечной тьмы: новые руды, древние звери и ядовитые туманы.",
+        L"Мрачное измерение с уникальной атмосферой древних подземных глубин.",
+        L"1.16.5 – 1.20.1", L"Forge / NeoForge", L"Quek04", L"https://modrinth.com/mod/undergarden", false
+    },
+    {
+        L"deeperdarker", L"Deeper and Darker", L"Приключения", L"14.3M",
+        L"Измерение Древнего Города за порталом Вардена: Другие Берега и эхо-сокровища.",
+        L"Активируйте центральный портал Древнего города в Deep Dark и исследуйте мир Скалка.",
+        L"1.19.2 – 1.21.1", L"Fabric / Forge / NeoForge", L"Kyron", L"https://modrinth.com/mod/deeperdarker", false
+    },
+    {
+        L"relics", L"Relics", L"Приключения", L"13.7M",
+        L"Десятки уникальных магических реликвий и артефактов со сложной прокачкой способностей.",
+        L"Находите древние кольца, ботинки левитации и амулеты в сундуках сокровищниц.",
+        L"1.16.5 – 1.20.1", L"Forge / NeoForge / Fabric", L"SSKirillS", L"https://modrinth.com/mod/relics", false
+    },
+    {
+        L"artifacts", L"Artifacts", L"Приключения", L"21.5M",
+        L"Мощные артефакты в подземных лабиринтах: когти копателя, спасательные жилеты и шарфы.",
+        L"Каждый артефакт дает постоянный полезный пассивный эффект при экипировке в слот Curios.",
+        L"1.16.5 – 1.21.1", L"Forge / NeoForge / Fabric", L"ochotonida", L"https://modrinth.com/mod/artifacts", false
+    },
+    {
+        L"irons-spells", L"Iron's Spells 'n Spellbooks", L"Магия", L"17.8M",
+        L"Классическая магия RPG: книги заклинаний, школы льда, огня, молний и святости.",
+        L"Крафтите мантии чародея, находите древние свитки и применяйте сотни зрелищных заклинаний.",
+        L"1.18.2 – 1.20.1", L"Forge / NeoForge", L"Iron431", L"https://modrinth.com/mod/irons-spells-n-spellbooks", false
+    },
+    {
+        L"ars-nouveau", L"Ars Nouveau", L"Магия", L"16.2M",
+        L"Конструктор заклинаний: создавайте собственные чары из глифов, призывайте фамильяров.",
+        L"Универсальная магическая система, позволяющая создавать заклинания для копки, боя и защиты.",
+        L"1.16.5 – 1.21.1", L"Forge / NeoForge", L"baileyholl2", L"https://modrinth.com/mod/ars-nouveau", false
+    },
+    {
+        L"thermal-expansion", L"Thermal Expansion", L"Технологии", L"26.7M",
+        L"Энергия Redstone Flux (RF), индукционные плавильни, измельчители и трубы.",
+        L"Классический и стабильный мод технологической индустрии для комфортной переработки ресурсов.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"TeamCoFH", L"https://modrinth.com/mod/thermal-expansion", false
+    },
+    {
+        L"enderio", L"Ender IO", L"Технологии", L"22.3M",
+        L"Компактные кабельные каналы в одном блоке, генераторы, фермы и телепорты.",
+        L"Позволяет прокладывать трубы энергии, предметов, жидкостей и редстоуна внутри единого блока.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"SleepyTrousers", L"https://modrinth.com/mod/enderio", false
+    },
+    {
+        L"refined-storage", L"Refined Storage", L"Технологии", L"21.8M",
+        L"Элегантная система цифрового хранения предметов и жидкостей в сетевых дисках.",
+        L"Удобная и простая в настройке альтернатива AE2 с беспроводным доступом к инвентарю.",
+        L"1.12.2 – 1.21.1", L"Forge / NeoForge / Fabric", L"raoulvdberge", L"https://modrinth.com/mod/refined-storage", false
+    },
+    {
+        L"powah", L"Powah! (Rearchitected)", L"Технологии", L"18.1M",
+        L"Многоуровневые генераторы энергии: реакторы, термогенераторы и солнечные панели.",
+        L"Красивые и эффективные энергетические установки от базового уровня до уровня Нитро.",
+        L"1.16.5 – 1.21.1", L"Forge / NeoForge / Fabric", L"Technici4n", L"https://modrinth.com/mod/powah", false
+    },
+    {
+        L"immersive-engineering", L"Immersive Engineering", L"Технологии", L"23.5M",
+        L"Индустриальная эстетика ретро-футуризма: висячие провода, дробители и конвейеры.",
+        L"Многоблочные реалистичные механизмы с видимыми шестеренками и кабелями высокого напряжения.",
+        L"1.12.2 – 1.20.1", L"Forge / NeoForge", L"BluSunrize", L"https://modrinth.com/mod/immersive-engineering", false
+    },
+    {
+        L"cooking-for-blockheads", L"Cooking for Blockheads", L"Контент", L"25.2M",
+        L"Модульная кухня: холодильник, плита, тостер и книга рецептов с автоподбором блюд.",
+        L"Облегчает кулинарию, автоматически объединяя ингредиенты из всех шкафов для готовки блюд.",
+        L"1.12.2 – 1.21.1", L"Forge / NeoForge / Fabric", L"BlayTheNinth", L"https://modrinth.com/mod/cooking-for-blockheads", false
+    },
+    {
+        L"croptopia", L"Croptopia", L"Контент", L"14.6M",
+        L"Более 80 новых культур, фруктовые деревья, специи и сотни аппетитных блюд.",
+        L"Добавляет артишоки, авокадо, корицу, хмель, базилик, пиццы, бургеры и смузи.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"Thonk", L"https://modrinth.com/mod/croptopia", false
+    },
+    {
+        L"nether-depths-upgrade", L"Nether Depths Upgrade", L"Контент", L"6.8M",
+        L"Лавовая рыбалка в лавовых озерах Незера со специальными жаропрочными удочками.",
+        L"Добавляет адскую рыбу, магматических окуней и уникальные артефакты лавовых глубин.",
+        L"1.18.2 – 1.20.1", L"Forge / Fabric", L"Scimiguy", L"https://modrinth.com/mod/nether-depths-upgrade", false
+    },
+    {
+        L"regions-unexplored", L"Regions Unexplored", L"Карты", L"12.4M",
+        L"Более 70 живописных биомов: эвкалиптовые леса, бамбуковые горы и вересковые пустоши.",
+        L"Добавляет уникальные типы древесины, камня и растительности для исследователей природы.",
+        L"1.18.2 – 1.21.1", L"Forge / Fabric / NeoForge", L"UglyToad", L"https://modrinth.com/mod/regions-unexplored", false
+    },
+    {
+        L"tectonic", L"Tectonic", L"Карты", L"15.8M",
+        L"Горные массивы колоссального масштаба, плавные плато и протяженные каньоны рек.",
+        L"Модификатор генератора ландшафта, создающий грандиозные скалы и глубокие фьорды.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge / Quilt", L"Apollo", L"https://modrinth.com/mod/tectonic", false
+    },
+    {
+        L"axiom", L"Axiom", L"Инструменты", L"11.2M",
+        L"Профессиональный внутриигровой 3D-редактор для архитекторов и создателей миров.",
+        L"Объединяет возможности Blender и WorldEdit в удобном современном графическом интерфейсе.",
+        L"1.20.1 – 1.21.3", L"Fabric", L"Moulberry", L"https://modrinth.com/mod/axiom", false
+    },
+    {
+        L"minihud", L"MiniHUD", L"Интерфейс", L"14.5M",
+        L"Информационный оверлей: точные координаты, FPS, время суток, освещение и чанки.",
+        L"Легковесный HUD без перегрузки экрана, позволяющий выводить только нужные параметры.",
+        L"1.14 – 1.21.3", L"Fabric / Quilt", L"maruohon", L"https://modrinth.com/mod/minihud", false
+    },
+    {
+        L"tweakeroo", L"Tweakeroo", L"Инструменты", L"13.1M",
+        L"Десятки удобных твиков: быстрая смена слотов, зум, авто-клик и размещение блоков.",
+        L"Набор полезных улучшений удобства взаимодействия с миром для строителей и редстоунеров.",
+        L"1.14 – 1.21.3", L"Fabric / Quilt", L"maruohon", L"https://modrinth.com/mod/tweakeroo", false
+    },
+    {
+        L"betterf3", L"BetterF3", L"Интерфейс", L"18.7M",
+        L"Красивый, цветной и структурированный экран отладки F3 с возможностью скрывать лишнее.",
+        L"Разделяет экран F3 на аккуратные цветные модули, делая поиск информации мгновенным.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge / NeoForge", L"compscistudent", L"https://modrinth.com/mod/betterf3", false
+    },
+    {
+        L"inventory-profiles-next", L"Inventory Profiles Next", L"Интерфейс", L"21.3M",
+        L"Интеллектуальная сортировка сундуков и инвентаря в 1 клик с профилями раскладок.",
+        L"Быстрая сортировка предметов по колонкам, категориям и прочности инструмента.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"mirinapp", L"https://modrinth.com/mod/inventory-profiles-next", false
+    },
+    {
+        L"vulkanmod", L"VulkanMod", L"Оптимизация", L"8.9M",
+        L"Перенос графического конвейера Minecraft с OpenGL на современный Vulkan API.",
+        L"Дает колоссальный прирост кадров на видеокартах AMD и Intel с современной поддержкой Vulkan.",
+        L"1.18.2 – 1.21.1", L"Fabric", L"xCollateral", L"https://modrinth.com/mod/vulkanmod", false
+    },
+    {
+        L"nvidium", L"Nvidium", L"Оптимизация", L"10.6M",
+        L"Аппаратный рендеринг геометрии через Nvidia Mesh Shaders для тысяч FPS.",
+        L"Использует уникальные возможности архитектур Turing и Ampere для отрисовки мира со скоростью 1000+ FPS.",
+        L"1.20.1 – 1.21.3", L"Fabric", L"cortex", L"https://modrinth.com/mod/nvidium", false
+    },
+    {
+        L"fastsuite", L"FastSuite", L"Оптимизация", L"14.2M",
+        L"Кеширование рецептов крафта для мгновенной обработки в верстаках и печах.",
+        L"Устраняет микрозадержки при быстром шифт-клике стаков предметов в инвентаре.",
+        L"1.16.5 – 1.21.1", L"Forge / NeoForge / Fabric", L"Shadows_of_Fire", L"https://modrinth.com/mod/fastsuite", false
+    },
+    {
+        L"dash", L"Dash Loader", L"Оптимизация", L"7.4M",
+        L"Кеширование ассетов и моделей для загрузки лаунчером за доли секунды.",
+        L"Сохраняет оптимизированные бинарные слепки ресурсов, ускоряя повторные запуски.",
+        L"1.18.2 – 1.20.4", L"Fabric", L"DeadlyMC", L"https://modrinth.com/mod/dashloader", false
+    },
+    {
+        L"naturalist", L"Naturalist", L"Мобы", L"16.8M",
+        L"Живая фауна: медведи, олени, змеи, птицы, бабочки, львы и жирафы.",
+        L"Наполняет леса и саванны реалистичными животными с естественными цепочками питания.",
+        L"1.18.2 – 1.21.1", L"Fabric / Forge", L"Starfish_Studios", L"https://modrinth.com/mod/naturalist", false
+    },
+    {
+        L"friends-and-foes", L"Friends & Foes", L"Мобы", L"14.9M",
+        L"Возвращение забытых существ из голосований Mob Vote: Иллюзор, Ледяной Медведь и Медный Голем.",
+        L"Добавляет мобов, не вошедших в ванильные обновления, с каноничным качеством исполнения.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge", L"Faboslav", L"https://modrinth.com/mod/friends-and-foes", false
+    },
+    {
+        L"towns-and-towers", L"Towns and Towers", L"Приключения", L"17.3M",
+        L"Великолепные деревни и аванпосты разбойников, адаптированные под каждый биом.",
+        L"Деревни в джунглях, на пляжах, в горах и пустошах с уникальной архитектурой и жителями.",
+        L"1.18.2 – 1.21.3", L"Fabric / Forge", L"BibIicIe", L"https://modrinth.com/mod/towns-and-towers", false
+    },
+    {
+        L"repurposed-structures", L"Repurposed Structures", L"Приключения", L"22.4M",
+        L"Вариации ванильных храмов, крепостей и хижин ведьм для всех типов биомов.",
+        L"Крепости Незера в обычном мире, храмы в джунглях из песчаника и заброшенные шахты океана.",
+        L"1.16.5 – 1.21.3", L"Fabric / Forge", L"TelepathicGrunt", L"https://modrinth.com/mod/repurposed-structures", false
+    },
+    {
+        L"echo-chest", L"Echo Chest", L"Инструменты", L"5.8M",
+        L"Сундук скалка, связывающий квантовые хранилища между измерениями.",
+        L"Позволяет передавать ресурсы из края и незера напрямую на базу без задержек.",
+        L"1.19.2 – 1.21.1", L"Fabric / Forge", L"Enderite", L"https://modrinth.com/mod/echo-chest", false
+    },
+    {
+        L"xaeros-minimap-fairplay", L"Xaero's Minimap FairPlay", L"Карты", L"18.2M",
+        L"Справедливая версия мини-карты без показа пещер и игроков для честных серверов.",
+        L"Разрешена на строгих PvP и RP серверах, где запрещен показ скрытых пещер и радаров сущностей.",
+        L"1.12.2 – 1.21.3", L"Fabric / Forge", L"xaero96", L"https://modrinth.com/mod/xaeros-minimap-fairplay", false
+    },
+    {
+        L"enhanced-block-entities", L"Enhanced Block Entities", L"Оптимизация", L"14.5M",
+        L"Оптимизация сундуков, колоколов и табличек с переходом на рендеринг блоков.",
+        L"Устраняет лаги на больших складах с сотнями сундуков, заменяя медленные Entity на Block-модели.",
+        L"1.17.1 – 1.21.3", L"Fabric / Quilt", L"FoundationGames", L"https://modrinth.com/mod/ebe", false
+    },
+    {
+        L"no-chat-reports", L"No Chat Reports", L"Безопасность", L"19.8M",
+        L"Шифрование и отключение телеметрии криптографической подписи чата игрока.",
+        L"Защищает аккаунт от глобальных банов и автоматических систем модерации чата серверов.",
+        L"1.19.2 – 1.21.3", L"Fabric / Forge", L"Aizist", L"https://modrinth.com/mod/no-chat-reports", false
     }
 };
 
@@ -532,7 +1012,7 @@ static const int MODS_PER_PAGE = 4;
 static const ModItem* g_selectedModDetail = nullptr;
 
 static std::vector<std::wstring> g_modCategories = {
-    L"Все", L"Оптимизация", L"Шейдеры", L"Интерфейс", L"Технологии", L"Библиотеки", L"Карты"
+    L"Все", L"Оптимизация", L"Шейдеры", L"Интерфейс", L"Технологии", L"Библиотеки", L"Карты", L"Приключения", L"Декор", L"Магия", L"Мобы"
 };
 
 // Quick RAM presets (MB)
@@ -683,44 +1163,51 @@ inline bool RemoveModrinthMod(const std::wstring& slugOrId, const std::wstring& 
     return true;
 }
 
-inline void TriggerModDownload(ModItem* mod, HWND hwnd) {
-    if (!mod || mod->isDownloading) return;
-    mod->isDownloading = true;
-    mod->downloadProgress = 15;
+inline void SetModState(const std::wstring& slugOrName, bool installed, bool downloading, int pct) {
+    for (auto& m : g_allMods) {
+        if (ToLowerW(m.id) == ToLowerW(slugOrName) || ToLowerW(m.name) == ToLowerW(slugOrName)) {
+            m.installed = installed;
+            m.isDownloading = downloading;
+            m.downloadProgress = pct;
+        }
+    }
+    for (auto& m : g_filteredMods) {
+        if (ToLowerW(m.id) == ToLowerW(slugOrName) || ToLowerW(m.name) == ToLowerW(slugOrName)) {
+            m.installed = installed;
+            m.isDownloading = downloading;
+            m.downloadProgress = pct;
+        }
+    }
+}
+
+inline void TriggerModDownload(const std::wstring& slug, const std::wstring& modTitle, HWND hwnd) {
+    SetModState(slug, false, true, 20);
+    AppendLog(Tr(L"[Modrinth] Начат поиск и скачивание мода: " + modTitle,
+                 L"[Modrinth] Started searching and downloading mod: " + modTitle));
     InvalidateRect(hwnd, NULL, FALSE);
 
-    std::wstring slug = mod->id;
-    std::wstring modTitle = mod->name;
     std::wstring storageDir = g_config.storagePath;
     std::wstring ver = g_config.version;
 
-    AppendLog(Tr(L"[Modrinth] Начат поиск и загрузка мода: " + modTitle,
-                 L"[Modrinth] Started searching and downloading mod: " + modTitle));
-
-    std::thread([mod, slug, modTitle, storageDir, ver, hwnd]() {
-        bool ok = DownloadModrinthMod(slug, modTitle, storageDir, ver, [mod, hwnd](int pct) {
-            mod->downloadProgress = pct;
+    std::thread([slug, modTitle, storageDir, ver, hwnd]() {
+        bool ok = DownloadModrinthMod(slug, modTitle, storageDir, ver, [slug, hwnd](int pct) {
+            SetModState(slug, false, true, pct);
             InvalidateRect(hwnd, NULL, FALSE);
         });
 
-        mod->isDownloading = false;
-        mod->installed = true;
+        SetModState(slug, true, false, 100);
         AppendLog(Tr(L"[Modrinth] Мод " + modTitle + L" успешно загружен и установлен в папку mods!",
                      L"[Modrinth] Mod " + modTitle + L" successfully downloaded and installed to mods folder!"));
         InvalidateRect(hwnd, NULL, FALSE);
     }).detach();
 }
 
-inline void TriggerModRemove(ModItem* mod, HWND hwnd) {
-    if (!mod) return;
-    std::wstring slug = mod->id;
-    std::wstring modTitle = mod->name;
+inline void TriggerModRemove(const std::wstring& slug, const std::wstring& modTitle, HWND hwnd) {
     std::wstring storageDir = g_config.storagePath;
     std::wstring ver = g_config.version;
 
     RemoveModrinthMod(slug, storageDir, ver);
-    mod->installed = false;
-    mod->isDownloading = false;
+    SetModState(slug, false, false, 0);
     AppendLog(Tr(L"[Modrinth] Мод " + modTitle + L" удален из папки mods.",
                  L"[Modrinth] Mod " + modTitle + L" removed from mods folder."));
     InvalidateRect(hwnd, NULL, FALSE);
@@ -1436,20 +1923,13 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             SolidBrush prevBrush(hasPrev ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
             g.DrawString(Tr(L"◀ Предыдущая", L"◀ Previous"), -1, &fontSmallBold, prevRc, &sfCenter, &prevBrush);
 
-            // Page numbers and catalog count indicator
-            PointF pInfoPt((float)contentX + 130, (float)pageBarY + 10);
-            WCHAR pBuf[256];
-            swprintf(pBuf, 256, Tr(L"Каталог Modrinth: 60,000+ модов (Страница %d из %d)",
-                                   L"Modrinth Catalog: 60,000+ mods (Page %d of %d)"),
-                     g_modPage + 1, totalPages);
-            g.DrawString(pBuf, -1, &fontSmallBold, pInfoPt, &mutedBrush);
-
-            // Page numbers in center
-            std::wstring pageInfo = Tr(L"Страница ", L"Page ") + std::to_wstring(g_modPage + 1) +
-                                    Tr(L" из ", L" of ") + std::to_wstring(totalPages) +
-                                    L"  (" + std::to_wstring(g_filteredMods.size()) + Tr(L" модов)", L" mods)");
-            RectF pageInfoRc((float)contentX + 130, (float)pageBarY + 4, (float)contentW - 260, 28);
-            g.DrawString(pageInfo.c_str(), -1, &fontSmallBold, pageInfoRc, &sfCenter, &whiteBrush);
+            // Single, clean, centered non-overlapping page indicator
+            WCHAR pageBuf[256];
+            swprintf(pageBuf, 256, Tr(L"Страница %d из %d  •  Каталог Modrinth (%d модов в подборке, 60,000+ в базе)",
+                                       L"Page %d of %d  •  Modrinth Catalog (%d mods loaded, 60,000+ in database)"),
+                     g_modPage + 1, totalPages, (int)g_filteredMods.size());
+            RectF pageRc((float)contentX + 125, (float)pageBarY + 4, (float)contentW - 250, 28);
+            g.DrawString(pageBuf, -1, &fontSmallBold, pageRc, &sfCenter, &whiteBrush);
 
             // Next Page Button
             bool hasNext = (g_modPage + 1 < totalPages);
@@ -2145,8 +2625,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_CTLCOLOREDIT: {
         HDC hdcEdit = (HDC)wParam;
         SetTextColor(hdcEdit, RGB(240, 242, 248));
-        SetBkColor(hdcEdit, RGB(26, 30, 46));
-        static HBRUSH hEditBg = CreateSolidBrush(RGB(26, 30, 46));
+        COLORREF bgCol = RGB(g_currentTheme.bgSurfaceElevated.GetR(),
+                             g_currentTheme.bgSurfaceElevated.GetG(),
+                             g_currentTheme.bgSurfaceElevated.GetB());
+        SetBkColor(hdcEdit, bgCol);
+        static HBRUSH hEditBg = NULL;
+        if (hEditBg) DeleteObject(hEditBg);
+        hEditBg = CreateSolidBrush(bgCol);
         return (LRESULT)hEditBg;
     }
 
@@ -2161,31 +2646,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int jvmCardY = setY + 118;
         int optCardY = jvmCardY + 186;
 
+        int findBtnW = 85;
+        int quickDlBtnW = 165;
+        int searchBoxW = contentW - findBtnW - quickDlBtnW - 16;
+
         if (g_hEditNick) {
             SetWindowPos(g_hEditNick, NULL, 252, height - 84 + 38, 132, 24, SWP_NOZORDER);
         }
         if (g_hEditModSearch) {
-            SetWindowPos(g_hEditModSearch, NULL, contentX + 36, 54 + 16 + 64, contentW - 270, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditModSearch, NULL, contentX + 36, 54 + 16 + 64, searchBoxW - 48, 22, SWP_NOZORDER);
             ShowWindow(g_hEditModSearch, (g_currentTab == 1 && g_selectedModDetail == nullptr) ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditRam) {
-            SetWindowPos(g_hEditRam, NULL, contentX + 126, setY + 38, 80, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditRam, NULL, contentX + 126, setY + 36, 80, 22, SWP_NOZORDER);
             ShowWindow(g_hEditRam, isSettings ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditJvmArgs) {
-            SetWindowPos(g_hEditJvmArgs, NULL, contentX + 16, jvmCardY + 64, contentW - 32, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditJvmArgs, NULL, contentX + 18, jvmCardY + 107, contentW - 36, 22, SWP_NOZORDER);
             ShowWindow(g_hEditJvmArgs, isSettings ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditJavaPath) {
-            SetWindowPos(g_hEditJavaPath, NULL, contentX + 16, jvmCardY + 118, contentW - 220, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditJavaPath, NULL, contentX + 18, jvmCardY + 157, contentW - 224, 22, SWP_NOZORDER);
             ShowWindow(g_hEditJavaPath, isSettings ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditGameWidth) {
-            SetWindowPos(g_hEditGameWidth, NULL, contentX + 140, optCardY + 28, 64, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditGameWidth, NULL, contentX + 140, optCardY + 30, 62, 22, SWP_NOZORDER);
             ShowWindow(g_hEditGameWidth, isSettings ? SW_SHOW : SW_HIDE);
         }
         if (g_hEditGameHeight) {
-            SetWindowPos(g_hEditGameHeight, NULL, contentX + 224, optCardY + 28, 64, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditGameHeight, NULL, contentX + 228, optCardY + 30, 62, 22, SWP_NOZORDER);
             ShowWindow(g_hEditGameHeight, isSettings ? SW_SHOW : SW_HIDE);
         }
 
@@ -2458,19 +2947,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 int actY = cardY + detailH - 52;
 
                 if (x >= contentX + 24 && x <= contentX + 24 + 160 && y >= actY && y <= actY + 36) {
-                    ModItem* masterMod = nullptr;
-                    for (auto& m : g_allMods) {
-                        if (m.name == g_selectedModDetail->name) {
-                            masterMod = &m;
-                            break;
-                        }
-                    }
-                    if (masterMod) {
-                        if (masterMod->installed) {
-                            TriggerModRemove(masterMod, hwnd);
-                        } else {
-                            TriggerModDownload(masterMod, hwnd);
-                        }
+                    std::wstring slug = g_selectedModDetail->id;
+                    std::wstring name = g_selectedModDetail->name;
+                    bool isInst = g_selectedModDetail->installed;
+                    if (isInst) {
+                        TriggerModRemove(slug, name, hwnd);
+                    } else {
+                        TriggerModDownload(slug, name, hwnd);
                     }
                     return 0;
                 }
@@ -2535,7 +3018,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                         FilterMods();
                         target = &g_allMods[0];
                     }
-                    TriggerModDownload(target, hwnd);
+                    TriggerModDownload(target->id, target->name, hwnd);
                 }
                 return 0;
             }
@@ -2573,19 +3056,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
                 // Click Install / Remove Button
                 if (x >= btnX && x <= btnX + btnW && y >= mY + 14 && y <= mY + 42) {
-                    ModItem* masterMod = nullptr;
-                    for (auto& m : g_allMods) {
-                        if (m.name == g_filteredMods[i].name) {
-                            masterMod = &m;
-                            break;
-                        }
-                    }
-                    if (masterMod) {
-                        if (masterMod->installed) {
-                            TriggerModRemove(masterMod, hwnd);
-                        } else {
-                            TriggerModDownload(masterMod, hwnd);
-                        }
+                    std::wstring slug = g_filteredMods[i].id;
+                    std::wstring name = g_filteredMods[i].name;
+                    bool isInst = g_filteredMods[i].installed;
+                    if (isInst) {
+                        TriggerModRemove(slug, name, hwnd);
+                    } else {
+                        TriggerModDownload(slug, name, hwnd);
                     }
                     return 0;
                 }
