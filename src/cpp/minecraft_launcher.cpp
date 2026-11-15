@@ -50,6 +50,28 @@ static void EnsureDirTree(const std::wstring& path) {
     CreateDirectoryW(temp, NULL);
 }
 
+static std::wstring GetArtifactKey(const std::wstring& path) {
+    std::wstring p = path;
+    for (auto& c : p) if (c == L'/') c = L'\\';
+
+    size_t s1 = p.find_last_of(L'\\');
+    if (s1 == std::wstring::npos) return p;
+
+    size_t s2 = (s1 > 0) ? p.find_last_of(L'\\', s1 - 1) : std::wstring::npos;
+    if (s2 == std::wstring::npos) return p.substr(s1 + 1);
+
+    size_t s3 = (s2 > 0) ? p.find_last_of(L'\\', s2 - 1) : std::wstring::npos;
+    if (s3 == std::wstring::npos) {
+        std::wstring art = p.substr(0, s2);
+        std::transform(art.begin(), art.end(), art.begin(), ::towlower);
+        return art;
+    }
+
+    std::wstring art = p.substr(s3 + 1, s2 - s3 - 1);
+    std::transform(art.begin(), art.end(), art.begin(), ::towlower);
+    return art;
+}
+
 static void CollectJarsRecursively(const std::wstring& dir, std::vector<std::wstring>& outJars) {
     WIN32_FIND_DATAW fd;
     std::wstring searchPattern = dir + L"\\*";
@@ -733,6 +755,7 @@ bool MinecraftLauncher::LaunchMinecraft(
     // Client jar first
     std::wstring classpath = L"\"" + clientJar + L"\"";
     std::unordered_set<std::wstring> seenJarNames;
+    std::unordered_set<std::wstring> seenArtifacts;
 
     size_t cSlash = clientJar.find_last_of(L"\\/");
     if (cSlash != std::wstring::npos) {
@@ -740,6 +763,7 @@ bool MinecraftLauncher::LaunchMinecraft(
         std::transform(cName.begin(), cName.end(), cName.begin(), ::towlower);
         seenJarNames.insert(cName);
     }
+    seenArtifacts.insert(L"client");
 
     size_t addedCount = 0;
     for (const auto& jarPath : allJars) {
@@ -748,8 +772,13 @@ bool MinecraftLauncher::LaunchMinecraft(
         std::wstring lowerName = fname;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
 
-        if (seenJarNames.find(lowerName) == seenJarNames.end()) {
+        std::wstring artKey = GetArtifactKey(jarPath);
+
+        // Deduplicate both by exact jar filename and by maven artifact ID (e.g. prevent duplicate fabric-loader or mixin)!
+        if (seenJarNames.find(lowerName) == seenJarNames.end() &&
+            (artKey.empty() || seenArtifacts.find(artKey) == seenArtifacts.end())) {
             seenJarNames.insert(lowerName);
+            if (!artKey.empty()) seenArtifacts.insert(artKey);
             classpath += L";\"" + jarPath + L"\"";
             addedCount++;
         }
@@ -974,6 +1003,9 @@ void MinecraftLauncher::TerminateRunningGame(HANDLE hProcess) {
 }
 
 std::wstring MinecraftLauncher::AnalyzeCrashLog(const std::wstring& logText) {
+    if (logText.find(L"duplicate fabric loader classes") != std::wstring::npos) {
+        return L"Обнаружены конфликтующие версии загрузчика Fabric на classpath. Лаунчер автоматически устраняет дубликаты загрузчиков.";
+    }
     if (logText.find(L"NoClassDefFoundError") != std::wstring::npos || logText.find(L"ClassNotFoundException") != std::wstring::npos) {
         return L"Отсутствует библиотека classpath (NoClassDefFoundError). Лаунчер Aether автоматически скачивает и собирает все необходимые библиотеки из официального репозитория Mojang и локального профиля.";
     }

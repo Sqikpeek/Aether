@@ -250,6 +250,7 @@ static std::wstring g_lastCrashSolution = L"";
 static int g_logScrollOffset = -1; // -1 = auto-scroll to bottom
 
 // Forward declarations
+bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring& prompt, const std::wstring& initialVal, std::wstring& outVal);
 static std::vector<std::wstring> GetInstalledModFiles(const std::wstring& storageDir, const std::wstring& containerId);
 static void SyncInstalledModsWithDisk(const std::wstring& storageDir, const std::wstring& containerId);
 void SaveLogsToFile(HWND hwnd);
@@ -1247,19 +1248,16 @@ inline bool DownloadModrinthMod(
 ) {
     EnsureDirectoryExists(containerModsDir);
 
+    std::wstring lSlug = ToLowerW(slugOrId);
+    while (!lSlug.empty() && lSlug.back() == L' ') lSlug.pop_back();
+    while (!lSlug.empty() && lSlug.front() == L' ') lSlug.erase(lSlug.begin());
+    for (auto& c : lSlug) if (c == L' ') c = L'-';
+
     std::wstring wideFileUrl;
     std::wstring wideFilename;
 
-    // 1. Query Modrinth API with loader & mcVersion filter
-    std::wstring verApiUrl = L"https://api.modrinth.com/v2/project/" + slugOrId + L"/version?loaders=[%22" + loader + L"%22]&game_versions=[%22" + mcVersion + L"%22]";
-    std::string json = FetchHttpString(verApiUrl);
-
-    if (json.empty() || json.find("\"url\"") == std::string::npos) {
-        verApiUrl = L"https://api.modrinth.com/v2/project/" + slugOrId + L"/version";
-        json = FetchHttpString(verApiUrl);
-    }
-
-    if (!json.empty()) {
+    auto parseVersionJson = [&](const std::string& json) -> bool {
+        if (json.empty() || json.find("\"url\"") == std::string::npos) return false;
         size_t cur = 0;
         while ((cur = json.find("\"url\"", cur)) != std::string::npos) {
             size_t colon = json.find(":", cur);
@@ -1292,76 +1290,121 @@ inline bool DownloadModrinthMod(
                         }
                     }
                 }
-                break;
+                return true;
             }
             cur = q2 + 1;
         }
+        return false;
+    };
+
+    // 1. Try filtered version query:
+    std::wstring cleanLoader = (loader.empty() || loader == L"vanilla") ? L"fabric" : loader;
+    std::wstring verApiUrl = L"https://api.modrinth.com/v2/project/" + lSlug +
+                             L"/version?loaders=%5B%22" + cleanLoader + L"%22%5D&game_versions=%5B%22" + mcVersion + L"%22%5D";
+    std::string json = FetchHttpString(verApiUrl);
+    bool found = parseVersionJson(json);
+
+    // 2. If not found, try query without filters (all versions):
+    if (!found) {
+        verApiUrl = L"https://api.modrinth.com/v2/project/" + lSlug + L"/version";
+        json = FetchHttpString(verApiUrl);
+        found = parseVersionJson(json);
     }
 
-    // 2. High-speed Direct Fallback Map for top popular Modrinth mods
-    if (wideFileUrl.empty()) {
-        std::wstring lSlug = ToLowerW(slugOrId);
-        if (lSlug == L"sodium") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/AANobbMI/versions/mc1.21.1-0.5.11/sodium-fabric-0.5.11+mc1.21.1.jar";
-            wideFilename = L"sodium-fabric-0.5.11+mc1.21.1.jar";
-        } else if (lSlug == L"fabric-api") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/P7dR8mIH/versions/0.102.0+1.21.1/fabric-api-0.102.0+1.21.1.jar";
-            wideFilename = L"fabric-api-0.102.0+1.21.1.jar";
-        } else if (lSlug == L"iris") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/YL57xq9U/versions/1.7.5+1.21.1/iris-1.7.5+1.21.1.jar";
-            wideFilename = L"iris-1.7.5+1.21.1.jar";
-        } else if (lSlug == L"lithium") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/gvQqBUqZ/versions/mc1.21.1-0.12.7/lithium-fabric-0.12.7+mc1.21.1.jar";
-            wideFilename = L"lithium-fabric-0.12.7+mc1.21.1.jar";
-        } else if (lSlug == L"ferrite-core" || lSlug == L"ferritecore") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/uXXizFIs/versions/7.0.0-fabric/ferritecore-7.0.0-fabric.jar";
-            wideFilename = L"ferritecore-7.0.0-fabric.jar";
-        } else if (lSlug == L"indium") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/Orvt0mRa/versions/1.0.34+mc1.21/indium-1.0.34+mc1.21.jar";
-            wideFilename = L"indium-1.0.34+mc1.21.jar";
-        } else if (lSlug == L"modmenu") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/mOgUt4GM/versions/11.0.1/modmenu-11.0.1.jar";
-            wideFilename = L"modmenu-11.0.1.jar";
-        } else if (lSlug == L"entityculling") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/NNAgCjsB/versions/1.7.0/entityculling-fabric-1.7.0-mc1.21.jar";
-            wideFilename = L"entityculling-fabric-1.7.0-mc1.21.jar";
-        } else if (lSlug == L"cloth-config") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/9s6Sm8Za/versions/15.0.127+fabric/cloth-config-15.0.127-fabric.jar";
-            wideFilename = L"cloth-config-15.0.127-fabric.jar";
-        } else if (lSlug == L"continuity") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/1IjD5062/versions/3.0.0-beta.5+1.21/continuity-3.0.0-beta.5+1.21.jar";
-            wideFilename = L"continuity-3.0.0-beta.5+1.21.jar";
-        } else if (lSlug == L"appleskin") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/EsAfCjCV/versions/mc1.21-3.0.4/appleskin-fabric-mc1.21-3.0.4.jar";
-            wideFilename = L"appleskin-fabric-mc1.21-3.0.4.jar";
-        } else if (lSlug == L"dynamic-fps") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/LQ3K71Q1/versions/v3.6.3-1.21/dynamic-fps-3.6.3+minecraft-1.21.jar";
-            wideFilename = L"dynamic-fps-3.6.3+minecraft-1.21.jar";
-        } else if (lSlug == L"immediatelyfast") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/5ZwdcRci/versions/1.2.18+1.21.1/ImmediatelyFast-Fabric-1.2.18+1.21.1.jar";
-            wideFilename = L"ImmediatelyFast-Fabric-1.2.18+1.21.1.jar";
-        } else if (lSlug == L"no-chat-reports") {
-            wideFileUrl = L"https://cdn.modrinth.com/data/qQyHxfxd/versions/Fabric-1.21-v2.8.0/NoChatReports-FABRIC-1.21-v2.8.0.jar";
-            wideFilename = L"NoChatReports-FABRIC-1.21-v2.8.0.jar";
+    // 3. If still not found, search Modrinth by text query to resolve true slug:
+    if (!found) {
+        std::wstring searchApiUrl = L"https://api.modrinth.com/v2/search?query=" + lSlug + L"&limit=1";
+        std::string searchJson = FetchHttpString(searchApiUrl);
+        size_t slPos = searchJson.find("\"slug\":\"");
+        if (slPos != std::string::npos) {
+            slPos += 8;
+            size_t slEnd = searchJson.find("\"", slPos);
+            if (slEnd != std::string::npos) {
+                std::string resolvedSlug = searchJson.substr(slPos, slEnd - slPos);
+                std::wstring wResolved(resolvedSlug.begin(), resolvedSlug.end());
+                verApiUrl = L"https://api.modrinth.com/v2/project/" + wResolved + L"/version";
+                json = FetchHttpString(verApiUrl);
+                found = parseVersionJson(json);
+            }
         }
     }
 
-    if (wideFilename.empty()) {
-        wideFilename = slugOrId + L"-mc" + mcVersion + L".jar";
+    // 4. Instant high-speed Fallback Map for top popular mods:
+    if (!found) {
+        if (lSlug == L"sodium") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/AANobbMI/versions/mc1.21.1-0.5.11/sodium-fabric-0.5.11+mc1.21.1.jar";
+            wideFilename = L"sodium-fabric-0.5.11+mc1.21.1.jar";
+            found = true;
+        } else if (lSlug == L"fabric-api") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/P7dR8mIH/versions/0.102.0+1.21.1/fabric-api-0.102.0+1.21.1.jar";
+            wideFilename = L"fabric-api-0.102.0+1.21.1.jar";
+            found = true;
+        } else if (lSlug == L"iris" || lSlug == L"iris-shaders") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/YL57xq9U/versions/1.7.5+1.21.1/iris-1.7.5+1.21.1.jar";
+            wideFilename = L"iris-1.7.5+1.21.1.jar";
+            found = true;
+        } else if (lSlug == L"lithium") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/gvQqBUqZ/versions/mc1.21.1-0.12.7/lithium-fabric-0.12.7+mc1.21.1.jar";
+            wideFilename = L"lithium-fabric-0.12.7+mc1.21.1.jar";
+            found = true;
+        } else if (lSlug == L"ferrite-core" || lSlug == L"ferritecore") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/uXXizFIs/versions/7.0.0-fabric/ferritecore-7.0.0-fabric.jar";
+            wideFilename = L"ferritecore-7.0.0-fabric.jar";
+            found = true;
+        } else if (lSlug == L"indium") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/Orvt0mRa/versions/1.0.34+mc1.21/indium-1.0.34+mc1.21.jar";
+            wideFilename = L"indium-1.0.34+mc1.21.jar";
+            found = true;
+        } else if (lSlug == L"modmenu") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/mOgUt4GM/versions/11.0.1/modmenu-11.0.1.jar";
+            wideFilename = L"modmenu-11.0.1.jar";
+            found = true;
+        } else if (lSlug == L"entityculling") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/NNAgCjsB/versions/1.7.0/entityculling-fabric-1.7.0-mc1.21.jar";
+            wideFilename = L"entityculling-fabric-1.7.0-mc1.21.jar";
+            found = true;
+        } else if (lSlug == L"cloth-config") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/9s6Sm8Za/versions/15.0.127+fabric/cloth-config-15.0.127-fabric.jar";
+            wideFilename = L"cloth-config-15.0.127-fabric.jar";
+            found = true;
+        } else if (lSlug == L"continuity") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/1IjD5062/versions/3.0.0-beta.5+1.21/continuity-3.0.0-beta.5+1.21.jar";
+            wideFilename = L"continuity-3.0.0-beta.5+1.21.jar";
+            found = true;
+        } else if (lSlug == L"appleskin") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/EsAfCjCV/versions/mc1.21-3.0.4/appleskin-fabric-mc1.21-3.0.4.jar";
+            wideFilename = L"appleskin-fabric-mc1.21-3.0.4.jar";
+            found = true;
+        } else if (lSlug == L"dynamic-fps") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/LQ3K71Q1/versions/v3.6.3-1.21/dynamic-fps-3.6.3+minecraft-1.21.jar";
+            wideFilename = L"dynamic-fps-3.6.3+minecraft-1.21.jar";
+            found = true;
+        } else if (lSlug == L"immediatelyfast") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/5ZwdcRci/versions/1.2.18+1.21.1/ImmediatelyFast-Fabric-1.2.18+1.21.1.jar";
+            wideFilename = L"ImmediatelyFast-Fabric-1.2.18+1.21.1.jar";
+            found = true;
+        } else if (lSlug == L"no-chat-reports") {
+            wideFileUrl = L"https://cdn.modrinth.com/data/qQyHxfxd/versions/Fabric-1.21-v2.8.0/NoChatReports-FABRIC-1.21-v2.8.0.jar";
+            wideFilename = L"NoChatReports-FABRIC-1.21-v2.8.0.jar";
+            found = true;
+        }
     }
 
-    std::wstring destFile = containerModsDir + L"\\" + wideFilename;
-    if (wideFileUrl.empty()) {
+    if (!found || wideFileUrl.empty()) {
         return false;
     }
 
+    if (wideFilename.empty()) {
+        wideFilename = lSlug + L"-mc" + mcVersion + L".jar";
+    }
+
+    std::wstring destFile = containerModsDir + L"\\" + wideFilename;
     bool downloadOk = MinecraftLauncher::DownloadHttpFile(wideFileUrl, destFile, progress);
     if (!downloadOk) {
         DeleteFileW(destFile.c_str());
         return false;
     }
 
-    // Verify downloaded file exists and is not empty / corrupted
     HANDLE hCheck = CreateFileW(destFile.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (hCheck == INVALID_HANDLE_VALUE) {
         return false;
@@ -1925,6 +1968,138 @@ static void SyncInstalledModsWithDisk(const std::wstring& storageDir, const std:
     FilterMods();
 }
 
+
+bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring& prompt, const std::wstring& initialVal, std::wstring& outVal) {
+    bool okClicked = false;
+    outVal = initialVal;
+
+    static bool classRegistered = false;
+    const wchar_t* dlgClassName = L"AetherInputPromptClass";
+    if (!classRegistered) {
+        WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = g_hInstance;
+        wc.lpszClassName = dlgClassName;
+        wc.hbrBackground = CreateSolidBrush(RGB(24, 25, 32));
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        RegisterClassExW(&wc);
+        classRegistered = true;
+    }
+
+    RECT prc;
+    GetWindowRect(hParent, &prc);
+    int dlgW = 440;
+    int dlgH = 170;
+    int dlgX = prc.left + (prc.right - prc.left - dlgW) / 2;
+    int dlgY = prc.top + (prc.bottom - prc.top - dlgH) / 2;
+
+    HWND hDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        dlgClassName,
+        title.c_str(),
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        dlgX, dlgY, dlgW, dlgH,
+        hParent, NULL, g_hInstance, NULL
+    );
+
+    if (!hDlg) return false;
+
+    ApplyDwmDarkTitleBar(hDlg);
+
+    HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT hFontBold = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    HWND hStatic = CreateWindowExW(
+        0, L"STATIC", prompt.c_str(),
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        20, 16, dlgW - 40, 24,
+        hDlg, NULL, g_hInstance, NULL
+    );
+    SendMessageW(hStatic, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+    HWND hEdit = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", initialVal.c_str(),
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        20, 46, dlgW - 55, 26,
+        hDlg, (HMENU)201, g_hInstance, NULL
+    );
+    SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+    SendMessageW(hEdit, EM_SETSEL, 0, -1);
+    SetFocus(hEdit);
+
+    HWND hBtnOk = CreateWindowExW(
+        0, L"BUTTON", Tr(L"OK", L"OK"),
+        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+        dlgW - 205, 88, 80, 28,
+        hDlg, (HMENU)IDOK, g_hInstance, NULL
+    );
+    SendMessageW(hBtnOk, WM_SETFONT, (WPARAM)hFontBold, TRUE);
+
+    HWND hBtnCancel = CreateWindowExW(
+        0, L"BUTTON", Tr(L"Отмена", L"Cancel"),
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        dlgW - 115, 88, 80, 28,
+        hDlg, (HMENU)IDCANCEL, g_hInstance, NULL
+    );
+    SendMessageW(hBtnCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+    EnableWindow(hParent, FALSE);
+
+    MSG msg;
+    bool running = true;
+    while (running && GetMessageW(&msg, NULL, 0, 0)) {
+        if (msg.message == WM_KEYDOWN) {
+            if (msg.wParam == VK_RETURN) {
+                WCHAR buf[512] = { 0 };
+                GetWindowTextW(hEdit, buf, 511);
+                outVal = buf;
+                okClicked = true;
+                running = false;
+                break;
+            } else if (msg.wParam == VK_ESCAPE) {
+                running = false;
+                break;
+            }
+        }
+        if (msg.message == WM_COMMAND) {
+            int id = LOWORD(msg.wParam);
+            if (id == IDOK) {
+                WCHAR buf[512] = { 0 };
+                GetWindowTextW(hEdit, buf, 511);
+                outVal = buf;
+                okClicked = true;
+                running = false;
+                break;
+            } else if (id == IDCANCEL) {
+                running = false;
+                break;
+            }
+        }
+        if (msg.message == WM_CLOSE && msg.hwnd == hDlg) {
+            running = false;
+            break;
+        }
+
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    EnableWindow(hParent, TRUE);
+    SetFocus(hParent);
+    DestroyWindow(hDlg);
+    DeleteObject(hFont);
+    DeleteObject(hFontBold);
+
+    while (!outVal.empty() && (outVal.back() == L' ' || outVal.back() == L'\t')) outVal.pop_back();
+    while (!outVal.empty() && (outVal.front() == L' ' || outVal.front() == L'\t')) outVal.erase(outVal.begin());
+
+    return okClicked && !outVal.empty();
+}
+
 void SaveLogsToFile(HWND hwnd) {
     WCHAR szFile[MAX_PATH] = L"aether-minecraft.log";
     OPENFILENAMEW ofn;
@@ -1941,10 +2116,12 @@ void SaveLogsToFile(HWND hwnd) {
     if (GetSaveFileNameW(&ofn)) {
         FILE* fp = _wfopen(szFile, L"w, ccs=UTF-8");
         if (fp) {
-            std::lock_guard<std::mutex> lock(g_logsMutex);
-            for (const auto& line : g_logs) {
-                fputws(line.c_str(), fp);
-                fputws(L"\n", fp);
+            {
+                std::lock_guard<std::mutex> lock(g_logsMutex);
+                for (const auto& line : g_logs) {
+                    fputws(line.c_str(), fp);
+                    fputws(L"\n", fp);
+                }
             }
             fclose(fp);
             AppendLog(Tr(L"[Aether] Лог успешно сохранен в файл: " + std::wstring(szFile),
@@ -2201,6 +2378,14 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                                  L" GB  •  " + Tr(L"Загрузчик: ", L"Loader: ") + g_containers[i].loader +
                                  L"  •  " + Tr(L"Статус: Готов", L"Status: Ready");
             g.DrawString(stats.c_str(), -1, &fontSmall, cStatsPt, &mutedBrush);
+
+            // Container rename button pill
+            int renBtnX = contentX + 70;
+            int renBtnY = cY + 92;
+            int renBtnW = 125;
+            DrawCard(g, (float)renBtnX, (float)renBtnY, (float)renBtnW, 20, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+            RectF renRc((float)renBtnX, (float)renBtnY, (float)renBtnW, 20);
+            g.DrawString(Tr(L"✏ Изменить имя", L"✏ Rename"), -1, &fontSmall, renRc, &sfCenter, &mutedBrush);
 
             std::vector<std::wstring> instJars = GetInstalledModFiles(g_config.storagePath, g_containers[i].id);
             std::wstring modCountText = Tr(L"Моды (", L"Mods (") + std::to_wstring(instJars.size()) + L")";
@@ -3573,6 +3758,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 int modsBtnY = cY + 48;
                 int folderBtnY = cY + 82;
 
+                // Click Rename Button or Click Name Title -> Prompt to rename container!
+                int renBtnX = contentX + 70;
+                int renBtnY = cY + 92;
+                int renBtnW = 125;
+                if ((x >= renBtnX && x <= renBtnX + renBtnW && y >= renBtnY && y <= renBtnY + 20) ||
+                    (x >= contentX + 70 && x <= contentX + 380 && y >= cY + 14 && y <= cY + 38)) {
+                    std::wstring newName;
+                    if (PromptTextInput(hwnd, Tr(L"Переименование контейнера", L"Rename Container"),
+                                        Tr(L"Введите новое название для этого контейнера:", L"Enter a new name for this container:"),
+                                        g_containers[i].name, newName)) {
+                        g_containers[i].name = newName;
+                        if ((int)i == g_activeContainerIndex) {
+                            g_activeContainerName = newName;
+                        }
+                        SaveConfig(g_config);
+                        AppendLog(Tr(L"[Aether] Название контейнера изменено на: " + newName,
+                                     L"[Aether] Container name updated to: " + newName));
+                        InvalidateRect(hwnd, NULL, FALSE);
+                    }
+                    return 0;
+                }
+
                 // Click Active / Select Container
                 if (x >= btnX && x <= btnX + btnW && y >= actBtnY && y <= actBtnY + 28) {
                     SetActiveContainer((int)i);
@@ -3667,41 +3874,52 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            // Click Quick Download ANY Mod by ID/link Button
+            // Click Quick Download ANY Mod by ID/link Button -> Prompts user!
             if (x >= quickDlBtnX && x <= quickDlBtnX + quickDlBtnW && y >= searchY && y <= searchY + 34) {
-                WCHAR buf[256] = { 0 };
-                if (g_hEditModSearch) GetWindowTextW(g_hEditModSearch, buf, 255);
-                std::wstring inputSlug = buf;
-                size_t modPos = inputSlug.find(L"/mod/");
-                if (modPos != std::wstring::npos) inputSlug = inputSlug.substr(modPos + 5);
-                while (!inputSlug.empty() && (inputSlug.back() == L'/' || inputSlug.back() == L' ')) inputSlug.pop_back();
+                WCHAR curSearch[256] = { 0 };
+                if (g_hEditModSearch) GetWindowTextW(g_hEditModSearch, curSearch, 255);
+                std::wstring initialVal = curSearch;
 
-                if (!inputSlug.empty()) {
-                    ModItem* target = nullptr;
-                    for (auto& m : g_allMods) {
-                        if (ToLowerW(m.id) == ToLowerW(inputSlug) || ToLowerW(m.name) == ToLowerW(inputSlug)) {
-                            target = &m;
-                            break;
+                std::wstring enteredSlug;
+                if (PromptTextInput(hwnd, Tr(L"Скачать любой мод с Modrinth", L"Download Any Mod from Modrinth"),
+                                    Tr(L"Введите ID, название или ссылку Modrinth (например: sodium, iris, fabric-api):",
+                                       L"Enter mod ID, name or Modrinth link (e.g. sodium, iris, fabric-api):"),
+                                    initialVal, enteredSlug)) {
+                    size_t modPos = enteredSlug.find(L"/mod/");
+                    if (modPos != std::wstring::npos) enteredSlug = enteredSlug.substr(modPos + 5);
+                    while (!enteredSlug.empty() && (enteredSlug.back() == L'/' || enteredSlug.back() == L' ')) enteredSlug.pop_back();
+
+                    if (!enteredSlug.empty()) {
+                        std::wstring cleanSlug = ToLowerW(enteredSlug);
+                        for (auto& c : cleanSlug) if (c == L' ') c = L'-';
+
+                        ModItem* target = nullptr;
+                        for (auto& m : g_allMods) {
+                            if (ToLowerW(m.id) == cleanSlug || ToLowerW(m.name) == cleanSlug || ToLowerW(m.name) == ToLowerW(enteredSlug)) {
+                                target = &m;
+                                break;
+                            }
                         }
+                        if (!target) {
+                            ModItem newMod;
+                            newMod.id = cleanSlug;
+                            newMod.name = enteredSlug;
+                            newMod.category = L"Modrinth";
+                            newMod.downloads = L"Online";
+                            newMod.brief = L"Мод Modrinth: " + enteredSlug;
+                            newMod.fullDesc = L"Загружен напрямую из официального каталога Modrinth по запросу пользователя.";
+                            newMod.versions = g_config.version;
+                            newMod.loader = g_config.loader;
+                            newMod.author = L"Modrinth Creator";
+                            newMod.url = L"https://modrinth.com/mod/" + cleanSlug;
+                            newMod.installed = false;
+                            g_allMods.insert(g_allMods.begin(), newMod);
+                            FilterMods();
+                            target = &g_allMods[0];
+                        }
+                        TriggerModDownload(target->id, target->name, hwnd);
+                        InvalidateRect(hwnd, NULL, FALSE);
                     }
-                    if (!target) {
-                        ModItem newMod;
-                        newMod.id = inputSlug;
-                        newMod.name = inputSlug;
-                        newMod.category = L"Modrinth";
-                        newMod.downloads = L"Online";
-                        newMod.brief = L"Мод Modrinth: " + inputSlug;
-                        newMod.fullDesc = L"Загружен напрямую из официального каталога Modrinth по запросу пользователя.";
-                        newMod.versions = g_config.version;
-                        newMod.loader = g_config.loader;
-                        newMod.author = L"Modrinth Creator";
-                        newMod.url = L"https://modrinth.com/mod/" + inputSlug;
-                        newMod.installed = false;
-                        g_allMods.insert(g_allMods.begin(), newMod);
-                        FilterMods();
-                        target = &g_allMods[0];
-                    }
-                    TriggerModDownload(target->id, target->name, hwnd);
                 }
                 return 0;
             }
