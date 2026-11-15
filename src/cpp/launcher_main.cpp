@@ -1,8 +1,9 @@
 // ============================================================================
 // Aether Launcher - Native Modern C++ Win32 GUI Engine (GDI+)
 // Pure Native Desktop Application with Zero Browser / Chrome / Node Dependencies
-// Features: Full Theme Engine, Anti-Aliased Graphics, Double-Buffering (60 FPS),
-// Prominent In-Dock Nickname Input, Mojang CDN Downloader, and Server Pinger.
+// Features: Vector GDI+ Anti-Aliased Icons, Double-Buffering (60 FPS),
+// Single Default Container & Full Selection, Real-Time Mod Search via App Tab,
+// Interactive RAM Slider with Custom Numeric Input, and In-Dock Nickname.
 // ============================================================================
 
 #define UNICODE
@@ -29,7 +30,6 @@
 
 #include "config.hpp"
 #include "minecraft_launcher.hpp"
-#include "server_pinger.hpp"
 
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -171,25 +171,45 @@ static std::vector<LauncherTheme> g_themes = {
 static LauncherTheme g_currentTheme = g_themes[0];
 
 // ----------------------------------------------------------------------------
-// Global UI State
+// Container Profiles - Only 1 Default Container by User Request
+// ----------------------------------------------------------------------------
+struct ContainerProfile {
+    std::wstring id;
+    std::wstring name;
+    std::wstring version;
+    std::wstring loader;
+    int memoryMb;
+};
+
+static std::vector<ContainerProfile> g_containers = {
+    { L"c-default", L"Minecraft 1.21.1 Vanilla", L"1.21.1", L"vanilla", 4096 }
+};
+static int g_activeContainerIndex = 0;
+
+// ----------------------------------------------------------------------------
+// Global UI State & Controls
 // ----------------------------------------------------------------------------
 static HINSTANCE g_hInstance = NULL;
 static HWND g_hMainWindow = NULL;
 static HWND g_hEditNick = NULL;
-static HWND g_hEditServer = NULL;
+static HWND g_hEditModSearch = NULL;
+static HWND g_hEditRam = NULL;
 
-#define IDC_EDIT_NICKNAME 1001
-#define IDC_EDIT_SERVER   1002
+#define IDC_EDIT_NICKNAME  1001
+#define IDC_EDIT_MODSEARCH 1002
+#define IDC_EDIT_RAM       1003
 
 static LauncherConfig g_config;
-static int g_currentTab = 0; // 0: Containers, 1: Mods, 2: Servers, 3: Logs, 4: Backups, 5: Settings
+// 0: Containers, 1: Mods, 2: Logs & Crashes, 3: Backups, 4: Settings
+static int g_currentTab = 0;
 static int g_hoveredTab = -1;
 static bool g_hoverPlayBtn = false;
 static bool g_pressPlayBtn = false;
 static bool g_isRussian = true;
+static bool g_isDraggingSlider = false;
 
 // Active container & launch status
-static std::wstring g_activeContainerName = L"Vanilla 1.21.1";
+static std::wstring g_activeContainerName = L"Minecraft 1.21.1 Vanilla";
 static std::wstring g_activeVersion = L"1.21.1";
 static std::wstring g_launchStatus = L"Готов к запуску";
 static int g_launchProgressPct = 0;
@@ -203,15 +223,7 @@ static std::wstring g_lastCrashTitle = L"";
 static std::wstring g_lastCrashCause = L"";
 static std::wstring g_lastCrashSolution = L"";
 
-// Server Ping
-static std::wstring g_serverHost = L"mc.hypixel.net";
-static std::wstring g_serverStatus = L"";
-static std::wstring g_serverPingText = L"";
-static std::wstring g_serverMotd = L"";
-static std::wstring g_serverPlayers = L"";
-static bool g_serverIsOnline = false;
-
-// Mod items
+// Mod Items & Search Filter
 struct ModItem {
     std::wstring name;
     std::wstring description;
@@ -220,14 +232,21 @@ struct ModItem {
     bool installed;
 };
 
-static std::vector<ModItem> g_mods = {
-    { L"Sodium", L"Современный движок рендеринга, колоссально повышающий FPS и плавность графики.", L"32.4M", L"Оптимизация", true },
+static std::vector<ModItem> g_allMods = {
+    { L"Sodium", L"Современный движок рендеринга для Fabric, колоссально повышающий FPS и плавность.", L"32.4M", L"Оптимизация", true },
     { L"Iris Shaders", L"Современный загрузчик шейдер-паков с поддержкой PBR и совместимостью с Sodium.", L"24.1M", L"Шейдеры", true },
     { L"Lithium", L"Глубокая оптимизация тика сервера, физики мобов и чанков без изменения механик.", L"19.8M", L"Оптимизация", false },
     { L"Fabric API", L"Основная библиотека хуков и событий, необходимая для большинства модов Fabric.", L"45.2M", L"Библиотека", true },
     { L"AppleSkin", L"Удобное отображение насыщения и истощения полоски голода над хотбаром.", L"28.6M", L"Интерфейс", false },
-    { L"JourneyMap", L"Красивая карта реального времени с радаром мобов и путевыми точками (waypoint).", L"38.1M", L"Карта", false }
+    { L"JourneyMap", L"Красивая карта реального времени с радаром мобов и путевыми точками (waypoint).", L"38.1M", L"Карта", false },
+    { L"Just Enough Items (JEI)", L"Просмотр рецептов крафта, плавки и использования предметов прямо в инвентаре.", L"120.5M", L"Интерфейс", false },
+    { L"Create", L"Грандиозный мод на механику, шестеренки, конвейеры, поезда и автоматизацию.", L"54.8M", L"Технологии", false },
+    { L"FerriteCore", L"Экстремальная оптимизация потребления оперативной памяти Java кучи.", L"22.3M", L"Оптимизация", false },
+    { L"Mod Menu", L"Удобный список установленных модов с кнопками настроек прямо в меню игры.", L"41.2M", L"Интерфейс", true }
 };
+
+static std::vector<ModItem> g_filteredMods = g_allMods;
+static std::wstring g_modSearchQuery = L"";
 
 // Available versions
 static std::vector<std::wstring> g_versions = {
@@ -235,13 +254,14 @@ static std::vector<std::wstring> g_versions = {
 };
 static int g_selectedVersionIndex = 0;
 
-// RAM Options (MB)
-static std::vector<int> g_ramOptions = { 2048, 4096, 6144, 8192, 12288, 16384 };
+// Quick RAM presets (MB)
+static std::vector<int> g_ramPresets = { 2048, 4096, 6144, 8192, 12288, 16384 };
 
 // Forward declarations
 void AppendLog(const std::wstring& line);
 void StartMinecraftLaunch();
-void PingActiveServer();
+void FilterMods();
+void SetActiveContainer(int index);
 
 // Translation Helper
 inline const wchar_t* Tr(const wchar_t* ru, const wchar_t* en) {
@@ -251,8 +271,138 @@ inline std::wstring Tr(const std::wstring& ru, const std::wstring& en) {
     return g_isRussian ? ru : en;
 }
 
+inline std::wstring ToLowerW(const std::wstring& s) {
+    std::wstring r = s;
+    for (auto& c : r) c = towlower(c);
+    return r;
+}
+
 // ----------------------------------------------------------------------------
-// GDI+ Graphics Helpers
+// Crisp Vector Icons (100% Native GDI+ Paths - Zero Missing Glyphs / Tofu)
+// ----------------------------------------------------------------------------
+static void DrawIconContainers(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 1.8f);
+    float half = size * 0.45f;
+    float gap = size * 0.1f;
+    g.DrawRectangle(&pen, x, y, half, half);
+    g.DrawRectangle(&pen, x + half + gap, y, half, half);
+    g.DrawRectangle(&pen, x, y + half + gap, half, half);
+    g.DrawRectangle(&pen, x + half + gap, y + half + gap, half, half);
+}
+
+static void DrawIconMods(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 1.8f);
+    float s = size;
+    PointF pts[8] = {
+        PointF(x + s * 0.2f, y),
+        PointF(x + s * 0.8f, y),
+        PointF(x + s, y + s * 0.35f),
+        PointF(x + s * 0.85f, y + s * 0.5f),
+        PointF(x + s, y + s * 0.65f),
+        PointF(x + s * 0.8f, y + s),
+        PointF(x + s * 0.2f, y + s),
+        PointF(x, y + s * 0.5f)
+    };
+    g.DrawPolygon(&pen, pts, 8);
+}
+
+static void DrawIconLogs(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 2.0f);
+    g.DrawLine(&pen, x, y + 2, x + size * 0.45f, y + size * 0.45f);
+    g.DrawLine(&pen, x + size * 0.45f, y + size * 0.45f, x, y + size * 0.85f);
+    g.DrawLine(&pen, x + size * 0.55f, y + size * 0.85f, x + size, y + size * 0.85f);
+}
+
+static void DrawIconBackups(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 1.8f);
+    float s = size;
+    PointF pts[5] = {
+        PointF(x, y),
+        PointF(x + s * 0.75f, y),
+        PointF(x + s, y + s * 0.25f),
+        PointF(x + s, y + s),
+        PointF(x, y + s)
+    };
+    g.DrawPolygon(&pen, pts, 5);
+    g.DrawRectangle(&pen, x + s * 0.25f, y, s * 0.4f, s * 0.35f);
+}
+
+static void DrawIconSettings(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 1.8f);
+    float s = size;
+    g.DrawLine(&pen, x, y + s * 0.25f, x + s, y + s * 0.25f);
+    SolidBrush brush(col);
+    g.FillEllipse(&brush, x + s * 0.3f - 2.5f, y + s * 0.25f - 2.5f, 5.0f, 5.0f);
+
+    g.DrawLine(&pen, x, y + s * 0.75f, x + s, y + s * 0.75f);
+    g.FillEllipse(&brush, x + s * 0.7f - 2.5f, y + s * 0.75f - 2.5f, 5.0f, 5.0f);
+}
+
+static void DrawIconSearch(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 1.8f);
+    float r = size * 0.35f;
+    g.DrawEllipse(&pen, x, y, r * 2.0f, r * 2.0f);
+    g.DrawLine(&pen, x + r * 1.6f, y + r * 1.6f, x + size, y + size);
+}
+
+static void DrawIconCube(Graphics& g, float cx, float cy, float r, Color colTop, Color colLeft, Color colRight) {
+    PointF topPts[4] = {
+        PointF(cx, cy - r),
+        PointF(cx + r * 0.866f, cy - r * 0.5f),
+        PointF(cx, cy),
+        PointF(cx - r * 0.866f, cy - r * 0.5f)
+    };
+    SolidBrush bTop(colTop);
+    g.FillPolygon(&bTop, topPts, 4);
+
+    PointF leftPts[4] = {
+        PointF(cx - r * 0.866f, cy - r * 0.5f),
+        PointF(cx, cy),
+        PointF(cx, cy + r),
+        PointF(cx - r * 0.866f, cy + r * 0.5f)
+    };
+    SolidBrush bLeft(colLeft);
+    g.FillPolygon(&bLeft, leftPts, 4);
+
+    PointF rightPts[4] = {
+        PointF(cx, cy),
+        PointF(cx + r * 0.866f, cy - r * 0.5f),
+        PointF(cx + r * 0.866f, cy + r * 0.5f),
+        PointF(cx, cy + r)
+    };
+    SolidBrush bRight(colRight);
+    g.FillPolygon(&bRight, rightPts, 4);
+}
+
+static void DrawIconCheck(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 2.0f);
+    g.DrawLine(&pen, x, y + size * 0.5f, x + size * 0.35f, y + size);
+    g.DrawLine(&pen, x + size * 0.35f, y + size, x + size, y);
+}
+
+static void DrawIconGamepad(Graphics& g, float x, float y, float w, float h, Color col) {
+    Pen pen(col, 1.8f);
+    g.DrawEllipse(&pen, x, y + 2, w * 0.35f, h * 0.7f);
+    g.DrawEllipse(&pen, x + w * 0.65f, y + 2, w * 0.35f, h * 0.7f);
+    g.DrawLine(&pen, x + w * 0.18f, y + 2, x + w * 0.82f, y + 2);
+    g.DrawLine(&pen, x + w * 0.18f, y + h * 0.7f, x + w * 0.82f, y + h * 0.7f);
+}
+
+static void DrawIconWarn(Graphics& g, float x, float y, float size, Color col) {
+    Pen pen(col, 1.8f);
+    PointF pts[3] = {
+        PointF(x + size * 0.5f, y),
+        PointF(x + size, y + size),
+        PointF(x, y + size)
+    };
+    g.DrawPolygon(&pen, pts, 3);
+    g.DrawLine(&pen, x + size * 0.5f, y + size * 0.35f, x + size * 0.5f, y + size * 0.65f);
+    SolidBrush dot(col);
+    g.FillEllipse(&dot, x + size * 0.5f - 1.5f, y + size * 0.78f, 3.0f, 3.0f);
+}
+
+// ----------------------------------------------------------------------------
+// Basic GDI+ Shapes
 // ----------------------------------------------------------------------------
 static void AddRoundRect(GraphicsPath& path, float x, float y, float w, float h, float r) {
     if (r <= 0.0f) {
@@ -307,7 +457,52 @@ static void DrawGradientButton(Graphics& g, float x, float y, float w, float h, 
 }
 
 // ----------------------------------------------------------------------------
-// Window Procedure & Painting
+// Container Selection Helper
+// ----------------------------------------------------------------------------
+void SetActiveContainer(int index) {
+    if (index >= 0 && index < (int)g_containers.size()) {
+        g_activeContainerIndex = index;
+        g_activeContainerName = g_containers[index].name;
+        g_activeVersion = g_containers[index].version;
+        g_config.version = g_containers[index].version;
+        g_config.loader = g_containers[index].loader;
+        g_config.memoryMb = g_containers[index].memoryMb;
+        SaveConfig(g_config);
+
+        if (g_hEditRam) {
+            SetWindowTextW(g_hEditRam, std::to_wstring(g_config.memoryMb).c_str());
+        }
+
+        AppendLog(Tr(L"[Aether] Активный контейнер изменен на: " + g_activeContainerName,
+                     L"[Aether] Active container set to: " + g_activeContainerName));
+
+        if (g_hMainWindow) {
+            InvalidateRect(g_hMainWindow, NULL, FALSE);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Mod Filter Logic
+// ----------------------------------------------------------------------------
+void FilterMods() {
+    if (g_modSearchQuery.empty()) {
+        g_filteredMods = g_allMods;
+        return;
+    }
+    std::wstring q = ToLowerW(g_modSearchQuery);
+    g_filteredMods.clear();
+    for (const auto& m : g_allMods) {
+        if (ToLowerW(m.name).find(q) != std::wstring::npos ||
+            ToLowerW(m.description).find(q) != std::wstring::npos ||
+            ToLowerW(m.category).find(q) != std::wstring::npos) {
+            g_filteredMods.push_back(m);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Main UI Painting Routine
 // ----------------------------------------------------------------------------
 static void PaintMainUI(HWND hwnd, HDC hdc) {
     RECT rc;
@@ -348,7 +543,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     int mainH = height - dockH;
 
     // ------------------------------------------------------------------------
-    // 1. Sidebar (Width: 220px)
+    // 1. Sidebar (Width: 220px) - Servers Tab Removed by Request!
     // ------------------------------------------------------------------------
     SolidBrush sidebarBrush(g_currentTheme.bgSurface);
     g.FillRectangle(&sidebarBrush, 0, 0, sidebarW, mainH);
@@ -372,7 +567,6 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     PointF brandPt(68, 20);
     g.DrawString(L"Aether", -1, &fontBrand, brandPt, &whiteBrush);
 
-    // "LAUNCHER" Badge
     GraphicsPath badgePath;
     AddRoundRect(badgePath, 68, 42, 64, 14, 4);
     SolidBrush badgeBg(Color(40, g_currentTheme.accent.GetR(), g_currentTheme.accent.GetG(), g_currentTheme.accent.GetB()));
@@ -384,24 +578,23 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
     g.DrawLine(&borderPen, 20, 72, sidebarW - 20, 72);
 
-    // Sidebar Navigation Items
+    // Sidebar Navigation Items (Total 5 Tabs: Servers Tab Removed!)
     struct NavItem {
-        const wchar_t* icon;
+        int iconType;
         const wchar_t* titleRu;
         const wchar_t* titleEn;
     };
     static NavItem navItems[] = {
-        { L"📦", L"Контейнеры", L"Containers" },
-        { L"🧩", L"Моды (Modrinth)", L"Mods (Modrinth)" },
-        { L"🌐", L"Серверы", L"Servers" },
-        { L"📜", L"Логи и краши", L"Logs & Crashes" },
-        { L"💾", L"Резервные копии", L"Backups" },
-        { L"⚙", L"Настройки", L"Settings" }
+        { 0, L"Контейнеры", L"Containers" },
+        { 1, L"Моды (Modrinth)", L"Mods (Modrinth)" },
+        { 2, L"Логи и краши", L"Logs & Crashes" },
+        { 3, L"Резервные копии", L"Backups" },
+        { 4, L"Настройки", L"Settings" }
     };
 
     int navStartY = 88;
     int navItemH = 42;
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 5; ++i) {
         int itemY = navStartY + i * (navItemH + 4);
         bool isActive = (g_currentTab == i);
         bool isHovered = (g_hoveredTab == i);
@@ -423,12 +616,19 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             g.FillPath(&hoverPillBrush, &hoverPill);
         }
 
-        Font fontIcon(&ff, 14, FontStyleRegular, UnitPixel);
-        PointF iconPt(24, (float)itemY + 11);
-        SolidBrush iconBrush(isActive ? g_currentTheme.textMain : g_currentTheme.textMuted);
-        g.DrawString(navItems[i].icon, -1, &fontIcon, iconPt, &iconBrush);
+        Color iconCol = isActive ? g_currentTheme.textMain : g_currentTheme.textMuted;
+        float iconX = 24.0f;
+        float iconY = (float)itemY + 13.0f;
 
-        PointF textPt(48, (float)itemY + 11);
+        switch (navItems[i].iconType) {
+        case 0: DrawIconContainers(g, iconX, iconY, 16.0f, iconCol); break;
+        case 1: DrawIconMods(g, iconX, iconY, 16.0f, iconCol); break;
+        case 2: DrawIconLogs(g, iconX, iconY, 16.0f, iconCol); break;
+        case 3: DrawIconBackups(g, iconX, iconY, 16.0f, iconCol); break;
+        case 4: DrawIconSettings(g, iconX, iconY, 16.0f, iconCol); break;
+        }
+
+        PointF textPt(50, (float)itemY + 11);
         Font& itemFont = isActive ? fontBold : fontRegular;
         SolidBrush textBrush(isActive ? g_currentTheme.textMain : g_currentTheme.textMuted);
         g.DrawString(Tr(navItems[i].titleRu, navItems[i].titleEn), -1, &itemFont, textPt, &textBrush);
@@ -455,11 +655,13 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     g.FillRectangle(&topBrush, sidebarW, 0, width - sidebarW, topH);
     g.DrawLine(&borderPen, sidebarW, topH, width, topH);
 
-    DrawCard(g, (float)sidebarW + 20, 11, 220, 32, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-    PointF activeIconPt((float)sidebarW + 30, 16);
-    g.DrawString(L"🎮", -1, &fontRegular, activeIconPt, &whiteBrush);
-    PointF activeNamePt((float)sidebarW + 56, 17);
+    // Clickable Active Container Selector Pill
+    DrawCard(g, (float)sidebarW + 20, 11, 280, 32, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+    DrawIconGamepad(g, (float)sidebarW + 32, 18, 18, 16, g_currentTheme.accentSecondary);
+    PointF activeNamePt((float)sidebarW + 60, 17);
     g.DrawString(g_activeContainerName.c_str(), -1, &fontBold, activeNamePt, &whiteBrush);
+    PointF arrowPillPt((float)sidebarW + 280, 18);
+    g.DrawString(L"▼", -1, &fontSmall, arrowPillPt, &mutedBrush);
 
     int langX = width - 110;
     DrawCard(g, (float)langX, 12, 70, 30, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
@@ -481,7 +683,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     int contentY = topH + 20;
 
     if (g_currentTab == 0) {
-        // --- Containers Tab ---
+        // --- Containers Tab (Only 1 Default Container with Selection) ---
         PointF titlePt((float)contentX, (float)contentY);
         g.DrawString(Tr(L"Игровые контейнеры", L"Game Containers"), -1, &fontTitle, titlePt, &whiteBrush);
 
@@ -490,187 +692,120 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                         L"Isolated profiles for Minecraft versions, modpacks and loaders"),
                      -1, &fontSubtitle, subPt, &mutedBrush);
 
+        // "+ Создать контейнер" button on the right
+        int addBtnW = 180;
+        int addBtnX = contentX + contentW - addBtnW;
+        DrawGradientButton(g, (float)addBtnX, (float)contentY, (float)addBtnW, 34, 8,
+                           g_currentTheme.accent, g_currentTheme.accentSecondary,
+                           Color(255, 255, 255, 255), Tr(L"+ Создать контейнер", L"+ Create Container"), fontSmallBold, false, false);
+
         int cardY = contentY + 68;
-        int cardW = (contentW - 20) / 2;
-        int cardH = 140;
+        int cardW = contentW;
+        int cardH = 120;
 
-        // Card 1: Vanilla 1.21.1
-        DrawCard(g, (float)contentX, (float)cardY, (float)cardW, (float)cardH, 12, g_currentTheme.bgCard, g_currentTheme.borderFocus);
-        PointF c1IconPt((float)contentX + 16, (float)cardY + 16);
-        g.DrawString(L"🧊", -1, &fontHeader, c1IconPt, &whiteBrush);
+        for (size_t i = 0; i < g_containers.size(); ++i) {
+            int cY = cardY + (int)i * (cardH + 16);
+            bool isActive = ((int)i == g_activeContainerIndex);
 
-        PointF c1TitlePt((float)contentX + 44, (float)cardY + 16);
-        g.DrawString(L"Minecraft 1.21.1 Vanilla", -1, &fontBold, c1TitlePt, &whiteBrush);
+            DrawCard(g, (float)contentX, (float)cY, (float)cardW, (float)cardH, 12,
+                     g_currentTheme.bgCard, isActive ? g_currentTheme.borderFocus : g_currentTheme.border);
 
-        DrawCard(g, (float)contentX + 44, (float)cardY + 40, 60, 20, 4, Color(40, 16, 185, 129), Color(100, 16, 185, 129));
-        RectF b1Rc((float)contentX + 44, (float)cardY + 40, 60, 20);
-        g.DrawString(L"Vanilla", -1, &fontSmallBold, b1Rc, &sfCenter, &greenBrush);
+            // 3D Isometric Cube Icon
+            DrawIconCube(g, (float)contentX + 36, (float)cY + 36, 18.0f,
+                         g_currentTheme.accentSecondary, g_currentTheme.accent, Color(255, 100, 50, 160));
 
-        DrawCard(g, (float)contentX + 112, (float)cardY + 40, 50, 20, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        RectF b2Rc((float)contentX + 112, (float)cardY + 40, 50, 20);
-        g.DrawString(L"1.21.1", -1, &fontSmall, b2Rc, &sfCenter, &mutedBrush);
+            PointF cTitlePt((float)contentX + 70, (float)cY + 16);
+            g.DrawString(g_containers[i].name.c_str(), -1, &fontHeader, cTitlePt, &whiteBrush);
 
-        PointF c1StatsPt((float)contentX + 16, (float)cardY + 76);
-        g.DrawString(Tr(L"Память: 4 GB  •  Модов: 0  •  Общие миры: Вкл",
-                        L"Memory: 4 GB  •  Mods: 0  •  Shared Saves: On"),
-                     -1, &fontSmall, c1StatsPt, &mutedBrush);
+            // Loader & Version Badges
+            DrawCard(g, (float)contentX + 70, (float)cY + 42, 65, 20, 4, Color(40, 16, 185, 129), Color(100, 16, 185, 129));
+            RectF b1Rc((float)contentX + 70, (float)cY + 42, 65, 20);
+            g.DrawString(g_containers[i].loader.c_str(), -1, &fontSmallBold, b1Rc, &sfCenter, &greenBrush);
 
-        DrawCard(g, (float)contentX + 16, (float)cardY + 102, 100, 24, 6, g_currentTheme.accent, g_currentTheme.accent);
-        RectF activePillRc((float)contentX + 16, (float)cardY + 102, 100, 24);
-        g.DrawString(Tr(L"✓ Активен", L"✓ Active"), -1, &fontSmallBold, activePillRc, &sfCenter, &whiteBrush);
+            DrawCard(g, (float)contentX + 142, (float)cY + 42, 55, 20, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+            RectF b2Rc((float)contentX + 142, (float)cY + 42, 55, 20);
+            g.DrawString(g_containers[i].version.c_str(), -1, &fontSmall, b2Rc, &sfCenter, &mutedBrush);
 
-        // Card 2: Fabric 1.20.4
-        int c2X = contentX + cardW + 20;
-        DrawCard(g, (float)c2X, (float)cardY, (float)cardW, (float)cardH, 12, g_currentTheme.bgCard, g_currentTheme.border);
-        PointF c2IconPt((float)c2X + 16, (float)cardY + 16);
-        g.DrawString(L"⚡", -1, &fontHeader, c2IconPt, &whiteBrush);
+            PointF cStatsPt((float)contentX + 70, (float)cY + 72);
+            std::wstring stats = Tr(L"Выделенная память: ", L"Memory: ") + std::to_wstring(g_containers[i].memoryMb / 1024) +
+                                 L" GB  •  " + Tr(L"Общие миры: Вкл  •  Статус: Готов", L"Shared Saves: On  •  Status: Ready");
+            g.DrawString(stats.c_str(), -1, &fontSmall, cStatsPt, &mutedBrush);
 
-        PointF c2TitlePt((float)c2X + 44, (float)cardY + 16);
-        g.DrawString(L"Fabric Performance & Shaders", -1, &fontBold, c2TitlePt, &whiteBrush);
+            // Right action pill: Active indicator or Select button
+            int btnW = 150;
+            int btnX = contentX + cardW - btnW - 20;
+            int btnY = cY + (cardH - 32) / 2;
 
-        DrawCard(g, (float)c2X + 44, (float)cardY + 40, 55, 20, 4, Color(40, 6, 182, 212), Color(100, 6, 182, 212));
-        RectF b3Rc((float)c2X + 44, (float)cardY + 40, 55, 20);
-        SolidBrush cyanBrush(Color(255, 56, 189, 248));
-        g.DrawString(L"Fabric", -1, &fontSmallBold, b3Rc, &sfCenter, &cyanBrush);
-
-        DrawCard(g, (float)c2X + 107, (float)cardY + 40, 50, 20, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        RectF b4Rc((float)c2X + 107, (float)cardY + 40, 50, 20);
-        g.DrawString(L"1.20.4", -1, &fontSmall, b4Rc, &sfCenter, &mutedBrush);
-
-        PointF c2StatsPt((float)c2X + 16, (float)cardY + 76);
-        g.DrawString(Tr(L"Память: 4 GB  •  Модов: 8 (Sodium, Iris, Lithium...)",
-                        L"Memory: 4 GB  •  Mods: 8 (Sodium, Iris, Lithium...)"),
-                     -1, &fontSmall, c2StatsPt, &mutedBrush);
-
-        DrawCard(g, (float)c2X + 16, (float)cardY + 102, 120, 24, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        RectF selPillRc((float)c2X + 16, (float)cardY + 102, 120, 24);
-        g.DrawString(Tr(L"Выбрать профиль", L"Select Profile"), -1, &fontSmallBold, selPillRc, &sfCenter, &mutedBrush);
-
-        // Card 3: Forge 1.16.5
-        int c3Y = cardY + cardH + 16;
-        DrawCard(g, (float)contentX, (float)c3Y, (float)cardW, (float)cardH, 12, g_currentTheme.bgCard, g_currentTheme.border);
-        PointF c3IconPt((float)contentX + 16, (float)c3Y + 16);
-        g.DrawString(L"🔨", -1, &fontHeader, c3IconPt, &whiteBrush);
-
-        PointF c3TitlePt((float)contentX + 44, (float)c3Y + 16);
-        g.DrawString(L"Classic Tech & Magic", -1, &fontBold, c3TitlePt, &whiteBrush);
-
-        DrawCard(g, (float)contentX + 44, (float)c3Y + 40, 50, 20, 4, Color(40, 245, 158, 11), Color(100, 245, 158, 11));
-        RectF b5Rc((float)contentX + 44, (float)c3Y + 40, 50, 20);
-        SolidBrush amberBrush(Color(255, 251, 191, 36));
-        g.DrawString(L"Forge", -1, &fontSmallBold, b5Rc, &sfCenter, &amberBrush);
-
-        DrawCard(g, (float)contentX + 102, (float)c3Y + 40, 50, 20, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        RectF b6Rc((float)contentX + 102, (float)c3Y + 40, 50, 20);
-        g.DrawString(L"1.16.5", -1, &fontSmall, b6Rc, &sfCenter, &mutedBrush);
-
-        PointF c3StatsPt((float)contentX + 16, (float)c3Y + 76);
-        g.DrawString(Tr(L"Память: 6 GB  •  Модов: 15 (Create, JEI, Thermal...)",
-                        L"Memory: 6 GB  •  Mods: 15 (Create, JEI, Thermal...)"),
-                     -1, &fontSmall, c3StatsPt, &mutedBrush);
-
-        DrawCard(g, (float)contentX + 16, (float)c3Y + 102, 120, 24, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        RectF selPillRc2((float)contentX + 16, (float)c3Y + 102, 120, 24);
-        g.DrawString(Tr(L"Выбрать профиль", L"Select Profile"), -1, &fontSmallBold, selPillRc2, &sfCenter, &mutedBrush);
+            if (isActive) {
+                DrawCard(g, (float)btnX, (float)btnY, (float)btnW, 32, 6, g_currentTheme.accent, g_currentTheme.accent);
+                DrawIconCheck(g, (float)btnX + 18, (float)btnY + 10, 12.0f, Color(255, 255, 255, 255));
+                PointF selTextPt((float)btnX + 38, (float)btnY + 7);
+                g.DrawString(Tr(L"Активен", L"Active"), -1, &fontSmallBold, selTextPt, &whiteBrush);
+            } else {
+                DrawCard(g, (float)btnX, (float)btnY, (float)btnW, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                RectF selRc((float)btnX, (float)btnY, (float)btnW, 32);
+                g.DrawString(Tr(L"Выбрать контейнер", L"Select Container"), -1, &fontSmallBold, selRc, &sfCenter, &mutedBrush);
+            }
+        }
     }
     else if (g_currentTab == 1) {
-        // --- Modrinth Mods Tab ---
+        // --- Modrinth Mods Tab (Fixed Real-Time Search via Edit Control) ---
         PointF titlePt((float)contentX, (float)contentY);
         g.DrawString(Tr(L"Каталог Modrinth v2", L"Modrinth v2 Catalog"), -1, &fontTitle, titlePt, &whiteBrush);
 
         PointF subPt((float)contentX, (float)contentY + 28);
-        g.DrawString(Tr(L"Прямой поиск и установка модов, датапаков и шейдеров в 1 клик",
-                        L"Direct 1-click installation of mods, datapacks and shaders"),
+        g.DrawString(Tr(L"Поиск и установка модов, датапаков и шейдеров прямо в лаунчере",
+                        L"Search and install mods, datapacks and shaders directly in launcher"),
                      -1, &fontSubtitle, subPt, &mutedBrush);
 
         int searchY = contentY + 62;
-        DrawCard(g, (float)contentX, (float)searchY, (float)contentW - 100, 36, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        PointF searchIconPt((float)contentX + 12, (float)searchY + 8);
-        g.DrawString(L"🔍  Поиск модов...", -1, &fontSmall, searchIconPt, &mutedBrush);
+        // Search bar card background (The real Win32 EDIT control g_hEditModSearch sits inside!)
+        DrawCard(g, (float)contentX, (float)searchY, (float)contentW - 100, 36, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        DrawIconSearch(g, (float)contentX + 12, (float)searchY + 10, 16.0f, g_currentTheme.accentSecondary);
 
+        // "Найти" Button
         DrawGradientButton(g, (float)contentX + contentW - 90, (float)searchY, 90, 36, 8,
                            g_currentTheme.accent, g_currentTheme.accentSecondary,
                            Color(255, 255, 255, 255), Tr(L"Найти", L"Search"), fontBold, false, false);
 
         int modListY = searchY + 48;
         int modItemH = 54;
-        for (size_t i = 0; i < g_mods.size() && i < 5; ++i) {
-            int mY = modListY + (int)i * (modItemH + 8);
-            DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8, g_currentTheme.bgCard, g_currentTheme.border);
 
-            PointF mNamePt((float)contentX + 16, (float)mY + 10);
-            g.DrawString(g_mods[i].name.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
+        if (g_filteredMods.empty()) {
+            PointF emptyPt((float)contentX + 16, (float)modListY + 20);
+            g.DrawString(Tr(L"Моды не найдены по данному запросу.", L"No mods found matching your query."), -1, &fontRegular, emptyPt, &mutedBrush);
+        } else {
+            for (size_t i = 0; i < g_filteredMods.size() && i < 6; ++i) {
+                int mY = modListY + (int)i * (modItemH + 8);
+                DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8, g_currentTheme.bgCard, g_currentTheme.border);
 
-            DrawCard(g, (float)contentX + 120, (float)mY + 10, 85, 18, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-            RectF tagRc((float)contentX + 120, (float)mY + 10, 85, 18);
-            g.DrawString(g_mods[i].category.c_str(), -1, &fontSmall, tagRc, &sfCenter, &mutedBrush);
+                PointF mNamePt((float)contentX + 16, (float)mY + 10);
+                g.DrawString(g_filteredMods[i].name.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
 
-            PointF mDescPt((float)contentX + 16, (float)mY + 30);
-            g.DrawString(g_mods[i].description.c_str(), -1, &fontSmall, mDescPt, &mutedBrush);
+                DrawCard(g, (float)contentX + 180, (float)mY + 10, 85, 18, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                RectF tagRc((float)contentX + 180, (float)mY + 10, 85, 18);
+                g.DrawString(g_filteredMods[i].category.c_str(), -1, &fontSmall, tagRc, &sfCenter, &mutedBrush);
 
-            int btnW = 110;
-            int btnX = contentX + contentW - btnW - 14;
-            if (g_mods[i].installed) {
-                DrawCard(g, (float)btnX, (float)mY + 12, (float)btnW, 28, 6, Color(40, 16, 185, 129), g_currentTheme.success);
-                RectF btnRc((float)btnX, (float)mY + 12, (float)btnW, 28);
-                SolidBrush greenText(g_currentTheme.success);
-                g.DrawString(Tr(L"✓ Установлен", L"✓ Installed"), -1, &fontSmallBold, btnRc, &sfCenter, &greenText);
-            } else {
-                DrawGradientButton(g, (float)btnX, (float)mY + 12, (float)btnW, 28, 6,
-                                   g_currentTheme.accent, g_currentTheme.accentSecondary,
-                                   Color(255, 255, 255, 255), Tr(L"+ Установить", L"+ Install"), fontSmallBold, false, false);
+                PointF mDescPt((float)contentX + 16, (float)mY + 30);
+                g.DrawString(g_filteredMods[i].description.c_str(), -1, &fontSmall, mDescPt, &mutedBrush);
+
+                int btnW = 120;
+                int btnX = contentX + contentW - btnW - 14;
+                if (g_filteredMods[i].installed) {
+                    DrawCard(g, (float)btnX, (float)mY + 12, (float)btnW, 28, 6, Color(40, 16, 185, 129), g_currentTheme.success);
+                    DrawIconCheck(g, (float)btnX + 12, (float)mY + 20, 11.0f, g_currentTheme.success);
+                    PointF instTextPt((float)btnX + 28, (float)mY + 17);
+                    SolidBrush greenText(g_currentTheme.success);
+                    g.DrawString(Tr(L"Установлен", L"Installed"), -1, &fontSmallBold, instTextPt, &greenText);
+                } else {
+                    DrawGradientButton(g, (float)btnX, (float)mY + 12, (float)btnW, 28, 6,
+                                       g_currentTheme.accent, g_currentTheme.accentSecondary,
+                                       Color(255, 255, 255, 255), Tr(L"+ Установить", L"+ Install"), fontSmallBold, false, false);
+                }
             }
         }
     }
     else if (g_currentTab == 2) {
-        // --- Server Monitoring Tab ---
-        PointF titlePt((float)contentX, (float)contentY);
-        g.DrawString(Tr(L"Мониторинг серверов", L"Server Monitoring"), -1, &fontTitle, titlePt, &whiteBrush);
-
-        PointF subPt((float)contentX, (float)contentY + 28);
-        g.DrawString(Tr(L"Проверка онлайна, задержки (ping) и статуса сервера до запуска",
-                        L"Check server online status, latency (ping) and MOTD before launching"),
-                     -1, &fontSubtitle, subPt, &mutedBrush);
-
-        int pingBarY = contentY + 62;
-        DrawCard(g, (float)contentX, (float)pingBarY, (float)contentW - 160, 36, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-
-        DrawGradientButton(g, (float)contentX + contentW - 150, (float)pingBarY, 150, 36, 8,
-                           g_currentTheme.accent, g_currentTheme.accentSecondary,
-                           Color(255, 255, 255, 255), Tr(L"Проверить пинг", L"Check Ping"), fontBold, false, false);
-
-        int resY = pingBarY + 54;
-        DrawCard(g, (float)contentX, (float)resY, (float)contentW, 190, 12, g_currentTheme.bgCard, g_currentTheme.borderFocus);
-
-        PointF srvIconPt((float)contentX + 20, (float)resY + 18);
-        g.DrawString(L"🌐", -1, &fontHeader, srvIconPt, &whiteBrush);
-
-        PointF srvHostPt((float)contentX + 48, (float)resY + 18);
-        g.DrawString(g_serverHost.c_str(), -1, &fontHeader, srvHostPt, &whiteBrush);
-
-        DrawCard(g, (float)contentX + contentW - 110, (float)resY + 16, 90, 24, 6, Color(40, 16, 185, 129), g_currentTheme.success);
-        RectF onRc((float)contentX + contentW - 110, (float)resY + 16, 90, 24);
-        g.DrawString(Tr(L"● Онлайн", L"● Online"), -1, &fontSmallBold, onRc, &sfCenter, &greenBrush);
-
-        PointF pingPt((float)contentX + 48, (float)resY + 42);
-        std::wstring pingDisplay = Tr(L"Задержка: 24 мс  •  Версия: 1.8.x - 1.21.x", L"Latency: 24 ms  •  Version: 1.8.x - 1.21.x");
-        if (!g_serverPingText.empty()) pingDisplay = g_serverPingText;
-        g.DrawString(pingDisplay.c_str(), -1, &fontSmall, pingPt, &mutedBrush);
-
-        DrawCard(g, (float)contentX + 20, (float)resY + 70, (float)contentW - 40, 60, 8, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        PointF motdPt((float)contentX + 32, (float)resY + 80);
-        std::wstring motdText = g_serverMotd.empty()
-            ? L"Hypixel Network [1.8-1.21] SUMMER EVENT!\n★ 100+ Games ★ BedWars, SkyBlock, Duels & SMP"
-            : g_serverMotd;
-        g.DrawString(motdText.c_str(), -1, &fontSmallBold, motdPt, &whiteBrush);
-
-        PointF plyPt((float)contentX + 20, (float)resY + 146);
-        std::wstring plyText = g_serverPlayers.empty()
-            ? Tr(L"Игроков онлайн: 42,184 / 100,000", L"Players online: 42,184 / 100,000")
-            : g_serverPlayers;
-        g.DrawString(plyText.c_str(), -1, &fontRegular, plyPt, &whiteBrush);
-    }
-    else if (g_currentTab == 3) {
         // --- Logs & Smart Crash Diagnostic Tab ---
         PointF titlePt((float)contentX, (float)contentY);
         g.DrawString(Tr(L"Логи и умная диагностика", L"Logs & Crash Diagnostics"), -1, &fontTitle, titlePt, &whiteBrush);
@@ -684,16 +819,15 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
         if (!g_lastCrashCause.empty()) {
             DrawCard(g, (float)contentX, (float)logY, (float)contentW, 76, 8, Color(40, 245, 158, 11), g_currentTheme.warning);
-            PointF warnIconPt((float)contentX + 16, (float)logY + 12);
-            g.DrawString(L"⚠", -1, &fontHeader, warnIconPt, &whiteBrush);
+            DrawIconWarn(g, (float)contentX + 16, (float)logY + 14, 18.0f, g_currentTheme.warning);
 
-            PointF diagTitlePt((float)contentX + 42, (float)logY + 12);
+            PointF diagTitlePt((float)contentX + 44, (float)logY + 12);
             g.DrawString(g_lastCrashTitle.c_str(), -1, &fontBold, diagTitlePt, &warnBrush);
 
-            PointF diagCausePt((float)contentX + 42, (float)logY + 32);
+            PointF diagCausePt((float)contentX + 44, (float)logY + 32);
             g.DrawString(g_lastCrashCause.c_str(), -1, &fontSmall, diagCausePt, &whiteBrush);
 
-            PointF diagSolPt((float)contentX + 42, (float)logY + 50);
+            PointF diagSolPt((float)contentX + 44, (float)logY + 50);
             g.DrawString(g_lastCrashSolution.c_str(), -1, &fontSmallBold, diagSolPt, &greenBrush);
 
             logY += 88;
@@ -726,7 +860,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             g.DrawString(g_logs[i].c_str(), -1, &fontMono, logPt, &lineBrush);
         }
     }
-    else if (g_currentTab == 4) {
+    else if (g_currentTab == 3) {
         // --- Backups Tab ---
         PointF titlePt((float)contentX, (float)contentY);
         g.DrawString(Tr(L"Резервные копии миров", L"World Backups"), -1, &fontTitle, titlePt, &whiteBrush);
@@ -743,8 +877,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
         int listY = bkY + 52;
         DrawCard(g, (float)contentX, (float)listY, (float)contentW, 64, 8, g_currentTheme.bgCard, g_currentTheme.border);
-        PointF bIconPt((float)contentX + 16, (float)listY + 16);
-        g.DrawString(L"💾", -1, &fontHeader, bIconPt, &whiteBrush);
+        DrawIconBackups(g, (float)contentX + 16, (float)listY + 22, 18.0f, g_currentTheme.accentSecondary);
 
         PointF bTitlePt((float)contentX + 44, (float)listY + 14);
         g.DrawString(Tr(L"Vanilla 1.21.1 - Снимок перед установкой модов", L"Vanilla 1.21.1 - Snapshot before mod test"), -1, &fontBold, bTitlePt, &whiteBrush);
@@ -756,8 +889,8 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         RectF rstRc((float)contentX + contentW - 140, (float)listY + 18, 120, 28);
         g.DrawString(Tr(L"Восстановить", L"Restore"), -1, &fontSmallBold, rstRc, &sfCenter, &whiteBrush);
     }
-    else if (g_currentTab == 5) {
-        // --- Settings Tab ---
+    else if (g_currentTab == 4) {
+        // --- Settings Tab: RAM Draggable Slider & Custom Numeric Input ---
         PointF titlePt((float)contentX, (float)contentY);
         g.DrawString(Tr(L"Настройки лаунчера", L"Launcher Settings"), -1, &fontTitle, titlePt, &whiteBrush);
 
@@ -768,28 +901,83 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
         int setY = contentY + 68;
 
-        DrawCard(g, (float)contentX, (float)setY, (float)contentW, 90, 10, g_currentTheme.bgCard, g_currentTheme.border);
+        // Group 1: RAM Allocation with Draggable Slider + Custom Numeric Input
+        DrawCard(g, (float)contentX, (float)setY, (float)contentW, 148, 10, g_currentTheme.bgCard, g_currentTheme.border);
+
         PointF ramLblPt((float)contentX + 16, (float)setY + 14);
         g.DrawString(Tr(L"Выделенная оперативная память (RAM)", L"Allocated RAM"), -1, &fontBold, ramLblPt, &whiteBrush);
 
+        PointF ramCustomLblPt((float)contentX + 16, (float)setY + 44);
+        g.DrawString(Tr(L"Кастомный ввод:", L"Custom Input:"), -1, &fontSmall, ramCustomLblPt, &mutedBrush);
+
+        // Edit box background card (g_hEditRam sits directly inside!)
+        DrawCard(g, (float)contentX + 120, (float)setY + 38, 90, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        PointF mbLblPt((float)contentX + 218, (float)setY + 44);
+        g.DrawString(L"MB", -1, &fontSmallBold, mbLblPt, &mutedBrush);
+
+        // Formatted RAM representation in GB
+        float gbVal = (float)g_config.memoryMb / 1024.0f;
+        std::wstringstream gbs;
+        gbs << std::fixed << std::setprecision(1) << gbVal << L" GB";
+        PointF gbPt((float)contentX + 250, (float)setY + 44);
+        SolidBrush accentSec(g_currentTheme.accentSecondary);
+        g.DrawString((L"(" + gbs.str() + L")").c_str(), -1, &fontBold, gbPt, &accentSec);
+
+        // Interactive RAM Slider Track
+        int sliderX = contentX + 16;
+        int sliderY = setY + 78;
+        int sliderW = contentW - 32;
+        int sliderH = 8;
+
+        GraphicsPath trackPath;
+        AddRoundRect(trackPath, (float)sliderX, (float)sliderY, (float)sliderW, (float)sliderH, 4);
+        SolidBrush trackBg(g_currentTheme.bgSurfaceElevated);
+        g.FillPath(&trackBg, &trackPath);
+
+        // Fill active portion of slider track
+        float ramPct = (float)(g_config.memoryMb - 1024) / (float)(16384 - 1024);
+        if (ramPct < 0.0f) ramPct = 0.0f;
+        if (ramPct > 1.0f) ramPct = 1.0f;
+        float fillW = sliderW * ramPct;
+
+        if (fillW > 4.0f) {
+            GraphicsPath fillPath;
+            AddRoundRect(fillPath, (float)sliderX, (float)sliderY, fillW, (float)sliderH, 4);
+            LinearGradientBrush fillGrad(PointF((float)sliderX, (float)sliderY),
+                                        PointF((float)sliderX + fillW, (float)sliderY),
+                                        g_currentTheme.accent, g_currentTheme.accentSecondary);
+            g.FillPath(&fillGrad, &fillPath);
+        }
+
+        // Draggable Knob
+        float knobX = sliderX + fillW;
+        float knobY = sliderY + 4.0f;
+        SolidBrush knobBrush(g_currentTheme.accentSecondary);
+        g.FillEllipse(&knobBrush, knobX - 8.0f, knobY - 8.0f, 16.0f, 16.0f);
+        Pen knobPen(Color(255, 255, 255, 255), 2.0f);
+        g.DrawEllipse(&knobPen, knobX - 8.0f, knobY - 8.0f, 16.0f, 16.0f);
+
+        // Quick Preset Pills
         int pillStartX = contentX + 16;
-        for (size_t i = 0; i < g_ramOptions.size(); ++i) {
+        int pillY = setY + 104;
+        for (size_t i = 0; i < g_ramPresets.size(); ++i) {
             int pX = pillStartX + (int)i * 72;
-            bool isSel = (g_config.memoryMb == g_ramOptions[i]);
+            bool isSel = (g_config.memoryMb == g_ramPresets[i]);
 
             if (isSel) {
-                DrawCard(g, (float)pX, (float)setY + 44, 62, 30, 6, g_currentTheme.accent, g_currentTheme.accent);
+                DrawCard(g, (float)pX, (float)pillY, 62, 28, 6, g_currentTheme.accent, g_currentTheme.accent);
             } else {
-                DrawCard(g, (float)pX, (float)setY + 44, 62, 30, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                DrawCard(g, (float)pX, (float)pillY, 62, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
             }
 
-            std::wstring ramLabel = std::to_wstring(g_ramOptions[i] / 1024) + L" GB";
-            RectF ramRc((float)pX, (float)setY + 44, 62, 30);
+            std::wstring ramLabel = std::to_wstring(g_ramPresets[i] / 1024) + L" GB";
+            RectF ramRc((float)pX, (float)pillY, 62, 28);
             SolidBrush ramTextBrush(isSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
             g.DrawString(ramLabel.c_str(), -1, &fontSmallBold, ramRc, &sfCenter, &ramTextBrush);
         }
 
-        int themeY = setY + 104;
+        // Group 2: Visual Themes
+        int themeY = setY + 162;
         DrawCard(g, (float)contentX, (float)themeY, (float)contentW, 90, 10, g_currentTheme.bgCard, g_currentTheme.border);
         PointF thmLblPt((float)contentX + 16, (float)themeY + 14);
         g.DrawString(Tr(L"Тема оформления (Визуальный стиль)", L"Visual Theme"), -1, &fontBold, thmLblPt, &whiteBrush);
@@ -808,12 +996,13 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             g.DrawString(g_themes[i].name.c_str(), -1, &fontSmallBold, thmRc, &sfCenter, &thmTextBrush);
         }
 
+        // Group 3: JVM Presets
         int jvmY = themeY + 104;
-        DrawCard(g, (float)contentX, (float)jvmY, (float)contentW, 80, 10, g_currentTheme.bgCard, g_currentTheme.border);
+        DrawCard(g, (float)contentX, (float)jvmY, (float)contentW, 76, 10, g_currentTheme.bgCard, g_currentTheme.border);
         PointF jvmLblPt((float)contentX + 16, (float)jvmY + 14);
         g.DrawString(Tr(L"Предустановка флагов JVM", L"JVM Flags Preset"), -1, &fontBold, jvmLblPt, &whiteBrush);
 
-        PointF jvmSelPt((float)contentX + 16, (float)jvmY + 44);
+        PointF jvmSelPt((float)contentX + 16, (float)jvmY + 42);
         g.DrawString(Tr(L"✓ Aikar's Flags (Максимальный FPS, без фризов G1GC)",
                         L"✓ Aikar's Flags (Maximum FPS, stutter-free G1GC)"),
                      -1, &fontRegular, jvmSelPt, &greenBrush);
@@ -830,30 +1019,31 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     Pen dockBorderPen(g_currentTheme.border, 1.0f);
     g.DrawLine(&dockBorderPen, 0, dockY, width, dockY);
 
+    // Left: Isometric 3D Cube & Container Info
     GraphicsPath dockAvatarPath;
     AddRoundRect(dockAvatarPath, 20, (float)dockY + 16, 52, 52, 10);
     SolidBrush dockAvatarBg(g_currentTheme.bgSurfaceElevated);
     g.FillPath(&dockAvatarBg, &dockAvatarPath);
     g.DrawPath(&dockBorderPen, &dockAvatarPath);
 
-    PointF cubePt(34, (float)dockY + 28);
-    Font fontCube(&ff, 20, FontStyleRegular, UnitPixel);
-    g.DrawString(L"🧊", -1, &fontCube, cubePt, &whiteBrush);
+    DrawIconCube(g, 46.0f, (float)dockY + 42.0f, 15.0f,
+                 g_currentTheme.accentSecondary, g_currentTheme.accent, Color(255, 100, 50, 160));
 
     PointF dNamePt(84, (float)dockY + 22);
     g.DrawString(g_activeContainerName.c_str(), -1, &fontBold, dNamePt, &whiteBrush);
 
     PointF dVerPt(84, (float)dockY + 44);
-    std::wstring subVer = Tr(L"Vanilla 1.21.1 • Готов", L"Vanilla 1.21.1 • Ready");
+    std::wstring subVer = g_activeVersion + L" • " + Tr(L"Готов к игре", L"Ready to launch");
     g.DrawString(subVer.c_str(), -1, &fontSmall, dVerPt, &mutedBrush);
 
-    // Center-Left: Prominent NICKNAME Input Label
+    // Center-Left: Prominent NICKNAME Input Box on Bottom Dock!
     PointF nickLblPt(270, (float)dockY + 14);
     SolidBrush accentSecBrush(g_currentTheme.accentSecondary);
     g.DrawString(Tr(L"НИКНЕЙМ ИГРОКА", L"PLAYER NICKNAME"), -1, &fontSmallBold, nickLblPt, &accentSecBrush);
 
     DrawCard(g, 268, (float)dockY + 34, 164, 32, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
 
+    // Center-Right: Version Dropdown Pill
     PointF verLblPt(452, (float)dockY + 14);
     g.DrawString(Tr(L"ВЕРСИЯ ИГРЫ", L"GAME VERSION"), -1, &fontSmallBold, verLblPt, &mutedBrush);
 
@@ -863,6 +1053,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     PointF arrowPt(538, (float)dockY + 42);
     g.DrawString(L"▼", -1, &fontSmall, arrowPt, &mutedBrush);
 
+    // Status Pill
     int statusX = 580;
     DrawCard(g, (float)statusX, (float)dockY + 34, 210, 32, 16, g_currentTheme.bgCard, g_currentTheme.border);
 
@@ -873,7 +1064,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
     g.DrawString(g_launchStatus.c_str(), -1, &fontSmallBold, stTextPt, &whiteBrush);
 
     // ------------------------------------------------------------------------
-    // THE PLAY BUTTON (Right side of dock, giant glowing rounded gradient button)
+    // THE PLAY BUTTON (Giant glowing rounded gradient button)
     // ------------------------------------------------------------------------
     int playBtnW = 190;
     int playBtnH = 52;
@@ -934,7 +1125,6 @@ void StartMinecraftLaunch() {
         AppendLog(Tr(L"[Aether] Выделение RAM: " + std::to_wstring(g_config.memoryMb) + L" MB",
                      L"[Aether] RAM: " + std::to_wstring(g_config.memoryMb) + L" MB"));
 
-        // Step 1: Scan Java
         AppendLog(Tr(L"[JavaDetector] Сканирование установленных сред выполнения Java...",
                      L"[JavaDetector] Scanning installed Java runtimes..."));
         JavaInfo java = MinecraftLauncher::DetectJava(g_config.customJavaPath);
@@ -949,7 +1139,6 @@ void StartMinecraftLaunch() {
                          L"[JavaDetector] Found compatible Java: " + javaPath));
         }
 
-        // Step 2: Prepare & Download official Mojang client.jar if missing
         AppendLog(Tr(L"[PistonMeta] Проверка и подготовка клиента Minecraft " + g_activeVersion + L"...",
                      L"[PistonMeta] Validating and downloading Minecraft " + g_activeVersion + L"..."));
 
@@ -972,7 +1161,6 @@ void StartMinecraftLaunch() {
             return;
         }
 
-        // Step 3: Launch
         AppendLog(Tr(L"[Aether] Запуск процесса Minecraft net.minecraft.client.main.Main...",
                      L"[Aether] Starting Minecraft process net.minecraft.client.main.Main..."));
         g_launchStatus = Tr(L"Игра запущена!", L"Game running!");
@@ -1059,40 +1247,6 @@ void AppendLog(const std::wstring& line) {
     }
 }
 
-void PingActiveServer() {
-    WCHAR hostBuf[256] = { 0 };
-    if (g_hEditServer) {
-        GetWindowTextW(g_hEditServer, hostBuf, 255);
-        if (wcslen(hostBuf) > 0) {
-            g_serverHost = hostBuf;
-        }
-    }
-
-    std::thread([=]() {
-        AppendLog(Tr(L"[ServerPinger] Пинг сервера " + g_serverHost + L"...",
-                     L"[ServerPinger] Pinging server " + g_serverHost + L"..."));
-
-        std::string narrowHost(g_serverHost.begin(), g_serverHost.end());
-        ServerStatus res = NativeServerPinger::Ping(narrowHost, 25565);
-        g_serverIsOnline = res.online;
-
-        if (res.online) {
-            g_serverPingText = Tr(L"Задержка: ", L"Latency: ") + std::to_wstring(res.latencyMs) + L" ms  •  Версия: " + res.version;
-            g_serverMotd = res.motd;
-            g_serverPlayers = Tr(L"Игроков онлайн: ", L"Players online: ") + std::to_wstring(res.playersOnline) + L" / " + std::to_wstring(res.playersMax);
-            AppendLog(Tr(L"[ServerPinger] Ответ получен! Пинг: " + std::to_wstring(res.latencyMs) + L" ms, Игроки: " + std::to_wstring(res.playersOnline),
-                         L"[ServerPinger] Response received! Latency: " + std::to_wstring(res.latencyMs) + L" ms"));
-        } else {
-            g_serverPingText = Tr(L"Сервер недоступен (Таймаут соединения)", L"Server unreachable (Connection timeout)");
-            g_serverMotd = Tr(L"Не удалось получить ответ от сервера.", L"Failed to receive response from server.");
-            g_serverPlayers = L"0 / 0";
-            AppendLog(Tr(L"[ServerPinger] Сервер не ответил.", L"[ServerPinger] Server did not respond."));
-        }
-
-        PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
-    }).detach();
-}
-
 // ----------------------------------------------------------------------------
 // Window Message Handler
 // ----------------------------------------------------------------------------
@@ -1108,7 +1262,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         AppendLog(Tr(L"[Aether] Готов к работе. Выберите профиль и нажмите Играть.",
                      L"[Aether] Ready. Select profile and click Play."));
 
-        // Create Nickname Edit Box (Placed right on the bottom launch dock!)
+        // 1. Nickname Edit Box (Always on the bottom dock)
         g_hEditNick = CreateWindowExW(
             0, L"EDIT", g_config.nickname.c_str(),
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
@@ -1121,15 +1275,53 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         SendMessageW(g_hEditNick, WM_SETFONT, (WPARAM)hFontNick, TRUE);
 
-        // Create Server Address Edit Box (For server pinger tab)
-        g_hEditServer = CreateWindowExW(
-            0, L"EDIT", g_serverHost.c_str(),
+        // 2. Mod Search Edit Box (Mods Tab)
+        g_hEditModSearch = CreateWindowExW(
+            0, L"EDIT", L"",
             WS_CHILD | ES_AUTOHSCROLL,
-            220 + 36, 54 + 20 + 68, 500, 24,
-            hwnd, (HMENU)IDC_EDIT_SERVER, g_hInstance, NULL
+            220 + 24 + 36, 54 + 20 + 68, 500, 24,
+            hwnd, (HMENU)IDC_EDIT_MODSEARCH, g_hInstance, NULL
         );
-        SendMessageW(g_hEditServer, WM_SETFONT, (WPARAM)hFontNick, TRUE);
+        SendMessageW(g_hEditModSearch, WM_SETFONT, (WPARAM)hFontNick, TRUE);
 
+        // 3. Custom RAM Numeric Input Box (Settings Tab)
+        g_hEditRam = CreateWindowExW(
+            0, L"EDIT", std::to_wstring(g_config.memoryMb).c_str(),
+            WS_CHILD | ES_NUMBER | ES_AUTOHSCROLL,
+            220 + 24 + 126, 54 + 20 + 68 + 42, 80, 22,
+            hwnd, (HMENU)IDC_EDIT_RAM, g_hInstance, NULL
+        );
+        SendMessageW(g_hEditRam, WM_SETFONT, (WPARAM)hFontNick, TRUE);
+
+        return 0;
+    }
+
+    case WM_COMMAND: {
+        WORD notification = HIWORD(wParam);
+        WORD id = LOWORD(wParam);
+
+        if (notification == EN_CHANGE) {
+            if (id == IDC_EDIT_MODSEARCH && g_hEditModSearch) {
+                WCHAR buf[128] = { 0 };
+                GetWindowTextW(g_hEditModSearch, buf, 127);
+                g_modSearchQuery = buf;
+                FilterMods();
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+            else if (id == IDC_EDIT_RAM && g_hEditRam && !g_isDraggingSlider) {
+                WCHAR buf[32] = { 0 };
+                GetWindowTextW(g_hEditRam, buf, 31);
+                if (wcslen(buf) > 0) {
+                    int val = _wtoi(buf);
+                    if (val >= 512 && val <= 32768) {
+                        g_config.memoryMb = val;
+                        g_containers[g_activeContainerIndex].memoryMb = val;
+                        SaveConfig(g_config);
+                        InvalidateRect(hwnd, NULL, FALSE);
+                    }
+                }
+            }
+        }
         return 0;
     }
 
@@ -1144,13 +1336,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_SIZE: {
         int width = LOWORD(lParam);
         int height = HIWORD(lParam);
+
         if (g_hEditNick) {
             SetWindowPos(g_hEditNick, NULL, 272, height - 84 + 38, 156, 24, SWP_NOZORDER);
         }
-        if (g_hEditServer) {
-            SetWindowPos(g_hEditServer, NULL, 220 + 36, 54 + 20 + 68, width - 220 - 220, 24, SWP_NOZORDER);
-            ShowWindow(g_hEditServer, g_currentTab == 2 ? SW_SHOW : SW_HIDE);
+        if (g_hEditModSearch) {
+            SetWindowPos(g_hEditModSearch, NULL, 220 + 24 + 36, 54 + 20 + 68, width - 220 - 48 - 146, 24, SWP_NOZORDER);
+            ShowWindow(g_hEditModSearch, g_currentTab == 1 ? SW_SHOW : SW_HIDE);
         }
+        if (g_hEditRam) {
+            SetWindowPos(g_hEditRam, NULL, 220 + 24 + 126, 54 + 20 + 68 + 42, 80, 22, SWP_NOZORDER);
+            ShowWindow(g_hEditRam, g_currentTab == 4 ? SW_SHOW : SW_HIDE);
+        }
+
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
     }
@@ -1175,18 +1373,47 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int width = rc.right - rc.left;
         int height = rc.bottom - rc.top;
 
+        // Check sidebar tab hover (5 tabs now)
         int oldTabHover = g_hoveredTab;
         g_hoveredTab = -1;
-        if (x < 220 && y >= 88 && y < 88 + 6 * 46) {
+        if (x < 220 && y >= 88 && y < 88 + 5 * 46) {
             g_hoveredTab = (y - 88) / 46;
         }
 
+        // Check Play button hover
         int playBtnW = 190;
         int playBtnH = 52;
         int playBtnX = width - playBtnW - 24;
         int playBtnY = height - 84 + 16;
         bool oldPlayHover = g_hoverPlayBtn;
         g_hoverPlayBtn = (x >= playBtnX && x <= playBtnX + playBtnW && y >= playBtnY && y <= playBtnY + playBtnH);
+
+        // Check RAM Slider Dragging
+        if (g_isDraggingSlider && g_currentTab == 4) {
+            int contentX = 220 + 24;
+            int contentW = width - 220 - 48;
+            int sliderX = contentX + 16;
+            int sliderW = contentW - 32;
+
+            float pct = (float)(x - sliderX) / (float)sliderW;
+            if (pct < 0.0f) pct = 0.0f;
+            if (pct > 1.0f) pct = 1.0f;
+
+            int mb = 1024 + (int)(pct * (16384 - 1024));
+            mb = (mb / 128) * 128; // Step by 128 MB
+            if (mb < 1024) mb = 1024;
+            if (mb > 16384) mb = 16384;
+
+            if (g_config.memoryMb != mb) {
+                g_config.memoryMb = mb;
+                g_containers[g_activeContainerIndex].memoryMb = mb;
+                if (g_hEditRam) {
+                    SetWindowTextW(g_hEditRam, std::to_wstring(mb).c_str());
+                }
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
 
         if (oldTabHover != g_hoveredTab || oldPlayHover != g_hoverPlayBtn) {
             InvalidateRect(hwnd, NULL, FALSE);
@@ -1203,14 +1430,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int width = rc.right - rc.left;
         int height = rc.bottom - rc.top;
 
-        // Click sidebar tabs
-        if (x < 220 && y >= 88 && y < 88 + 6 * 46) {
+        // Click sidebar tabs (5 tabs)
+        if (x < 220 && y >= 88 && y < 88 + 5 * 46) {
             int clickedTab = (y - 88) / 46;
-            if (clickedTab >= 0 && clickedTab < 6) {
+            if (clickedTab >= 0 && clickedTab < 5) {
                 g_currentTab = clickedTab;
-                if (g_hEditServer) {
-                    ShowWindow(g_hEditServer, g_currentTab == 2 ? SW_SHOW : SW_HIDE);
+
+                if (g_hEditModSearch) {
+                    ShowWindow(g_hEditModSearch, g_currentTab == 1 ? SW_SHOW : SW_HIDE);
                 }
+                if (g_hEditRam) {
+                    ShowWindow(g_hEditRam, g_currentTab == 4 ? SW_SHOW : SW_HIDE);
+                }
+
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
+            return 0;
+        }
+
+        // Click top bar active container selector pill
+        if (x >= 220 + 20 && x <= 220 + 300 && y >= 11 && y <= 43) {
+            if (g_containers.size() > 1) {
+                int nextIdx = (g_activeContainerIndex + 1) % (int)g_containers.size();
+                SetActiveContainer(nextIdx);
+            } else {
+                g_currentTab = 0; // Go to containers tab
                 InvalidateRect(hwnd, NULL, FALSE);
             }
             return 0;
@@ -1240,39 +1484,150 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (x >= 450 && x <= 560 && y >= height - 84 + 34 && y <= height - 84 + 66) {
             g_selectedVersionIndex = (g_selectedVersionIndex + 1) % (int)g_versions.size();
             g_activeVersion = g_versions[g_selectedVersionIndex];
-            g_activeContainerName = L"Minecraft " + g_activeVersion;
+            g_containers[g_activeContainerIndex].version = g_activeVersion;
+            g_containers[g_activeContainerIndex].name = L"Minecraft " + g_activeVersion + L" Vanilla";
+            g_activeContainerName = g_containers[g_activeContainerIndex].name;
+            g_config.version = g_activeVersion;
+            SaveConfig(g_config);
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
 
-        // Click Server Ping button in tab 2
-        if (g_currentTab == 2) {
+        // --- Tab 0: Containers Tab Interaction ---
+        if (g_currentTab == 0) {
+            int contentX = 220 + 24;
             int contentW = width - 220 - 48;
-            int btnX = 220 + 24 + contentW - 150;
-            int btnY = 54 + 20 + 62;
-            if (x >= btnX && x <= btnX + 150 && y >= btnY && y <= btnY + 36) {
-                PingActiveServer();
+            int contentY = 54 + 20;
+
+            // Click "+ Создать контейнер"
+            int addBtnW = 180;
+            int addBtnX = contentX + contentW - addBtnW;
+            if (x >= addBtnX && x <= addBtnX + addBtnW && y >= contentY && y <= contentY + 34) {
+                // Add a new profile
+                std::wstring newId = L"c-" + std::to_wstring(g_containers.size() + 1);
+                std::wstring newName = (g_containers.size() == 1) ? L"Fabric 1.20.4 Performance" : L"Forge 1.16.5 Modded";
+                std::wstring newVer = (g_containers.size() == 1) ? L"1.20.4" : L"1.16.5";
+                std::wstring newLdr = (g_containers.size() == 1) ? L"fabric" : L"forge";
+
+                g_containers.push_back({ newId, newName, newVer, newLdr, 4096 });
+                SetActiveContainer((int)g_containers.size() - 1);
+                AppendLog(Tr(L"[Aether] Создан новый профиль: " + newName, L"[Aether] Created new container: " + newName));
                 return 0;
+            }
+
+            // Click container cards or "Выбрать контейнер"
+            int cardY = contentY + 68;
+            int cardW = contentW;
+            int cardH = 120;
+
+            for (size_t i = 0; i < g_containers.size(); ++i) {
+                int cY = cardY + (int)i * (cardH + 16);
+                if (x >= contentX && x <= contentX + cardW && y >= cY && y <= cY + cardH) {
+                    SetActiveContainer((int)i);
+                    return 0;
+                }
             }
         }
 
-        // Click RAM pill in Settings (Tab 5)
-        if (g_currentTab == 5) {
+        // --- Tab 1: Mods Tab Interaction ---
+        if (g_currentTab == 1) {
+            int contentX = 220 + 24;
+            int contentW = width - 220 - 48;
+            int searchY = 54 + 20 + 62;
+
+            // Click "Найти" button
+            int findBtnX = contentX + contentW - 90;
+            if (x >= findBtnX && x <= findBtnX + 90 && y >= searchY && y <= searchY + 36) {
+                if (g_hEditModSearch) {
+                    WCHAR buf[128] = { 0 };
+                    GetWindowTextW(g_hEditModSearch, buf, 127);
+                    g_modSearchQuery = buf;
+                    FilterMods();
+                    InvalidateRect(hwnd, NULL, FALSE);
+                }
+                return 0;
+            }
+
+            // Click Mod Install / Uninstall Button
+            int modListY = searchY + 48;
+            int modItemH = 54;
+            int btnW = 120;
+            int btnX = contentX + contentW - btnW - 14;
+
+            for (size_t i = 0; i < g_filteredMods.size() && i < 6; ++i) {
+                int mY = modListY + (int)i * (modItemH + 8);
+                if (x >= btnX && x <= btnX + btnW && y >= mY + 12 && y <= mY + 40) {
+                    g_filteredMods[i].installed = !g_filteredMods[i].installed;
+                    // Sync back to master list
+                    for (auto& masterMod : g_allMods) {
+                        if (masterMod.name == g_filteredMods[i].name) {
+                            masterMod.installed = g_filteredMods[i].installed;
+                            break;
+                        }
+                    }
+
+                    AppendLog(Tr(L"[Modrinth] Мод " + g_filteredMods[i].name + (g_filteredMods[i].installed ? L" успешно установлен." : L" отключен."),
+                                 L"[Modrinth] Mod " + g_filteredMods[i].name + (g_filteredMods[i].installed ? L" installed." : L" disabled.")));
+                    InvalidateRect(hwnd, NULL, FALSE);
+                    return 0;
+                }
+            }
+        }
+
+        // --- Tab 4: Settings Tab (RAM Slider Drag & Presets) ---
+        if (g_currentTab == 4) {
+            int contentX = 220 + 24;
+            int contentW = width - 220 - 48;
             int setY = 54 + 20 + 68;
-            int pillStartX = 220 + 24 + 16;
-            for (size_t i = 0; i < g_ramOptions.size(); ++i) {
+
+            // Check click on RAM slider track
+            int sliderX = contentX + 16;
+            int sliderY = setY + 74;
+            int sliderW = contentW - 32;
+
+            if (x >= sliderX - 10 && x <= sliderX + sliderW + 10 && y >= sliderY - 10 && y <= sliderY + 24) {
+                g_isDraggingSlider = true;
+                SetCapture(hwnd);
+
+                float pct = (float)(x - sliderX) / (float)sliderW;
+                if (pct < 0.0f) pct = 0.0f;
+                if (pct > 1.0f) pct = 1.0f;
+
+                int mb = 1024 + (int)(pct * (16384 - 1024));
+                mb = (mb / 128) * 128;
+                if (mb < 1024) mb = 1024;
+                if (mb > 16384) mb = 16384;
+
+                g_config.memoryMb = mb;
+                g_containers[g_activeContainerIndex].memoryMb = mb;
+                if (g_hEditRam) {
+                    SetWindowTextW(g_hEditRam, std::to_wstring(mb).c_str());
+                }
+                SaveConfig(g_config);
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            // Check click on quick RAM presets
+            int pillStartX = contentX + 16;
+            int pillY = setY + 104;
+            for (size_t i = 0; i < g_ramPresets.size(); ++i) {
                 int pX = pillStartX + (int)i * 72;
-                if (x >= pX && x <= pX + 62 && y >= setY + 44 && y <= setY + 74) {
-                    g_config.memoryMb = g_ramOptions[i];
+                if (x >= pX && x <= pX + 62 && y >= pillY && y <= pillY + 28) {
+                    g_config.memoryMb = g_ramPresets[i];
+                    g_containers[g_activeContainerIndex].memoryMb = g_config.memoryMb;
+                    if (g_hEditRam) {
+                        SetWindowTextW(g_hEditRam, std::to_wstring(g_config.memoryMb).c_str());
+                    }
                     SaveConfig(g_config);
                     InvalidateRect(hwnd, NULL, FALSE);
                     return 0;
                 }
             }
 
-            // Theme pill click
-            int themeY = setY + 104;
-            int thmStartX = 220 + 24 + 16;
+            // Check click on Theme presets
+            int themeY = setY + 162;
+            int thmStartX = contentX + 16;
             for (size_t i = 0; i < g_themes.size(); ++i) {
                 int tX = thmStartX + (int)i * 122;
                 if (x >= tX && x <= tX + 114 && y >= themeY + 44 && y <= themeY + 74) {
@@ -1285,30 +1640,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         }
 
-        // Click Mod cards install button (Tab 1)
-        if (g_currentTab == 1) {
-            int contentW = width - 220 - 48;
-            int modListY = 54 + 20 + 62 + 48;
-            int modItemH = 54;
-            int btnW = 110;
-            int btnX = 220 + 24 + contentW - btnW - 14;
-
-            for (size_t i = 0; i < g_mods.size() && i < 5; ++i) {
-                int mY = modListY + (int)i * (modItemH + 8);
-                if (x >= btnX && x <= btnX + btnW && y >= mY + 12 && y <= mY + 40) {
-                    g_mods[i].installed = !g_mods[i].installed;
-                    AppendLog(Tr(L"[Modrinth] " + g_mods[i].name + (g_mods[i].installed ? L" успешно установлен." : L" отключен."),
-                                 L"[Modrinth] " + g_mods[i].name + (g_mods[i].installed ? L" installed." : L" disabled.")));
-                    InvalidateRect(hwnd, NULL, FALSE);
-                    return 0;
-                }
-            }
-        }
-
         return 0;
     }
 
     case WM_LBUTTONUP: {
+        if (g_isDraggingSlider) {
+            g_isDraggingSlider = false;
+            ReleaseCapture();
+            SaveConfig(g_config);
+            InvalidateRect(hwnd, NULL, FALSE);
+        }
+
         if (g_pressPlayBtn) {
             g_pressPlayBtn = false;
             InvalidateRect(hwnd, NULL, FALSE);
@@ -1351,6 +1693,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             break;
         }
     }
+
+    // Sync default container with loaded config
+    g_containers[0].version = g_config.version;
+    g_containers[0].name = L"Minecraft " + g_config.version + L" Vanilla";
+    g_containers[0].loader = g_config.loader;
+    g_containers[0].memoryMb = g_config.memoryMb;
+    g_activeContainerName = g_containers[0].name;
+    g_activeVersion = g_containers[0].version;
 
     GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken;

@@ -54,4 +54,19 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   // Verify Config
   assert.ok(configHpp.includes('AetherLauncher'), 'Config directory must be %APPDATA%\\AetherLauncher');
   assert.ok(configHpp.includes('LoadConfig'), 'Config loader must be present');
+
+  // Verify only 1 default container
+  assert.ok(launcherMain.includes('g_containers = {') && launcherMain.includes('c-default'), 'Launcher must have only 1 default container profile');
+
+  // Verify mod search via app tab
+  assert.ok(launcherMain.includes('IDC_EDIT_MODSEARCH') && launcherMain.includes('FilterMods'), 'Launcher must implement mod search via app tab');
+
+  // Verify RAM slider and custom numeric RAM input
+  assert.ok(launcherMain.includes('g_isDraggingSlider') && launcherMain.includes('IDC_EDIT_RAM'), 'Launcher must implement draggable RAM slider and custom numeric input');
+
+  // Verify vector icon rendering functions (no missing tofu emojis)
+  assert.ok(launcherMain.includes('DrawIconContainers') && launcherMain.includes('DrawIconMods') && launcherMain.includes('DrawIconCube'), 'Launcher must use crisp vector icons');
+
+  // Verify server tab is removed
+  assert.ok(!launcherMain.includes('{ L"🌐", L"Серверы"'), 'Server tab must be removed from sidebar navigation');
 });
