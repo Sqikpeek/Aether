@@ -76,9 +76,8 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   // Verify global RAM setting
   assert.ok(launcherMain.includes('SetGlobalRam'), 'RAM setting must be applied globally to all containers');
 
-  // Verify mod category filters, mouse wheel navigation, and details view
-  assert.ok(launcherMain.includes('g_modCategories'), 'Launcher must provide category filter selection for mods');
-  assert.ok(launcherMain.includes('WM_MOUSEWHEEL') && launcherMain.includes('g_modPage'), 'Launcher must support mouse-wheel scrolling/page-flipping for mods');
+  // Verify the scrolling catalog and details view.
+  assert.ok(launcherMain.includes('WM_MOUSEWHEEL') && launcherMain.includes('g_tabScrollOffset'), 'Launcher must scroll tab content with the mouse wheel');
   assert.ok(launcherMain.includes('g_selectedModDetail'), 'Launcher must support opening detailed mod descriptions');
 
   // Verify Mod Loader selection dropdown on launch dock and in container management
@@ -90,10 +89,10 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   assert.ok(launcherMain.includes('1.21.3') && launcherMain.includes('1.12.2') && launcherMain.includes('1.7.10'), 'Launcher must include versions from 1.21.3 down to 1.7.10');
   assert.ok(launcherMain.includes('g_versions') && launcherMain.includes('1.8.9'), 'Launcher must have comprehensive version catalog');
 
-  // Verify mod pagination (multiple pages and navigation)
-  assert.ok(launcherMain.includes('g_modPage') && launcherMain.includes('totalPages'), 'Launcher must implement mod catalog pagination');
-  assert.ok(launcherMain.includes('Предыдущая') && launcherMain.includes('Следующая'), 'Launcher must have Previous and Next page controls');
-  assert.ok(launcherMain.includes('MODS_PER_PAGE'), 'Launcher must define items per page');
+  // Verify infinite, batched Modrinth catalog rather than pages.
+  assert.ok(launcherMain.includes('MODS_PER_BATCH = 20'), 'Launcher must load catalog results in 20-item batches');
+  assert.ok(launcherMain.includes('FetchNextModrinthCatalogBatch'), 'Launcher must fetch another batch at the end of the catalog');
+  assert.ok(!launcherMain.includes('g_modPage'), 'Launcher must not use page state for the mod catalog');
 
   // Verify DWM Immersive Dark Titlebar (removing harsh white border)
   assert.ok(launcherMain.includes('DwmSetWindowAttribute'), 'Launcher must call DwmSetWindowAttribute for dark titlebar');
@@ -110,7 +109,13 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   assert.ok(launcherMain.includes('IDC_EDIT_JAVAPATH') && launcherMain.includes('g_hEditJavaPath'), 'Launcher must provide custom Java runtime path input field');
   assert.ok(launcherMain.includes('IDC_EDIT_GAMEWIDTH') && launcherMain.includes('IDC_EDIT_GAMEHEIGHT'), 'Launcher must provide game window resolution inputs');
 
-  // Verify Modrinth download capability for ANY mod
-  assert.ok(launcherMain.includes('DownloadModrinthMod') && launcherMain.includes('TriggerModDownload'), 'Launcher must support downloading any mod from Modrinth');
-  assert.ok(launcherMain.includes('Скачать любой мод'), 'Launcher must provide quick download button for any Modrinth mod');
+  // Verify catalog-only Modrinth installation with strict compatibility and dependencies.
+  assert.ok(launcherMain.includes('DownloadModrinthMod') && launcherMain.includes('TriggerModDownload'), 'Launcher must download a catalog mod from Modrinth');
+  assert.ok(launcherMain.includes('DownloadVersionAndDependencies') && launcherMain.includes('dependency_type'), 'Launcher must install required dependencies automatically');
+  assert.ok(launcherMain.includes('game_versions') && launcherMain.includes('FetchCompatibleModrinthVersion'), 'Launcher must request the active container Minecraft version');
+  assert.ok(!launcherMain.includes('Скачать любой мод'), 'Launcher must not offer arbitrary URL/slug installation');
+
+  // Container names need durable persistence and a close-safe rename prompt.
+  assert.ok(launcherMain.includes('SaveContainerProfiles') && launcherMain.includes('LoadContainerProfiles'), 'Launcher must persist complete container profiles');
+  assert.ok(launcherMain.includes('WM_SYSCOMMAND') && launcherMain.includes('SC_CLOSE'), 'Closing a rename prompt must re-enable the launcher instead of hanging it');
 });
