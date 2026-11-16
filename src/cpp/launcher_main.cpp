@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <functional>
 #include <set>
+#include <memory>
 #include <cwctype>
 
 #include "config.hpp"
@@ -1192,6 +1193,9 @@ static bool g_modCatalogHasMore = true;
 static std::atomic<bool> g_modCatalogLoading(false);
 static std::wstring g_modCatalogQuery;
 static const ModItem* g_selectedModDetail = nullptr;
+// This is a real view switch, not a guessed "installed" state in the online
+// catalog. It always reads the active container's actual mods directory.
+static bool g_showInstalledMods = false;
 
 // A tab is a real vertical viewport now. Content stays comfortably sized; it is
 // never compressed to squeeze into a short window.
@@ -1303,6 +1307,73 @@ static void LoadContainerProfiles() {
     }
 }
 
+static std::vector<std::wstring> GetSettingsGcPresetLabels() {
+    return {
+        L"Aikar's Flags (FPS/TPS)",
+        L"ZGC (Low-Latency)",
+        L"Shenandoah GC",
+        L"Standard G1GC",
+        Tr(L"Свои флаги (Custom)", L"Custom Flags")
+    };
+}
+
+static int GetSettingsGcPillWidth(const std::wstring& label) {
+    return 24 + (int)label.length() * 7;
+}
+
+static int GetSettingsGcPillRows(int contentW) {
+    const int right = contentW - 16;
+    int x = 16;
+    int rows = 1;
+    for (const std::wstring& label : GetSettingsGcPresetLabels()) {
+        const int width = GetSettingsGcPillWidth(label);
+        if (x + width > right && x != 16) {
+            x = 16;
+            ++rows;
+        }
+        x += width + 6;
+    }
+    return rows;
+}
+
+static int GetSettingsJvmArgsLabelOffset(int contentW) {
+    return 84 + (GetSettingsGcPillRows(contentW) - 1) * 30;
+}
+
+static int GetSettingsJvmArgsInputOffset(int contentW) {
+    return GetSettingsJvmArgsLabelOffset(contentW) + 20;
+}
+
+static int GetSettingsJavaPathLabelOffset(int contentW) {
+    return GetSettingsJvmArgsInputOffset(contentW) + 34;
+}
+
+static int GetSettingsJavaPathInputOffset(int contentW) {
+    return GetSettingsJavaPathLabelOffset(contentW) + 16;
+}
+
+static int GetSettingsJvmCardHeight(int contentW) {
+    return GetSettingsJavaPathInputOffset(contentW) + 36;
+}
+
+static int GetSettingsOptionsCardHeight(int contentW) {
+    // On compact widths the toggles move to their own line rather than being
+    // pushed beyond the right edge of the viewport.
+    if (contentW >= 680) return 64;
+    return contentW >= 390 ? 100 : 136;
+}
+
+static int GetSettingsThemePillsPerRow(int contentW) {
+    const int usableWidth = std::max(114, contentW - 32);
+    return std::max(1, (usableWidth + 8) / 122); // 114px pill + 8px gap
+}
+
+static int GetSettingsThemeCardHeight(int contentW) {
+    const int rows = ((int)g_themes.size() + GetSettingsThemePillsPerRow(contentW) - 1) /
+                     GetSettingsThemePillsPerRow(contentW);
+    return 38 + rows * 34;
+}
+
 static int GetTabContentBottom() {
     const int contentY = 54 + 16;
     if (g_currentTab == 0) {
@@ -1312,11 +1383,19 @@ static int GetTabContentBottom() {
     if (g_currentTab == 1) {
         if (g_selectedModDetail != nullptr) return contentY + 520;
         const int modListY = contentY + 58 + 52;
+        const int itemCount = g_showInstalledMods && g_activeContainerIndex >= 0 &&
+                g_activeContainerIndex < (int)g_containers.size()
+            ? (int)GetInstalledModFiles(g_config.storagePath, g_containers[g_activeContainerIndex].id).size()
+            : (int)g_filteredMods.size();
         // Cards are intentionally roomy: no compressed single-line rows.
-        return modListY + (int)g_filteredMods.size() * 80 + 50;
+        return modListY + itemCount * 80 + 50;
     }
     if (g_currentTab == 3) return contentY + 210;
-    if (g_currentTab == 4) return contentY + 62 + 118 + 186 + 72 + 42 + 16;
+    if (g_currentTab == 4) {
+        // Width is unavailable here; reserve the tallest sensible wrapped
+        // theme layout so the vertical scrollbar never clips compact windows.
+        return contentY + 62 + 118 + GetSettingsJvmCardHeight(114) + 8 + 100 + 8 + 38 + (int)g_themes.size() * 34 + 16;
+    }
     return contentY + 80;
 }
 
@@ -1364,6 +1443,8 @@ struct ModrinthVersionInfo {
     std::string projectId;
     std::wstring fileUrl;
     std::wstring filename;
+    std::vector<std::string> gameVersions;
+    std::vector<std::string> loaders;
     std::vector<ModrinthDependencyRef> requiredDependencies;
 };
 
@@ -1445,6 +1526,47 @@ static std::string GetJsonArrayField(const std::string& json, const char* key) {
     return "";
 }
 
+static std::vector<std::string> GetJsonStringValues(const std::string& arrayJson) {
+    std::vector<std::string> values;
+    bool inString = false;
+    bool escaped = false;
+    std::string value;
+    for (char c : arrayJson) {
+        if (!inString) {
+            if (c == '"') { inString = true; value.clear(); }
+        } else if (escaped) {
+            value += c;
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else if (c == '"') {
+            values.push_back(value);
+            inString = false;
+        } else {
+            value += c;
+        }
+    }
+    return values;
+}
+
+static bool ModrinthVersionMatchesContainer(const ModrinthVersionInfo& version,
+                                            const std::wstring& mcVersion,
+                                            const std::wstring& loader) {
+    const std::string requestedVersion(mcVersion.begin(), mcVersion.end());
+    const std::wstring normalizedLoader = ToLowerW(loader);
+    const bool versionMatches = std::find(version.gameVersions.begin(), version.gameVersions.end(), requestedVersion) !=
+                                version.gameVersions.end();
+    bool loaderMatches = false;
+    for (const std::string& item : version.loaders) {
+        std::wstring value(item.begin(), item.end());
+        if (ToLowerW(value) == normalizedLoader) {
+            loaderMatches = true;
+            break;
+        }
+    }
+    return versionMatches && loaderMatches;
+}
+
 static bool ParseModrinthVersion(const std::string& versionJson, ModrinthVersionInfo& version) {
     version = {};
     std::string object = versionJson;
@@ -1455,6 +1577,8 @@ static bool ParseModrinthVersion(const std::string& versionJson, ModrinthVersion
 
     version.id = GetJsonStringField(object, "id");
     version.projectId = GetJsonStringField(object, "project_id");
+    version.gameVersions = GetJsonStringValues(GetJsonArrayField(object, "game_versions"));
+    version.loaders = GetJsonStringValues(GetJsonArrayField(object, "loaders"));
     const std::string files = GetJsonArrayField(object, "files");
     if (files.empty()) return false;
 
@@ -1575,8 +1699,12 @@ static bool DownloadVersionAndDependencies(
                 std::wstring(dependency.projectId.begin(), dependency.projectId.end()), mcVersion, loader, dependencyVersion
             );
         }
-        if (!resolved || !DownloadVersionAndDependencies(dependencyVersion, containerModsDir, mcVersion, loader,
-                                                          visitedVersions, progress, false)) {
+        // Modrinth may point at a version id directly. Validate that exact
+        // dependency too; never install a jar for a different MC version or
+        // loader merely because its parent declared it.
+        if (!resolved || !ModrinthVersionMatchesContainer(dependencyVersion, mcVersion, loader) ||
+            !DownloadVersionAndDependencies(dependencyVersion, containerModsDir, mcVersion, loader,
+                                            visitedVersions, progress, false)) {
             return false;
         }
     }
@@ -1624,6 +1752,12 @@ inline bool DownloadModrinthMod(
     if (!ResolveCompatibleModrinthVersion(slugOrId, mcVersion, loader, rootVersion)) {
         AppendLog(Tr(L"[Modrinth] Для «" + modName + L"» нет версии для Minecraft " + mcVersion + L" и загрузчика " + loader + L".",
                      L"[Modrinth] No compatible " + mcVersion + L" / " + loader + L" version exists for «" + modName + L"»."));
+        return false;
+    }
+
+    if (!ModrinthVersionMatchesContainer(rootVersion, mcVersion, loader)) {
+        AppendLog(Tr(L"[Modrinth] API вернул несовместимую версию для активного контейнера.",
+                     L"[Modrinth] The API returned a version incompatible with the active container."));
         return false;
     }
 
@@ -1713,6 +1847,18 @@ static int GetJsonIntegerField(const std::string& json, const char* key, int fal
 }
 
 static std::atomic<unsigned long> g_modCatalogGeneration(0);
+static constexpr UINT WM_AETHER_MODRINTH_BATCH = WM_APP + 42;
+
+// HTTP work happens away from the Win32 paint thread. Results are delivered back
+// to the window as one complete batch, so PaintMainUI never races a vector
+// reallocation while it is drawing cards.
+struct ModrinthCatalogBatch {
+    unsigned long generation = 0;
+    int offset = 0;
+    int totalHits = -1;
+    bool requestFailed = false;
+    std::vector<ModItem> mods;
+};
 
 static void FetchModrinthOnlineMods(
     const std::wstring& query,
@@ -1725,6 +1871,10 @@ static void FetchModrinthOnlineMods(
     const unsigned long generation = g_modCatalogGeneration.load();
 
     std::thread([query, offset, loader, mcVersion, hwnd, generation]() {
+        auto* batch = new ModrinthCatalogBatch();
+        batch->generation = generation;
+        batch->offset = offset;
+
         std::wstring apiUrl = L"https://api.modrinth.com/v2/search?limit=" + std::to_wstring(MODS_PER_BATCH) +
             L"&offset=" + std::to_wstring(offset) +
             L"&facets=%5B%5B%22project_type%3Amod%22%5D%2C%5B%22versions%3A" + mcVersion + L"%22%5D";
@@ -1735,79 +1885,97 @@ static void FetchModrinthOnlineMods(
         if (!query.empty()) apiUrl += L"&query=" + UrlEncodeQuery(query);
 
         const std::string json = FetchHttpString(apiUrl);
-        if (generation != g_modCatalogGeneration.load()) return;
         if (json.empty()) {
-            g_modCatalogLoading.store(false);
-            g_modCatalogHasMore = false;
-            if (hwnd) InvalidateRect(hwnd, NULL, FALSE);
-            return;
+            batch->requestFailed = true;
+        } else {
+            const std::string hits = GetJsonArrayField(json, "hits");
+            batch->totalHits = GetJsonIntegerField(json, "total_hits", -1);
+            size_t cursor = 0;
+            while (cursor < hits.size()) {
+                std::string hit;
+                size_t after = 0;
+                if (!ExtractJsonObject(hits, cursor, hit, &after)) break;
+                cursor = after;
+
+                const std::string slug = GetJsonStringField(hit, "slug");
+                if (slug.empty()) continue;
+                const std::string title = GetJsonStringField(hit, "title");
+                const std::string description = GetJsonStringField(hit, "description");
+                const std::string author = GetJsonStringField(hit, "author");
+                const int downloads = GetJsonIntegerField(hit, "downloads", 0);
+                std::wstring wDownloads;
+                if (downloads >= 1000000) wDownloads = std::to_wstring(downloads / 1000000) + L"M";
+                else if (downloads >= 1000) wDownloads = std::to_wstring(downloads / 1000) + L"K";
+                else wDownloads = std::to_wstring(std::max(0, downloads));
+
+                ModItem mod;
+                mod.id.assign(slug.begin(), slug.end());
+                mod.name = title.empty() ? mod.id : std::wstring(title.begin(), title.end());
+                mod.category = L"Modrinth";
+                mod.downloads = wDownloads;
+                mod.fullDesc.assign(description.begin(), description.end());
+                mod.brief = mod.fullDesc.substr(0, std::min<size_t>(150, mod.fullDesc.size()));
+                mod.versions = mcVersion;
+                mod.loader = (loader.empty() || ToLowerW(loader) == L"vanilla") ? L"Любой загрузчик" : loader;
+                mod.author = author.empty() ? L"Modrinth" : std::wstring(author.begin(), author.end());
+                mod.url = L"https://modrinth.com/mod/" + mod.id;
+                // This deliberately stays false until the UI thread synchronizes
+                // the active container's real mods directory.
+                mod.installed = false;
+                batch->mods.push_back(std::move(mod));
+            }
         }
 
-        const std::string hits = GetJsonArrayField(json, "hits");
-        const int totalHits = GetJsonIntegerField(json, "total_hits", -1);
-        int added = 0;
-        size_t cursor = 0;
-        while (cursor < hits.size()) {
-            std::string hit;
-            size_t after = 0;
-            if (!ExtractJsonObject(hits, cursor, hit, &after)) break;
-            cursor = after;
+        // A reset may have happened during the request. The message handler
+        // checks the generation once more before it changes visible state.
+        if (!hwnd || !PostMessageW(hwnd, WM_AETHER_MODRINTH_BATCH, 0, reinterpret_cast<LPARAM>(batch))) {
+            delete batch;
+            if (generation == g_modCatalogGeneration.load()) g_modCatalogLoading.store(false);
+        }
+    }).detach();
+}
 
-            const std::string slug = GetJsonStringField(hit, "slug");
-            if (slug.empty()) continue;
-            const std::wstring wSlug(slug.begin(), slug.end());
+static void ApplyModrinthCatalogBatch(ModrinthCatalogBatch* batch, HWND hwnd) {
+    std::unique_ptr<ModrinthCatalogBatch> owned(batch);
+    if (!batch || batch->generation != g_modCatalogGeneration.load()) return;
+
+    int added = 0;
+    if (!batch->requestFailed) {
+        for (const ModItem& mod : batch->mods) {
             bool exists = false;
             for (const ModItem& existing : g_allMods) {
-                if (ToLowerW(existing.id) == ToLowerW(wSlug)) {
+                if (ToLowerW(existing.id) == ToLowerW(mod.id)) {
                     exists = true;
                     break;
                 }
             }
-            if (exists) continue;
-
-            const std::string title = GetJsonStringField(hit, "title");
-            const std::string description = GetJsonStringField(hit, "description");
-            const std::string author = GetJsonStringField(hit, "author");
-            const int downloads = GetJsonIntegerField(hit, "downloads", 0);
-            std::wstring wDownloads;
-            if (downloads >= 1000000) wDownloads = std::to_wstring(downloads / 1000000) + L"M";
-            else if (downloads >= 1000) wDownloads = std::to_wstring(downloads / 1000) + L"K";
-            else wDownloads = std::to_wstring(std::max(0, downloads));
-
-            ModItem mod;
-            mod.id = wSlug;
-            mod.name = title.empty() ? wSlug : std::wstring(title.begin(), title.end());
-            mod.category = L"Modrinth";
-            mod.downloads = wDownloads;
-            mod.fullDesc.assign(description.begin(), description.end());
-            mod.brief = mod.fullDesc.substr(0, std::min<size_t>(150, mod.fullDesc.size()));
-            mod.versions = mcVersion;
-            mod.loader = (loader.empty() || ToLowerW(loader) == L"vanilla") ? L"Любой загрузчик" : loader;
-            mod.author = author.empty() ? L"Modrinth" : std::wstring(author.begin(), author.end());
-            mod.url = L"https://modrinth.com/mod/" + wSlug;
-            mod.installed = false;
-            g_allMods.push_back(mod);
-            ++added;
+            if (!exists) {
+                g_allMods.push_back(mod);
+                ++added;
+            }
         }
+        g_modCatalogTotalHits = batch->totalHits;
+        g_modCatalogNextOffset = batch->offset + MODS_PER_BATCH;
+        g_modCatalogHasMore = !batch->mods.empty() &&
+            (batch->totalHits < 0 || g_modCatalogNextOffset < batch->totalHits);
+    } else {
+        g_modCatalogHasMore = false;
+        AppendLog(Tr(L"[Modrinth] [ОШИБКА] Каталог не ответил. Проверьте подключение и повторите поиск.",
+                     L"[Modrinth] [ERROR] The catalog did not respond. Check your connection and search again."));
+    }
+    g_modCatalogLoading.store(false);
 
-        if (generation != g_modCatalogGeneration.load()) return;
-        g_modCatalogTotalHits = totalHits;
-        g_modCatalogNextOffset = offset + MODS_PER_BATCH;
-        g_modCatalogHasMore = !hits.empty() && (totalHits < 0 || g_modCatalogNextOffset < totalHits);
-        g_modCatalogLoading.store(false);
-        // Installed state is derived from the active container's actual mods
-        // directory, never from built-in catalog defaults.
-        if (g_activeContainerIndex >= 0 && g_activeContainerIndex < (int)g_containers.size()) {
-            SyncInstalledModsWithDisk(g_config.storagePath, g_containers[g_activeContainerIndex].id);
-        } else {
-            FilterMods();
-        }
-        if (added > 0) {
-            AppendLog(Tr(L"[Modrinth] Загружено " + std::to_wstring(added) + L" модов. Прокрутите вниз для следующей партии.",
-                         L"[Modrinth] Loaded " + std::to_wstring(added) + L" mods. Scroll down for the next batch."));
-        }
-        if (hwnd) InvalidateRect(hwnd, NULL, FALSE);
-    }).detach();
+    // Installed labels are only derived from files currently in this container.
+    if (g_activeContainerIndex >= 0 && g_activeContainerIndex < (int)g_containers.size()) {
+        SyncInstalledModsWithDisk(g_config.storagePath, g_containers[g_activeContainerIndex].id);
+    } else {
+        FilterMods();
+    }
+    if (added > 0) {
+        AppendLog(Tr(L"[Modrinth] Загружено " + std::to_wstring(added) + L" модов. Прокрутите вниз для следующей партии.",
+                     L"[Modrinth] Loaded " + std::to_wstring(added) + L" mods. Scroll down for the next batch."));
+    }
+    if (hwnd) InvalidateRect(hwnd, NULL, FALSE);
 }
 
 static void ResetModrinthCatalog(const std::wstring& query, HWND hwnd) {
@@ -2166,10 +2334,11 @@ void FilterMods() {
     std::wstring lFilter = ToLowerW(g_selectedLoaderFilter);
 
     for (const auto& m : g_allMods) {
-        // Category filter
-        if (g_selectedCategory == L"Установленные") {
-            if (!m.installed) continue;
-        } else if (g_selectedCategory != L"Все" && m.category != g_selectedCategory) {
+        // "Installed" is intentionally not a catalog category. That view is
+        // rendered directly from the active container's mods directory, so a
+        // stale category can never hide successfully fetched Modrinth cards.
+        if (g_selectedCategory != L"Все" && g_selectedCategory != L"Установленные" &&
+            m.category != g_selectedCategory) {
             continue;
         }
 
@@ -2775,87 +2944,143 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         }
         else {
             PointF titlePt((float)contentX, (float)contentY);
-            g.DrawString(Tr(L"Каталог Modrinth", L"Modrinth Catalog"), -1, &fontTitle, titlePt, &whiteBrush);
+            g.DrawString(g_showInstalledMods ? Tr(L"Установленные моды", L"Installed Mods")
+                                             : Tr(L"Каталог Modrinth", L"Modrinth Catalog"),
+                         -1, &fontTitle, titlePt, &whiteBrush);
 
             PointF subPt((float)contentX, (float)contentY + 28);
-            g.DrawString(Tr(L"Поиск модов по названию. Совместимость подбирается для выбранного контейнера.",
-                            L"Search mods by name. Compatibility is selected for the active container."),
+            g.DrawString(g_showInstalledMods
+                            ? Tr(L"Файлы .jar, реально найденные в папке mods активного контейнера.",
+                                 L"JAR files actually found in the active container's mods folder.")
+                            : Tr(L"Поиск модов по названию. Совместимость подбирается для выбранного контейнера.",
+                                 L"Search mods by name. Compatibility is selected for the active container."),
                          -1, &fontSubtitle, subPt, &mutedBrush);
 
-            // Deliberately just the search field: direct arbitrary URL/slug
-            // installation was removed in favour of catalog search and cards.
+            // Search stays a name-only field. The adjacent explicit toggle
+            // prevents the old hidden category state from making the online
+            // catalog appear blank after opening installed mods from a card.
             const int searchY = contentY + 58;
-            DrawCard(g, (float)contentX, (float)searchY, (float)contentW, 34, 8,
+            const int installedBtnW = std::min(160, std::max(132, contentW / 4));
+            const int searchW = std::max(120, contentW - installedBtnW - 8);
+            DrawCard(g, (float)contentX, (float)searchY, (float)searchW, 34, 8,
                      g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
             DrawIconSearch(g, (float)contentX + 12, (float)searchY + 9, 16.0f, g_currentTheme.accentSecondary);
 
+            const int installedBtnX = contentX + searchW + 8;
+            DrawCard(g, (float)installedBtnX, (float)searchY, (float)installedBtnW, 34, 8,
+                     g_showInstalledMods ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
+                     g_showInstalledMods ? g_currentTheme.accent : g_currentTheme.border);
+            RectF installedToggleRc((float)installedBtnX, (float)searchY, (float)installedBtnW, 34);
+            SolidBrush installedToggleBrush(g_showInstalledMods ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+            g.DrawString(g_showInstalledMods ? Tr(L"← Каталог", L"← Catalog")
+                                             : Tr(L"Установленные моды", L"Installed Mods"),
+                         -1, &fontSmallBold, installedToggleRc, &sfCenter, &installedToggleBrush);
+
             const int modListY = searchY + 52;
             const int modItemH = 72;
-            if (g_filteredMods.empty() && !g_modCatalogLoading.load()) {
-                PointF emptyPt((float)contentX + 16, (float)modListY + 18);
-                g.DrawString(Tr(L"Моды не найдены. Измените название или проверьте версию и загрузчик контейнера.",
-                                L"No mods found. Change the name or check the container version and loader."),
-                             -1, &fontRegular, emptyPt, &mutedBrush);
-            }
-
-            for (int i = 0; i < (int)g_filteredMods.size(); ++i) {
-                const int mY = modListY + i * (modItemH + 8);
-                const ModItem& mod = g_filteredMods[i];
-                DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8,
-                         g_currentTheme.bgCard, g_currentTheme.border);
-
-                PointF mNamePt((float)contentX + 16, (float)mY + 10);
-                g.DrawString(mod.name.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
-
-                const int detBtnW = 86;
-                const int btnW = 120;
-                const int btnX = contentX + contentW - btnW - 12;
-                const int detBtnX = btnX - detBtnW - 8;
-                const int descriptionW = std::max(80, detBtnX - contentX - 28);
-                RectF mDescRc((float)contentX + 16, (float)mY + 32, (float)descriptionW, 30);
-                StringFormat briefFormat;
-                briefFormat.SetTrimming(StringTrimmingEllipsisCharacter);
-                briefFormat.SetFormatFlags(StringFormatFlagsLineLimit);
-                g.DrawString(mod.brief.c_str(), -1, &fontSmall, mDescRc, &briefFormat, &mutedBrush);
-
-                DrawCard(g, (float)detBtnX, (float)mY + 22, (float)detBtnW, 28, 6,
-                         g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-                RectF detRc((float)detBtnX, (float)mY + 22, (float)detBtnW, 28);
-                g.DrawString(Tr(L"Инфо", L"Details"), -1, &fontSmallBold, detRc, &sfCenter, &whiteBrush);
-
-                if (mod.isDownloading) {
-                    DrawCard(g, (float)btnX, (float)mY + 22, (float)btnW, 28, 6,
-                             g_currentTheme.bgSurfaceElevated, g_currentTheme.accent);
-                    RectF dlRc((float)btnX, (float)mY + 22, (float)btnW, 28);
-                    SolidBrush dlBrush(g_currentTheme.accentSecondary);
-                    g.DrawString(Tr(L"Загрузка...", L"Downloading..."), -1, &fontSmallBold, dlRc, &sfCenter, &dlBrush);
-                } else if (mod.installed) {
-                    DrawCard(g, (float)btnX, (float)mY + 22, (float)btnW, 28, 6,
-                             Color(40, 16, 185, 129), g_currentTheme.success);
-                    RectF installedRc((float)btnX, (float)mY + 22, (float)btnW, 28);
-                    SolidBrush installedBrush(g_currentTheme.success);
-                    g.DrawString(Tr(L"Установлен", L"Installed"), -1, &fontSmallBold, installedRc, &sfCenter, &installedBrush);
-                } else {
-                    DrawGradientButton(g, (float)btnX, (float)mY + 22, (float)btnW, 28, 6,
-                                       g_currentTheme.accent, g_currentTheme.accentSecondary,
-                                       Color(255, 255, 255, 255), Tr(L"Скачать", L"Download"), fontSmallBold, false, false);
+            if (g_showInstalledMods) {
+                std::vector<std::wstring> installedJars;
+                if (g_activeContainerIndex >= 0 && g_activeContainerIndex < (int)g_containers.size()) {
+                    installedJars = GetInstalledModFiles(g_config.storagePath, g_containers[g_activeContainerIndex].id);
                 }
-            }
-
-            const int statusY = modListY + (int)g_filteredMods.size() * (modItemH + 8);
-            DrawCard(g, (float)contentX, (float)statusY, (float)contentW, 34, 8,
-                     g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-            RectF statusRc((float)contentX + 12, (float)statusY, (float)contentW - 24, 34);
-            std::wstring status;
-            if (g_modCatalogLoading.load()) {
-                status = Tr(L"Загружаем ещё 20 модов…", L"Loading 20 more mods…");
-            } else if (g_modCatalogHasMore) {
-                status = Tr(L"Прокрутите вниз — каталог автоматически подгрузит следующую партию.",
-                            L"Scroll down — the catalog will load the next batch automatically.");
+                const std::wstring query = ToLowerW(g_modSearchQuery);
+                int visibleIndex = 0;
+                for (const std::wstring& jar : installedJars) {
+                    if (!query.empty() && ToLowerW(jar).find(query) == std::wstring::npos) continue;
+                    const int mY = modListY + visibleIndex * (modItemH + 8);
+                    DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8,
+                             g_currentTheme.bgCard, g_currentTheme.border);
+                    PointF mNamePt((float)contentX + 16, (float)mY + 12);
+                    g.DrawString(jar.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
+                    PointF locationPt((float)contentX + 16, (float)mY + 38);
+                    g.DrawString(Tr(L"Обнаружен на диске: instances / активный контейнер / mods",
+                                    L"Detected on disk: instances / active container / mods"),
+                                 -1, &fontSmall, locationPt, &mutedBrush);
+                    const int diskBtnW = 104;
+                    const int diskBtnX = contentX + contentW - diskBtnW - 12;
+                    DrawCard(g, (float)diskBtnX, (float)mY + 22, (float)diskBtnW, 28, 6,
+                             Color(40, 16, 185, 129), g_currentTheme.success);
+                    RectF diskRc((float)diskBtnX, (float)mY + 22, (float)diskBtnW, 28);
+                    SolidBrush diskBrush(g_currentTheme.success);
+                    g.DrawString(Tr(L"На диске", L"On disk"), -1, &fontSmallBold, diskRc, &sfCenter, &diskBrush);
+                    ++visibleIndex;
+                }
+                if (visibleIndex == 0) {
+                    PointF emptyPt((float)contentX + 16, (float)modListY + 18);
+                    g.DrawString(query.empty()
+                                    ? Tr(L"В этом контейнере пока нет установленных модов.",
+                                         L"This container has no installed mods yet.")
+                                    : Tr(L"Среди установленных файлов нет совпадений.",
+                                         L"No installed files match this name."),
+                                 -1, &fontRegular, emptyPt, &mutedBrush);
+                }
             } else {
-                status = Tr(L"Показаны все найденные моды.", L"All matching mods are shown.");
+                if (g_filteredMods.empty() && !g_modCatalogLoading.load()) {
+                    PointF emptyPt((float)contentX + 16, (float)modListY + 18);
+                    g.DrawString(Tr(L"Моды не найдены. Измените название или проверьте версию и загрузчик контейнера.",
+                                    L"No mods found. Change the name or check the container version and loader."),
+                                 -1, &fontRegular, emptyPt, &mutedBrush);
+                }
+
+                for (int i = 0; i < (int)g_filteredMods.size(); ++i) {
+                    const int mY = modListY + i * (modItemH + 8);
+                    const ModItem& mod = g_filteredMods[i];
+                    DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8,
+                             g_currentTheme.bgCard, g_currentTheme.border);
+
+                    PointF mNamePt((float)contentX + 16, (float)mY + 10);
+                    g.DrawString(mod.name.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
+
+                    const int detBtnW = 86;
+                    const int btnW = 120;
+                    const int btnX = contentX + contentW - btnW - 12;
+                    const int detBtnX = btnX - detBtnW - 8;
+                    const int descriptionW = std::max(80, detBtnX - contentX - 28);
+                    RectF mDescRc((float)contentX + 16, (float)mY + 32, (float)descriptionW, 30);
+                    StringFormat briefFormat;
+                    briefFormat.SetTrimming(StringTrimmingEllipsisCharacter);
+                    briefFormat.SetFormatFlags(StringFormatFlagsLineLimit);
+                    g.DrawString(mod.brief.c_str(), -1, &fontSmall, mDescRc, &briefFormat, &mutedBrush);
+
+                    DrawCard(g, (float)detBtnX, (float)mY + 22, (float)detBtnW, 28, 6,
+                             g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                    RectF detRc((float)detBtnX, (float)mY + 22, (float)detBtnW, 28);
+                    g.DrawString(Tr(L"Инфо", L"Details"), -1, &fontSmallBold, detRc, &sfCenter, &whiteBrush);
+
+                    if (mod.isDownloading) {
+                        DrawCard(g, (float)btnX, (float)mY + 22, (float)btnW, 28, 6,
+                                 g_currentTheme.bgSurfaceElevated, g_currentTheme.accent);
+                        RectF dlRc((float)btnX, (float)mY + 22, (float)btnW, 28);
+                        SolidBrush dlBrush(g_currentTheme.accentSecondary);
+                        g.DrawString(Tr(L"Загрузка...", L"Downloading..."), -1, &fontSmallBold, dlRc, &sfCenter, &dlBrush);
+                    } else if (mod.installed) {
+                        DrawCard(g, (float)btnX, (float)mY + 22, (float)btnW, 28, 6,
+                                 Color(40, 16, 185, 129), g_currentTheme.success);
+                        RectF installedRc((float)btnX, (float)mY + 22, (float)btnW, 28);
+                        SolidBrush installedBrush(g_currentTheme.success);
+                        g.DrawString(Tr(L"Установлен", L"Installed"), -1, &fontSmallBold, installedRc, &sfCenter, &installedBrush);
+                    } else {
+                        DrawGradientButton(g, (float)btnX, (float)mY + 22, (float)btnW, 28, 6,
+                                           g_currentTheme.accent, g_currentTheme.accentSecondary,
+                                           Color(255, 255, 255, 255), Tr(L"Скачать", L"Download"), fontSmallBold, false, false);
+                    }
+                }
+
+                const int statusY = modListY + (int)g_filteredMods.size() * (modItemH + 8);
+                DrawCard(g, (float)contentX, (float)statusY, (float)contentW, 34, 8,
+                         g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+                RectF statusRc((float)contentX + 12, (float)statusY, (float)contentW - 24, 34);
+                std::wstring status;
+                if (g_modCatalogLoading.load()) {
+                    status = Tr(L"Загружаем ещё 20 модов…", L"Loading 20 more mods…");
+                } else if (g_modCatalogHasMore) {
+                    status = Tr(L"Прокрутите вниз — каталог автоматически подгрузит следующую партию.",
+                                L"Scroll down — the catalog will load the next batch automatically.");
+                } else {
+                    status = Tr(L"Показаны все найденные моды.", L"All matching mods are shown.");
+                }
+                g.DrawString(status.c_str(), -1, &fontSmallBold, statusRc, &sfCenter, &mutedBrush);
             }
-            g.DrawString(status.c_str(), -1, &fontSmallBold, statusRc, &sfCenter, &mutedBrush);
         }
     }
     else if (g_currentTab == 2) {
@@ -3074,7 +3299,8 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
         // 2. Full Java Runtime & Custom JVM Flags Tuning Card
         int jvmCardY = setY + 118;
-        DrawCard(g, (float)contentX, (float)jvmCardY, (float)contentW, 178, 10, g_currentTheme.bgCard, g_currentTheme.border);
+        const int jvmCardH = GetSettingsJvmCardHeight(contentW);
+        DrawCard(g, (float)contentX, (float)jvmCardY, (float)contentW, (float)jvmCardH, 10, g_currentTheme.bgCard, g_currentTheme.border);
 
         PointF jvmTitlePt((float)contentX + 16, (float)jvmCardY + 12);
         g.DrawString(Tr(L"Параметры Java и флаги JVM (Настройка на уровне движка Java)",
@@ -3085,19 +3311,25 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
 
         // GC Preset Pills
         struct GcPresetItem { std::wstring id; std::wstring label; };
+        const std::vector<std::wstring> gcLabels = GetSettingsGcPresetLabels();
         std::vector<GcPresetItem> gcPresets = {
-            { L"aikar", L"Aikar's Flags (FPS/TPS)" },
-            { L"zgc", L"ZGC (Low-Latency)" },
-            { L"shenandoah", L"Shenandoah GC" },
-            { L"standard", L"Standard G1GC" },
-            { L"custom", L"Свои флаги (Custom)" }
+            { L"aikar", gcLabels[0] },
+            { L"zgc", gcLabels[1] },
+            { L"shenandoah", gcLabels[2] },
+            { L"standard", gcLabels[3] },
+            { L"custom", gcLabels[4] }
         };
 
         int gcPillX = contentX + 16;
         int gcPillY = jvmCardY + 54;
+        const int gcPillRight = contentX + contentW - 16;
         for (const auto& pr : gcPresets) {
             bool isPrSel = (g_config.jvmPreset == pr.id);
-            int pillW = 12 + (int)pr.label.length() * 7 + 12;
+            int pillW = GetSettingsGcPillWidth(pr.label);
+            if (gcPillX + pillW > gcPillRight && gcPillX != contentX + 16) {
+                gcPillX = contentX + 16;
+                gcPillY += 30;
+            }
 
             DrawCard(g, (float)gcPillX, (float)gcPillY, (float)pillW, 24, 4,
                      isPrSel ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
@@ -3111,33 +3343,35 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         }
 
         // Custom JVM Arguments input box (g_hEditJvmArgs)
-        PointF jvmArgsLblPt((float)contentX + 16, (float)jvmCardY + 84);
+        PointF jvmArgsLblPt((float)contentX + 16, (float)jvmCardY + GetSettingsJvmArgsLabelOffset(contentW));
         g.DrawString(Tr(L"Пользовательские аргументы / флаги JVM (полная свобода настройки):",
                         L"Custom JVM Arguments / Flags (complete customization freedom):"), -1, &fontSmall, jvmArgsLblPt, &mutedBrush);
 
-        DrawCard(g, (float)contentX + 12, (float)jvmCardY + 104, (float)contentW - 24, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        DrawCard(g, (float)contentX + 12, (float)jvmCardY + GetSettingsJvmArgsInputOffset(contentW), (float)contentW - 24, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
 
         // Custom Java Path input box (g_hEditJavaPath) & Auto / Test buttons
-        PointF javaPathLblPt((float)contentX + 16, (float)jvmCardY + 138);
+        PointF javaPathLblPt((float)contentX + 16, (float)jvmCardY + GetSettingsJavaPathLabelOffset(contentW));
         g.DrawString(Tr(L"Путь к Java (javaw.exe):", L"Java Runtime Executable Path:"), -1, &fontSmall, javaPathLblPt, &mutedBrush);
 
-        DrawCard(g, (float)contentX + 12, (float)jvmCardY + 154, (float)contentW - 212, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        DrawCard(g, (float)contentX + 12, (float)jvmCardY + GetSettingsJavaPathInputOffset(contentW), (float)contentW - 212, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
 
         // Auto-detect Button
         int autoBtnX = contentX + contentW - 192;
-        DrawCard(g, (float)autoBtnX, (float)jvmCardY + 154, 88, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-        RectF autoRc((float)autoBtnX, (float)jvmCardY + 154, 88, 28);
+        DrawCard(g, (float)autoBtnX, (float)jvmCardY + GetSettingsJavaPathInputOffset(contentW), 88, 28, 6, g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+        RectF autoRc((float)autoBtnX, (float)jvmCardY + GetSettingsJavaPathInputOffset(contentW), 88, 28);
         g.DrawString(Tr(L"Автоподбор", L"Auto-detect"), -1, &fontSmallBold, autoRc, &sfCenter, &whiteBrush);
 
         // Test Java Button
         int testBtnX = contentX + contentW - 98;
-        DrawGradientButton(g, (float)testBtnX, (float)jvmCardY + 154, 88, 28, 6,
+        DrawGradientButton(g, (float)testBtnX, (float)jvmCardY + GetSettingsJavaPathInputOffset(contentW), 88, 28, 6,
                            g_currentTheme.accent, g_currentTheme.accentSecondary,
                            Color(255, 255, 255, 255), Tr(L"Тест Java", L"Test Java"), fontSmallBold, false, false);
 
         // 3. Display Resolution & Optimization Card
-        int optCardY = jvmCardY + 186;
-        DrawCard(g, (float)contentX, (float)optCardY, (float)contentW, 64, 10, g_currentTheme.bgCard, g_currentTheme.border);
+        int optCardY = jvmCardY + jvmCardH + 8;
+        const int optCardH = GetSettingsOptionsCardHeight(contentW);
+        const bool compactOptions = contentW < 680;
+        DrawCard(g, (float)contentX, (float)optCardY, (float)contentW, (float)optCardH, 10, g_currentTheme.bgCard, g_currentTheme.border);
 
         PointF resLblPt((float)contentX + 16, (float)optCardY + 12);
         g.DrawString(Tr(L"Разрешение окна игры:", L"Game Window Resolution:"), -1, &fontSmallBold, resLblPt, &whiteBrush);
@@ -3147,44 +3381,52 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         g.DrawString(L"×", -1, &fontBold, xPt, &mutedBrush);
         DrawCard(g, (float)contentX + 220, (float)optCardY + 28, 70, 26, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
 
-        // Fullscreen Toggle Button
-        int fsBtnX = contentX + 310;
-        DrawCard(g, (float)fsBtnX, (float)optCardY + 26, 160, 28, 6,
+        const int fsBtnX = compactOptions ? contentX + 16 : contentX + 310;
+        const int fsBtnY = compactOptions ? optCardY + 62 : optCardY + 26;
+        const bool stackCompactToggles = contentW < 390;
+        const int cpuBtnX = compactOptions ? (stackCompactToggles ? fsBtnX : fsBtnX + 168) : contentX + 480;
+        const int cpuBtnY = stackCompactToggles ? fsBtnY + 34 : fsBtnY;
+        DrawCard(g, (float)fsBtnX, (float)fsBtnY, 160, 28, 6,
                  g_config.fullscreen ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
                  g_config.fullscreen ? g_currentTheme.accent : g_currentTheme.border);
-        RectF fsRc((float)fsBtnX, (float)optCardY + 26, 160, 28);
+        RectF fsRc((float)fsBtnX, (float)fsBtnY, 160, 28);
         std::wstring fsTxt = g_config.fullscreen ? Tr(L"✓ На весь экран: ВКЛ", L"✓ Fullscreen: ON") : Tr(L"На весь экран: ВЫКЛ", L"Fullscreen: OFF");
         SolidBrush fsBrush(g_config.fullscreen ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
         g.DrawString(fsTxt.c_str(), -1, &fontSmallBold, fsRc, &sfCenter, &fsBrush);
 
-        // Low CPU Mode Toggle Button
-        int cpuBtnX = contentX + 480;
-        DrawCard(g, (float)cpuBtnX, (float)optCardY + 26, 175, 28, 6,
+        DrawCard(g, (float)cpuBtnX, (float)cpuBtnY, 175, 28, 6,
                  g_config.lowCpuMode ? Color(40, 16, 185, 129) : g_currentTheme.bgSurfaceElevated,
                  g_config.lowCpuMode ? g_currentTheme.success : g_currentTheme.border);
-        RectF cpuRc((float)cpuBtnX, (float)optCardY + 26, 175, 28);
+        RectF cpuRc((float)cpuBtnX, (float)cpuBtnY, 175, 28);
         std::wstring cpuTxt = g_config.lowCpuMode ? Tr(L"✓ Низкая нагрузка CPU", L"✓ Low CPU Mode: ON") : Tr(L"Низкая нагрузка CPU: ВЫКЛ", L"Low CPU Mode: OFF");
         SolidBrush cpuBrush(g_config.lowCpuMode ? g_currentTheme.success : g_currentTheme.textMuted);
         g.DrawString(cpuTxt.c_str(), -1, &fontSmallBold, cpuRc, &sfCenter, &cpuBrush);
 
-        // 4. Themes Card
-        int themeY = optCardY + 72;
-        DrawCard(g, (float)contentX, (float)themeY, (float)contentW, 42, 8, g_currentTheme.bgCard, g_currentTheme.border);
-        PointF thmLblPt((float)contentX + 16, (float)themeY + 12);
+        // 4. Themes Card: fixed, readable pills flow to a new line when needed.
+        const int themeY = optCardY + optCardH + 8;
+        const int themeCardH = GetSettingsThemeCardHeight(contentW);
+        DrawCard(g, (float)contentX, (float)themeY, (float)contentW, (float)themeCardH, 8, g_currentTheme.bgCard, g_currentTheme.border);
+        PointF thmLblPt((float)contentX + 16, (float)themeY + 10);
         g.DrawString(Tr(L"Тема оформления:", L"Visual Theme:"), -1, &fontSmallBold, thmLblPt, &whiteBrush);
 
-        int thmStartX = contentX + 140;
+        const int themePillW = 114;
+        const int themeGap = 8;
+        const int themeRight = contentX + contentW - 16;
+        int tX = contentX + 16;
+        int tY = themeY + 32;
         for (size_t i = 0; i < g_themes.size(); ++i) {
-            int tX = thmStartX + (int)i * 122;
+            if (tX + themePillW > themeRight && tX != contentX + 16) {
+                tX = contentX + 16;
+                tY += 34;
+            }
             bool isSel = (g_currentTheme.id == g_themes[i].id);
-
-            DrawCard(g, (float)tX, (float)themeY + 8, 114, 26, 4,
+            DrawCard(g, (float)tX, (float)tY, themePillW, 26, 4,
                      isSel ? g_themes[i].accent : g_currentTheme.bgSurfaceElevated,
                      isSel ? g_themes[i].accent : g_currentTheme.border);
-
-            RectF thmRc((float)tX, (float)themeY + 8, 114, 26);
+            RectF thmRc((float)tX, (float)tY, themePillW, 26);
             SolidBrush thmTextBrush(isSel ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
             g.DrawString(g_themes[i].name.c_str(), -1, &fontSmallBold, thmRc, &sfCenter, &thmTextBrush);
+            tX += themePillW + themeGap;
         }
     }
 
@@ -3594,9 +3836,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 GetWindowTextW(g_hEditModSearch, buf, 127);
                 g_modSearchQuery = buf;
                 g_tabScrollOffset = 0;
-                // Searching always queries the live catalog by name. A one-letter
-                // local filter avoids firing a request for every keystroke.
-                if (wcslen(buf) == 0 || wcslen(buf) >= 2) {
+                // Installed view filters real filenames locally. The online
+                // catalog queries Modrinth by name once a useful term is typed.
+                if (g_showInstalledMods) {
+                    PostMessageW(hwnd, WM_SIZE, 0, 0);
+                } else if (wcslen(buf) == 0 || wcslen(buf) >= 2) {
                     ResetModrinthCatalog(g_modSearchQuery, hwnd);
                 } else {
                     FilterMods();
@@ -3671,7 +3915,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int contentW = std::max(120, width - 220 - 48);
         int setY = 54 + 16 + 62;
         int jvmCardY = setY + 118;
-        int optCardY = jvmCardY + 186;
+        int optCardY = jvmCardY + GetSettingsJvmCardHeight(contentW) + 8;
         const int scroll = g_tabScrollOffset;
 
         auto showInViewport = [height](HWND control, bool intended, int y, int h) {
@@ -3684,7 +3928,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         if (g_hEditModSearch) {
             const int y = 54 + 16 + 64 - scroll;
-            SetWindowPos(g_hEditModSearch, NULL, contentX + 36, y, std::max(80, contentW - 48), 22, SWP_NOZORDER);
+            const int installedBtnW = std::min(160, std::max(132, contentW / 4));
+            const int searchW = std::max(120, contentW - installedBtnW - 8);
+            SetWindowPos(g_hEditModSearch, NULL, contentX + 36, y, std::max(60, searchW - 48), 22, SWP_NOZORDER);
             showInViewport(g_hEditModSearch, g_currentTab == 1 && g_selectedModDetail == nullptr, y, 22);
         }
         if (g_hEditRam) {
@@ -3693,12 +3939,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             showInViewport(g_hEditRam, isSettings, y, 22);
         }
         if (g_hEditJvmArgs) {
-            const int y = jvmCardY + 107 - scroll;
+            const int y = jvmCardY + GetSettingsJvmArgsInputOffset(contentW) + 3 - scroll;
             SetWindowPos(g_hEditJvmArgs, NULL, contentX + 18, y, std::max(80, contentW - 36), 22, SWP_NOZORDER);
             showInViewport(g_hEditJvmArgs, isSettings, y, 22);
         }
         if (g_hEditJavaPath) {
-            const int y = jvmCardY + 157 - scroll;
+            const int y = jvmCardY + GetSettingsJavaPathInputOffset(contentW) + 3 - scroll;
             SetWindowPos(g_hEditJavaPath, NULL, contentX + 18, y, std::max(80, contentW - 224), 22, SWP_NOZORDER);
             showInViewport(g_hEditJavaPath, isSettings, y, 22);
         }
@@ -3741,7 +3987,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             // Infinite Modrinth catalog: fetching is tied to reaching the end
             // of the physical list, not to synthetic page buttons.
-            if (g_currentTab == 1 && g_selectedModDetail == nullptr &&
+            if (g_currentTab == 1 && !g_showInstalledMods && g_selectedModDetail == nullptr &&
                 g_tabScrollOffset >= GetTabScrollMax(height) - 140) {
                 FetchNextModrinthCatalogBatch(hwnd);
             }
@@ -3838,6 +4084,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_currentTab = clickedTab;
                 g_selectedModDetail = nullptr;
                 g_tabScrollOffset = 0;
+                if (g_currentTab == 1) {
+                    // Opening the Mods tab normally always means the catalog;
+                    // installed mods remains an explicit adjacent button.
+                    g_showInstalledMods = false;
+                    g_selectedCategory = L"Все";
+                    FilterMods();
+                }
 
                 bool isSet = (g_currentTab == 4);
                 if (g_hEditModSearch) ShowWindow(g_hEditModSearch, (g_currentTab == 1 && g_selectedModDetail == nullptr) ? SW_SHOW : SW_HIDE);
@@ -4043,8 +4296,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     SetActiveContainer((int)i);
                     SyncInstalledModsWithDisk(g_config.storagePath, g_containers[i].id);
                     g_currentTab = 1;
-                    g_selectedCategory = L"Установленные";
-                    FilterMods();
+                    g_selectedCategory = L"Все";
+                    g_showInstalledMods = true;
+                    g_tabScrollOffset = 0;
                     if (g_hEditModSearch) ShowWindow(g_hEditModSearch, SW_SHOW);
                     InvalidateRect(hwnd, NULL, FALSE);
                     return 0;
@@ -4103,6 +4357,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
 
             const int searchY = 54 + 16 + 58;
+            const int installedBtnW = std::min(160, std::max(132, contentW / 4));
+            const int searchW = std::max(120, contentW - installedBtnW - 8);
+            const int installedBtnX = contentX + searchW + 8;
+            if (x >= installedBtnX && x <= installedBtnX + installedBtnW &&
+                tabY >= searchY && tabY <= searchY + 34) {
+                g_showInstalledMods = !g_showInstalledMods;
+                g_selectedCategory = L"Все";
+                g_tabScrollOffset = 0;
+                if (g_activeContainerIndex >= 0 && g_activeContainerIndex < (int)g_containers.size()) {
+                    SyncInstalledModsWithDisk(g_config.storagePath, g_containers[g_activeContainerIndex].id);
+                }
+                PostMessageW(hwnd, WM_SIZE, 0, 0);
+                InvalidateRect(hwnd, NULL, FALSE);
+                return 0;
+            }
+
+            // Disk-backed installed cards are informational: they cannot be
+            // mistaken for online catalog entries or trigger a synthetic state.
+            if (g_showInstalledMods) return 0;
+
             const int modListY = searchY + 52;
             const int modItemH = 72;
             for (int i = 0; i < (int)g_filteredMods.size(); ++i) {
@@ -4232,18 +4506,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             // Click GC Preset Pills
             struct GcPresetItem { std::wstring id; std::wstring label; const wchar_t* flags; };
+            const std::vector<std::wstring> gcLabels = GetSettingsGcPresetLabels();
             std::vector<GcPresetItem> gcPresets = {
-                { L"aikar", L"Aikar's Flags (FPS/TPS)", PRESET_AIKAR },
-                { L"zgc", L"ZGC (Low-Latency)", PRESET_ZGC },
-                { L"shenandoah", L"Shenandoah GC", PRESET_SHENANDOAH },
-                { L"standard", L"Standard G1GC", PRESET_G1GC },
-                { L"custom", L"Свои флаги (Custom)", L"" }
+                { L"aikar", gcLabels[0], PRESET_AIKAR },
+                { L"zgc", gcLabels[1], PRESET_ZGC },
+                { L"shenandoah", gcLabels[2], PRESET_SHENANDOAH },
+                { L"standard", gcLabels[3], PRESET_G1GC },
+                { L"custom", gcLabels[4], L"" }
             };
 
             int gcPillX = contentX + 16;
             int gcPillY = jvmCardY + 54;
+            const int gcPillRight = contentX + contentW - 16;
             for (const auto& pr : gcPresets) {
-                int pillW = 12 + (int)pr.label.length() * 7 + 12;
+                int pillW = GetSettingsGcPillWidth(pr.label);
+                if (gcPillX + pillW > gcPillRight && gcPillX != contentX + 16) {
+                    gcPillX = contentX + 16;
+                    gcPillY += 30;
+                }
                 if (x >= gcPillX && x <= gcPillX + pillW && tabY >= gcPillY && tabY <= gcPillY + 24) {
                     g_config.jvmPreset = pr.id;
                     if (pr.id != L"custom") {
@@ -4265,7 +4545,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             // Click Auto-detect Java Button (Updates text box with detected Java path)
             int autoBtnX = contentX + contentW - 192;
-            if (x >= autoBtnX && x <= autoBtnX + 88 && tabY >= jvmCardY + 154 && tabY <= jvmCardY + 182) {
+            if (x >= autoBtnX && x <= autoBtnX + 88 && tabY >= jvmCardY + GetSettingsJavaPathInputOffset(contentW) &&
+                tabY <= jvmCardY + GetSettingsJavaPathInputOffset(contentW) + 28) {
                 g_detectedJava = MinecraftLauncher::DetectJava(L"");
                 g_config.customJavaPath = g_detectedJava.path;
                 if (g_hEditJavaPath) {
@@ -4282,7 +4563,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             // Click Test Java Button
             int testBtnX = contentX + contentW - 98;
-            if (x >= testBtnX && x <= testBtnX + 88 && tabY >= jvmCardY + 154 && tabY <= jvmCardY + 182) {
+            if (x >= testBtnX && x <= testBtnX + 88 && tabY >= jvmCardY + GetSettingsJavaPathInputOffset(contentW) &&
+                tabY <= jvmCardY + GetSettingsJavaPathInputOffset(contentW) + 28) {
                 WCHAR jBuf[512] = { 0 };
                 if (g_hEditJavaPath) GetWindowTextW(g_hEditJavaPath, jBuf, 511);
                 g_detectedJava = MinecraftLauncher::DetectJava(jBuf);
@@ -4294,30 +4576,40 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            // Click Fullscreen & Low CPU Mode Toggles
-            int optCardY = jvmCardY + 186;
-            int fsBtnX = contentX + 310;
-            if (x >= fsBtnX && x <= fsBtnX + 160 && tabY >= optCardY + 26 && tabY <= optCardY + 54) {
+            // Click Fullscreen & Low CPU Mode Toggles. Mirror the responsive
+            // positions used by PaintMainUI instead of retaining off-screen hitboxes.
+            const int optCardY = jvmCardY + GetSettingsJvmCardHeight(contentW) + 8;
+            const bool compactOptions = contentW < 680;
+            const int fsBtnX = compactOptions ? contentX + 16 : contentX + 310;
+            const int fsBtnY = compactOptions ? optCardY + 62 : optCardY + 26;
+            const bool stackCompactToggles = contentW < 390;
+            const int cpuBtnX = compactOptions ? (stackCompactToggles ? fsBtnX : fsBtnX + 168) : contentX + 480;
+            const int cpuBtnY = stackCompactToggles ? fsBtnY + 34 : fsBtnY;
+            if (x >= fsBtnX && x <= fsBtnX + 160 && tabY >= fsBtnY && tabY <= fsBtnY + 28) {
                 g_config.fullscreen = !g_config.fullscreen;
                 SaveConfig(g_config);
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
-
-            int cpuBtnX = contentX + 480;
-            if (x >= cpuBtnX && x <= cpuBtnX + 175 && tabY >= optCardY + 26 && tabY <= optCardY + 54) {
+            if (x >= cpuBtnX && x <= cpuBtnX + 175 && tabY >= cpuBtnY && tabY <= cpuBtnY + 28) {
                 g_config.lowCpuMode = !g_config.lowCpuMode;
                 SaveConfig(g_config);
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
 
-            // Click Theme Pills
-            int themeY = optCardY + 72;
-            int thmStartX = contentX + 140;
+            // Click wrapped theme pills.
+            const int themeY = optCardY + GetSettingsOptionsCardHeight(contentW) + 8;
+            const int themePillW = 114;
+            const int themeRight = contentX + contentW - 16;
+            int tX = contentX + 16;
+            int tY = themeY + 32;
             for (size_t i = 0; i < g_themes.size(); ++i) {
-                int tX = thmStartX + (int)i * 122;
-                if (x >= tX && x <= tX + 114 && tabY >= themeY + 8 && tabY <= themeY + 34) {
+                if (tX + themePillW > themeRight && tX != contentX + 16) {
+                    tX = contentX + 16;
+                    tY += 34;
+                }
+                if (x >= tX && x <= tX + themePillW && tabY >= tY && tabY <= tY + 26) {
                     g_currentTheme = g_themes[i];
                     g_config.theme = g_themes[i].id;
                     SaveConfig(g_config);
@@ -4325,6 +4617,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     InvalidateRect(hwnd, NULL, FALSE);
                     return 0;
                 }
+                tX += themePillW + 8;
             }
         }
 
@@ -4343,6 +4636,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_pressPlayBtn = false;
             InvalidateRect(hwnd, NULL, FALSE);
         }
+        return 0;
+    }
+
+    case WM_AETHER_MODRINTH_BATCH: {
+        ApplyModrinthCatalogBatch(reinterpret_cast<ModrinthCatalogBatch*>(lParam), hwnd);
         return 0;
     }
 

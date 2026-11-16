@@ -119,3 +119,24 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   assert.ok(launcherMain.includes('SaveContainerProfiles') && launcherMain.includes('LoadContainerProfiles'), 'Launcher must persist complete container profiles');
   assert.ok(launcherMain.includes('WM_SYSCOMMAND') && launcherMain.includes('SC_CLOSE'), 'Closing a rename prompt must re-enable the launcher instead of hanging it');
 });
+
+test('Native launcher keeps catalog state on the UI thread and prepares a complete Fabric/LWJGL runtime', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+
+  assert.ok(launcherMain.includes('WM_AETHER_MODRINTH_BATCH') && launcherMain.includes('ApplyModrinthCatalogBatch'),
+    'Catalog network batches must be applied by the window thread before cards are rendered');
+  assert.ok(launcherMain.includes('g_showInstalledMods') && launcherMain.includes('Установленные моды'),
+    'Mods tab must expose a distinct Installed Mods control next to its search field');
+  assert.ok(launcherMain.includes('GetSettingsThemeCardHeight') && launcherMain.includes('GetSettingsGcPillRows'),
+    'Settings controls must wrap into scrollable rows instead of overflowing horizontally');
+
+  assert.ok(mcLauncher.includes('fabric-loader-0.16.10.jar'),
+    'Fabric runtime must meet the Fabric API minimum loader requirement');
+  assert.ok(!mcLauncher.includes('fabric-loader-0.16.9.jar'),
+    'Obsolete Fabric Loader 0.16.9 must not be selected for launch');
+  assert.ok(mcLauncher.includes('ExtractWindowsNatives') && mcLauncher.includes('ExtractNativeArchive'),
+    'LWJGL native classifier archives must be extracted before Java starts');
+  assert.ok(mcLauncher.includes('lowerName.find(L"-natives-")') && mcLauncher.includes('MemoryUtil'),
+    'Native archives must be excluded from the Java classpath so LWJGL classes remain available');
+});

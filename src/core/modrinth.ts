@@ -132,11 +132,10 @@ export class ModrinthClient {
   /**
    * Installs a selected version and its complete required-dependency tree.
    *
-   * `version_id` dependencies are intentionally used verbatim: Modrinth has
-   * already selected that exact compatible version for the selected root mod.
-   * Project-only dependencies are resolved again with the active container's
-   * loader and Minecraft version. Optional, incompatible and embedded entries
-   * are not downloaded as separate jars.
+   * Every dependency, including a dependency referenced by `version_id`, is
+   * checked against the active container's exact Minecraft version and loader.
+   * Project-only dependencies are resolved with those same filters. Optional,
+   * incompatible and embedded entries are not downloaded as separate jars.
    */
   public async installVersionWithDependencies(
     version: ModrinthProjectVersion,
@@ -146,6 +145,18 @@ export class ModrinthClient {
   ): Promise<{ installed: Array<{ fileName: string; filePath: string }>; dependencyCount: number }> {
     const installed: Array<{ fileName: string; filePath: string }> = [];
     const visited = new Set<string>();
+    const compatibleWithContainer = (candidate: ModrinthProjectVersion): boolean => {
+      const versionOk = !compatibility.gameVersions?.length ||
+        compatibility.gameVersions.some(version => candidate.game_versions.includes(version));
+      const candidateLoaders = candidate.loaders.map(loader => loader.toLowerCase());
+      const loaderOk = !compatibility.loaders?.length ||
+        compatibility.loaders.some(loader => candidateLoaders.includes(loader.toLowerCase()));
+      return versionOk && loaderOk;
+    };
+
+    if (!compatibleWithContainer(version)) {
+      throw new Error(`Selected mod version ${version.version_number} does not match the active container`);
+    }
 
     const installTree = async (current: ModrinthProjectVersion): Promise<void> => {
       if (visited.has(current.id)) return;
@@ -167,7 +178,7 @@ export class ModrinthClient {
           dependencyVersion = candidates[0];
         }
 
-        if (!dependencyVersion) {
+        if (!dependencyVersion || !compatibleWithContainer(dependencyVersion)) {
           throw new Error(`No compatible required dependency could be resolved for ${current.name}`);
         }
         await installTree(dependencyVersion);

@@ -67,6 +67,25 @@ export declare class ModrinthClient {
     }>;
     getProjectVersions(projectIdOrSlug: string, loaders?: string[], gameVersions?: string[]): Promise<ModrinthProjectVersion[]>;
     getProject(projectIdOrSlug: string): Promise<any>;
+    getVersion(versionId: string): Promise<ModrinthProjectVersion>;
+    /**
+     * Installs a selected version and its complete required-dependency tree.
+     *
+     * Every dependency, including a dependency referenced by `version_id`, is
+     * checked against the active container's exact Minecraft version and loader.
+     * Project-only dependencies are resolved with those same filters. Optional,
+     * incompatible and embedded entries are not downloaded as separate jars.
+     */
+    installVersionWithDependencies(version: ModrinthProjectVersion, targetDir: string, compatibility?: {
+        loaders?: string[];
+        gameVersions?: string[];
+    }, onProgress?: (bytes: number, total: number) => void): Promise<{
+        installed: Array<{
+            fileName: string;
+            filePath: string;
+        }>;
+        dependencyCount: number;
+    }>;
     /**
      * Installs a mod or mod version into the target directory.
      */
