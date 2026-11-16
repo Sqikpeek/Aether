@@ -43,6 +43,18 @@ static bool CheckFileExists(const std::wstring& path) {
     return hasContent;
 }
 
+static bool IsZipArchive(const std::wstring& path) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    BYTE signature[4] = {};
+    DWORD read = 0;
+    const bool valid = ReadFile(h, signature, sizeof(signature), &read, NULL) && read >= 2 &&
+        signature[0] == 0x50 && signature[1] == 0x4B; // ZIP/JAR local or central directory header
+    CloseHandle(h);
+    return valid;
+}
+
 static void EnsureDirTree(const std::wstring& path) {
     WCHAR temp[MAX_PATH];
     wcsncpy(temp, path.c_str(), MAX_PATH);
@@ -356,6 +368,52 @@ static std::vector<VersionLibInfo> GetStandardFallbackLibraries() {
     };
 }
 
+static std::wstring GetVersionMetadataUrl(const std::string& manifestJson, const std::wstring& mcVersion) {
+    const std::string wantedId(mcVersion.begin(), mcVersion.end());
+    const std::string versions = JsonArrayField(manifestJson, "versions");
+    size_t cursor = 0;
+    while (!versions.empty() && cursor < versions.size()) {
+        std::string item;
+        size_t after = 0;
+        if (!ExtractJsonObjectAt(versions, cursor, item, &after)) break;
+        cursor = after;
+        if (JsonStringField(item, "id") != wantedId) continue;
+        const std::string url = JsonStringField(item, "url");
+        return std::wstring(url.begin(), url.end());
+    }
+    return L"";
+}
+
+static std::wstring GetClientDownloadUrl(const std::string& versionJson) {
+    const std::string downloads = JsonObjectField(versionJson, "downloads");
+    const std::string client = JsonObjectField(downloads, "client");
+    const std::string url = JsonStringField(client, "url");
+    return std::wstring(url.begin(), url.end());
+}
+
+static bool DownloadClientJarWithFallback(const std::wstring& primaryUrl, const std::wstring& destination,
+                                          std::function<void(int)> progress) {
+    if (!primaryUrl.empty() && MinecraftLauncher::DownloadHttpFile(primaryUrl, destination, progress) &&
+        IsZipArchive(destination)) {
+        return true;
+    }
+    DeleteFileW(destination.c_str());
+
+    // Piston Data is the canonical location. The legacy Mojang launcher endpoint
+    // serves the same immutable object and gives affected networks a second path.
+    const std::wstring marker = L"/v1/objects/";
+    const size_t objectPos = primaryUrl.find(marker);
+    if (objectPos != std::wstring::npos) {
+        const std::wstring objectPath = primaryUrl.substr(objectPos + marker.size());
+        const std::wstring fallbackUrl = L"https://launcher.mojang.com/v1/objects/" + objectPath;
+        if (MinecraftLauncher::DownloadHttpFile(fallbackUrl, destination, progress) && IsZipArchive(destination)) {
+            return true;
+        }
+    }
+    DeleteFileW(destination.c_str());
+    return false;
+}
+
 int MinecraftLauncher::GetRequiredJavaVersion(const std::wstring& mcVersion) {
     int minor = 0, patch = 0;
     swscanf(mcVersion.c_str(), L"1.%d.%d", &minor, &patch);
@@ -512,6 +570,17 @@ bool MinecraftLauncher::DownloadHttpFile(
         return false;
     }
 
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    DWORD statusIndex = 0;
+    if (!HttpQueryInfoW(hUrl, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                        &statusCode, &statusSize, &statusIndex) ||
+        statusCode < 200 || statusCode >= 300) {
+        InternetCloseHandle(hUrl);
+        InternetCloseHandle(hInternet);
+        return false;
+    }
+
     DWORD contentLength = 0;
     DWORD sizeOfLen = sizeof(contentLength);
     DWORD index = 0;
@@ -535,10 +604,13 @@ bool MinecraftLauncher::DownloadHttpFile(
     BYTE buffer[16384];
     DWORD bytesRead = 0;
     DWORD totalDownloaded = 0;
-
+    bool transferOk = true;
     while (InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
         DWORD written = 0;
-        WriteFile(hFile, buffer, bytesRead, &written, NULL);
+        if (!WriteFile(hFile, buffer, bytesRead, &written, NULL) || written != bytesRead) {
+            transferOk = false;
+            break;
+        }
         totalDownloaded += bytesRead;
 
         if (contentLength > 0 && progress) {
@@ -550,8 +622,11 @@ bool MinecraftLauncher::DownloadHttpFile(
     CloseHandle(hFile);
     InternetCloseHandle(hUrl);
     InternetCloseHandle(hInternet);
-
-    return totalDownloaded > 0;
+    if (!transferOk || totalDownloaded == 0) {
+        DeleteFileW(destPath.c_str());
+        return false;
+    }
+    return true;
 }
 
 bool MinecraftLauncher::PrepareMinecraftFiles(
@@ -569,91 +644,108 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     EnsureDirTree(libDir);
 
     WCHAR appData[MAX_PATH] = { 0 };
+    std::wstring mojangGameDir = L"";
     std::wstring mojangLibsDir = L"";
     if (GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH) > 0) {
-        mojangLibsDir = std::wstring(appData) + L"\\.minecraft\\libraries";
+        mojangGameDir = std::wstring(appData) + L"\\.minecraft";
+        mojangLibsDir = mojangGameDir + L"\\libraries";
     }
 
-    // Step 1: Ensure version.json is available
+    // Step 1: Reuse official Launcher files first, then fetch version metadata.
+    // This avoids a hard network dependency when the user already owns the game.
+    const std::wstring appVersionDir = mojangGameDir.empty() ? L"" :
+        mojangGameDir + L"\\versions\\" + mcVersion;
+    if (!CheckFileExists(versionJson) && !appVersionDir.empty()) {
+        const std::wstring sourceJson = appVersionDir + L"\\" + mcVersion + L".json";
+        if (CheckFileExists(sourceJson)) {
+            EnsureParentDirectory(versionJson);
+            CopyFileW(sourceJson.c_str(), versionJson.c_str(), FALSE);
+        }
+    }
+
     if (!CheckFileExists(versionJson)) {
         if (progress) progress(L"Загрузка манифеста версии Minecraft...", 10);
-        std::wstring manifestUrl = L"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
-        std::wstring manifestFile = storageDir + L"\\version_manifest_v2.json";
-        DownloadHttpFile(manifestUrl, manifestFile, nullptr);
-
-        FILE* fp = _wfopen(manifestFile.c_str(), L"rb");
-        if (fp) {
-            fseek(fp, 0, SEEK_END);
-            long sz = ftell(fp);
-            fseek(fp, 0, SEEK_SET);
-
-            if (sz > 0 && sz < 20000000) {
-                std::vector<char> buf(sz + 1, 0);
-                fread(buf.data(), 1, sz, fp);
-
-                std::string targetId = "\"id\": \"" + std::string(mcVersion.begin(), mcVersion.end()) + "\"";
-                char* p = strstr(buf.data(), targetId.c_str());
-                if (p) {
-                    char* urlKey = strstr(p, "\"url\": \"");
-                    if (urlKey) {
-                        urlKey += 8;
-                        char* endQuote = strchr(urlKey, '\"');
-                        if (endQuote) {
-                            std::string vUrl(urlKey, endQuote - urlKey);
-                            std::wstring wideVUrl(vUrl.begin(), vUrl.end());
-                            DownloadHttpFile(wideVUrl, versionJson, nullptr);
-                        }
-                    }
+        const std::wstring manifestUrl = L"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+        const std::wstring manifestFile = storageDir + L"\\version_manifest_v2.json";
+        std::string manifestJson;
+        if (CheckFileExists(manifestFile)) {
+            if (FILE* file = _wfopen(manifestFile.c_str(), L"rb")) {
+                fseek(file, 0, SEEK_END);
+                const long size = ftell(file);
+                fseek(file, 0, SEEK_SET);
+                if (size > 0 && size < 20000000) {
+                    std::vector<char> data(size + 1, 0);
+                    fread(data.data(), 1, size, file);
+                    manifestJson = data.data();
                 }
+                fclose(file);
             }
-            fclose(fp);
         }
-    }
-
-    // Step 2: Read version.json and download client.jar if missing
-    std::string versionJsonContent = "";
-    FILE* vfp = _wfopen(versionJson.c_str(), L"rb");
-    if (vfp) {
-        fseek(vfp, 0, SEEK_END);
-        long vsz = ftell(vfp);
-        fseek(vfp, 0, SEEK_SET);
-        if (vsz > 0 && vsz < 10000000) {
-            std::vector<char> vbuf(vsz + 1, 0);
-            fread(vbuf.data(), 1, vsz, vfp);
-            versionJsonContent = vbuf.data();
-        }
-        fclose(vfp);
-    }
-
-    if (!CheckFileExists(versionJar)) {
-        std::string clientJarUrl = "";
-        if (!versionJsonContent.empty()) {
-            char* clientBlock = strstr((char*)versionJsonContent.c_str(), "\"client\":");
-            if (clientBlock) {
-                char* curl = strstr(clientBlock, "\"url\": \"");
-                if (curl) {
-                    curl += 8;
-                    char* eq = strchr(curl, '\"');
-                    if (eq) {
-                        clientJarUrl = std::string(curl, eq - curl);
+        if (GetVersionMetadataUrl(manifestJson, mcVersion).empty()) {
+            DeleteFileW(manifestFile.c_str());
+            if (MinecraftLauncher::DownloadHttpFile(manifestUrl, manifestFile, nullptr)) {
+                if (FILE* file = _wfopen(manifestFile.c_str(), L"rb")) {
+                    fseek(file, 0, SEEK_END);
+                    const long size = ftell(file);
+                    fseek(file, 0, SEEK_SET);
+                    if (size > 0 && size < 20000000) {
+                        std::vector<char> data(size + 1, 0);
+                        fread(data.data(), 1, size, file);
+                        manifestJson = data.data();
                     }
+                    fclose(file);
                 }
             }
         }
-        if (clientJarUrl.empty()) {
-            clientJarUrl = "https://launcher.mojang.com/v1/objects/" + std::string(mcVersion.begin(), mcVersion.end()) + "/client.jar";
+        const std::wstring metadataUrl = GetVersionMetadataUrl(manifestJson, mcVersion);
+        if (metadataUrl.empty() || !MinecraftLauncher::DownloadHttpFile(metadataUrl, versionJson, nullptr)) {
+            DeleteFileW(versionJson.c_str());
+            return false;
         }
+    }
 
-        std::wstring wideClientUrl(clientJarUrl.begin(), clientJarUrl.end());
+    std::string versionJsonContent;
+    if (FILE* file = _wfopen(versionJson.c_str(), L"rb")) {
+        fseek(file, 0, SEEK_END);
+        const long size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        if (size > 0 && size < 10000000) {
+            std::vector<char> data(size + 1, 0);
+            fread(data.data(), 1, size, file);
+            versionJsonContent = data.data();
+        }
+        fclose(file);
+    }
+    const std::wstring clientJarUrl = GetClientDownloadUrl(versionJsonContent);
+    if (clientJarUrl.empty()) {
+        // A non-empty file is not enough: cached HTML/partial metadata must not
+        // cause the invalid old '/1.20.1/client.jar' fallback to be used.
+        DeleteFileW(versionJson.c_str());
+        return false;
+    }
+
+    // Step 2: Reuse or fetch an actual ZIP/JAR client. A failed CDN response is
+    // not retained as a fake client.jar and the official launcher mirror is tried.
+    if (!IsZipArchive(versionJar) && !appVersionDir.empty()) {
+        const std::wstring sourceJar = appVersionDir + L"\\" + mcVersion + L".jar";
+        if (IsZipArchive(sourceJar)) {
+            DeleteFileW(versionJar.c_str());
+            EnsureParentDirectory(versionJar);
+            CopyFileW(sourceJar.c_str(), versionJar.c_str(), FALSE);
+        }
+    }
+    if (!IsZipArchive(versionJar)) {
+        DeleteFileW(versionJar.c_str());
         if (progress) progress(L"Загрузка официального client.jar...", 25);
-        DownloadHttpFile(wideClientUrl, versionJar, [&](int pct) {
+        const bool downloaded = DownloadClientJarWithFallback(clientJarUrl, versionJar, [&](int pct) {
             if (progress) {
-                int overall = 25 + (pct * 30) / 100;
+                const int overall = 25 + (pct * 30) / 100;
                 WCHAR statusBuf[128];
                 swprintf(statusBuf, 128, L"Загрузка client.jar (%d%%)...", pct);
                 progress(statusBuf, overall);
             }
         });
+        if (!downloaded || !IsZipArchive(versionJar)) return false;
     }
 
     // Step 2.5: Ensure sound asset index is prepared (Fixes in-game sound!)

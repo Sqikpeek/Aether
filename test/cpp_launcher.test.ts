@@ -140,3 +140,19 @@ test('Native launcher keeps catalog state on the UI thread and prepares a comple
   assert.ok(mcLauncher.includes('lowerName.find(L"-natives-")') && mcLauncher.includes('MemoryUtil'),
     'Native archives must be excluded from the Java classpath so LWJGL classes remain available');
 });
+
+test('Native launcher uses valid Mojang metadata, a verified client JAR, and disk-backed mod deletion', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+
+  assert.ok(mcLauncher.includes('GetVersionMetadataUrl') && mcLauncher.includes('JsonArrayField(manifestJson, "versions")'),
+    'Version manifests must be parsed as JSON rather than assuming whitespace around id fields');
+  assert.ok(mcLauncher.includes('GetClientDownloadUrl') && mcLauncher.includes('DownloadClientJarWithFallback'),
+    'The real client URL and a launcher-CDN fallback must be used');
+  assert.ok(mcLauncher.includes('appVersionDir') && mcLauncher.includes('IsZipArchive'),
+    'A valid official client installation must be reusable and downloaded JARs must be verified');
+  assert.ok(launcherMain.includes('TriggerInstalledModFileRemove') && launcherMain.includes('Удалить'),
+    'The installed-mods view must remove the exact disk file from the active container');
+  assert.ok(launcherMain.includes('resolutionWidthX') && launcherMain.includes('resolutionHeightX'),
+    'Resolution input controls must share the responsive settings layout');
+});

@@ -2052,6 +2052,28 @@ inline void TriggerModRemove(const std::wstring& slug, const std::wstring& modTi
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
+// Delete a specific file shown by the installed-mods view. The filename comes
+// from GetInstalledModFiles for the active container, so no catalog guesswork or
+// cross-container deletion is involved.
+static void TriggerInstalledModFileRemove(const std::wstring& jarFileName, HWND hwnd) {
+    if (jarFileName.empty() || jarFileName.find_first_of(L"\\\\/:") != std::wstring::npos ||
+        g_activeContainerIndex < 0 || g_activeContainerIndex >= (int)g_containers.size()) {
+        return;
+    }
+    const std::wstring containerId = g_containers[g_activeContainerIndex].id;
+    const std::wstring modsDir = GetContainerModsDir(g_config.storagePath, containerId);
+    const std::wstring path = modsDir + L"\\" + jarFileName;
+    if (DeleteFileW(path.c_str())) {
+        SyncInstalledModsWithDisk(g_config.storagePath, containerId);
+        AppendLog(Tr(L"[Modrinth] Удален установленный файл мода: " + jarFileName,
+                     L"[Modrinth] Removed installed mod file: " + jarFileName));
+    } else {
+        AppendLog(Tr(L"[Modrinth] [ОШИБКА] Не удалось удалить файл мода: " + jarFileName,
+                     L"[Modrinth] [ERROR] Could not remove mod file: " + jarFileName));
+    }
+    if (hwnd) InvalidateRect(hwnd, NULL, FALSE);
+}
+
 // ----------------------------------------------------------------------------
 // DWM Immersive Dark Title Bar (Eliminates the Stark White Title Bar Border!)
 // ----------------------------------------------------------------------------
@@ -2990,19 +3012,30 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                     const int mY = modListY + visibleIndex * (modItemH + 8);
                     DrawCard(g, (float)contentX, (float)mY, (float)contentW, (float)modItemH, 8,
                              g_currentTheme.bgCard, g_currentTheme.border);
-                    PointF mNamePt((float)contentX + 16, (float)mY + 12);
-                    g.DrawString(jar.c_str(), -1, &fontBold, mNamePt, &whiteBrush);
-                    PointF locationPt((float)contentX + 16, (float)mY + 38);
+                    const int diskBtnW = 86;
+                    const int removeBtnW = 96;
+                    const int removeBtnX = contentX + contentW - removeBtnW - 12;
+                    const int diskBtnX = removeBtnX - diskBtnW - 8;
+                    const int fileTextW = std::max(80, diskBtnX - contentX - 28);
+                    StringFormat installedTextFormat;
+                    installedTextFormat.SetTrimming(StringTrimmingEllipsisCharacter);
+                    installedTextFormat.SetFormatFlags(StringFormatFlagsLineLimit);
+                    RectF mNameRc((float)contentX + 16, (float)mY + 10, (float)fileTextW, 18);
+                    g.DrawString(jar.c_str(), -1, &fontBold, mNameRc, &installedTextFormat, &whiteBrush);
+                    RectF locationRc((float)contentX + 16, (float)mY + 37, (float)fileTextW, 18);
                     g.DrawString(Tr(L"Обнаружен на диске: instances / активный контейнер / mods",
                                     L"Detected on disk: instances / active container / mods"),
-                                 -1, &fontSmall, locationPt, &mutedBrush);
-                    const int diskBtnW = 104;
-                    const int diskBtnX = contentX + contentW - diskBtnW - 12;
+                                 -1, &fontSmall, locationRc, &installedTextFormat, &mutedBrush);
                     DrawCard(g, (float)diskBtnX, (float)mY + 22, (float)diskBtnW, 28, 6,
                              Color(40, 16, 185, 129), g_currentTheme.success);
                     RectF diskRc((float)diskBtnX, (float)mY + 22, (float)diskBtnW, 28);
                     SolidBrush diskBrush(g_currentTheme.success);
                     g.DrawString(Tr(L"На диске", L"On disk"), -1, &fontSmallBold, diskRc, &sfCenter, &diskBrush);
+                    DrawCard(g, (float)removeBtnX, (float)mY + 22, (float)removeBtnW, 28, 6,
+                             Color(35, 239, 68, 68), g_currentTheme.danger);
+                    RectF removeRc((float)removeBtnX, (float)mY + 22, (float)removeBtnW, 28);
+                    SolidBrush removeBrush(g_currentTheme.danger);
+                    g.DrawString(Tr(L"Удалить", L"Remove"), -1, &fontSmallBold, removeRc, &sfCenter, &removeBrush);
                     ++visibleIndex;
                 }
                 if (visibleIndex == 0) {
@@ -3376,10 +3409,14 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
         PointF resLblPt((float)contentX + 16, (float)optCardY + 12);
         g.DrawString(Tr(L"Разрешение окна игры:", L"Game Window Resolution:"), -1, &fontSmallBold, resLblPt, &whiteBrush);
 
-        DrawCard(g, (float)contentX + 136, (float)optCardY + 28, 70, 26, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
-        PointF xPt((float)contentX + 212, (float)optCardY + 32);
+        // Keep the input pair directly under its label. Earlier fixed offsets
+        // left the height control clipped at narrow widths (as in the report).
+        const int resolutionWidthX = contentX + 16;
+        const int resolutionHeightX = contentX + 126;
+        DrawCard(g, (float)resolutionWidthX, (float)optCardY + 28, 88, 26, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        PointF xPt((float)contentX + 110, (float)optCardY + 32);
         g.DrawString(L"×", -1, &fontBold, xPt, &mutedBrush);
-        DrawCard(g, (float)contentX + 220, (float)optCardY + 28, 70, 26, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
+        DrawCard(g, (float)resolutionHeightX, (float)optCardY + 28, 88, 26, 4, g_currentTheme.bgSurfaceElevated, g_currentTheme.borderFocus);
 
         const int fsBtnX = compactOptions ? contentX + 16 : contentX + 310;
         const int fsBtnY = compactOptions ? optCardY + 62 : optCardY + 26;
@@ -3628,8 +3665,8 @@ void StartMinecraftLaunch() {
         );
 
         if (!prepared) {
-            AppendLog(Tr(L"[Aether] [ERROR] Не удалось загрузить client.jar с Mojang CDN!",
-                         L"[Aether] [ERROR] Failed to download client.jar from Mojang CDN!"));
+            AppendLog(Tr(L"[Aether] [ERROR] Не удалось подготовить файлы Minecraft. Проверьте интернет или установленный официальный клиент.",
+                         L"[Aether] [ERROR] Could not prepare Minecraft files. Check the connection or installed official client."));
             g_launchStatus = Tr(L"Ошибка загрузки!", L"Download failed!");
             g_isGameRunning.store(false);
             PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
@@ -3950,12 +3987,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         if (g_hEditGameWidth) {
             const int y = optCardY + 30 - scroll;
-            SetWindowPos(g_hEditGameWidth, NULL, contentX + 140, y, 62, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditGameWidth, NULL, contentX + 20, y, 80, 22, SWP_NOZORDER);
             showInViewport(g_hEditGameWidth, isSettings, y, 22);
         }
         if (g_hEditGameHeight) {
             const int y = optCardY + 30 - scroll;
-            SetWindowPos(g_hEditGameHeight, NULL, contentX + 228, y, 62, 22, SWP_NOZORDER);
+            SetWindowPos(g_hEditGameHeight, NULL, contentX + 130, y, 80, 22, SWP_NOZORDER);
             showInViewport(g_hEditGameHeight, isSettings, y, 22);
         }
 
@@ -4373,9 +4410,33 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            // Disk-backed installed cards are informational: they cannot be
-            // mistaken for online catalog entries or trigger a synthetic state.
-            if (g_showInstalledMods) return 0;
+            // Installed entries are direct disk files. Their Remove button
+            // deletes that exact .jar from this active container only.
+            if (g_showInstalledMods) {
+                const int modListY = searchY + 52;
+                const int modItemH = 72;
+                std::vector<std::wstring> installedJars;
+                if (g_activeContainerIndex >= 0 && g_activeContainerIndex < (int)g_containers.size()) {
+                    installedJars = GetInstalledModFiles(g_config.storagePath, g_containers[g_activeContainerIndex].id);
+                }
+                const std::wstring query = ToLowerW(g_modSearchQuery);
+                int visibleIndex = 0;
+                for (const std::wstring& jar : installedJars) {
+                    if (!query.empty() && ToLowerW(jar).find(query) == std::wstring::npos) continue;
+                    const int mY = modListY + visibleIndex * (modItemH + 8);
+                    const int removeBtnW = 96;
+                    const int removeBtnX = contentX + contentW - removeBtnW - 12;
+                    if (x >= removeBtnX && x <= removeBtnX + removeBtnW &&
+                        tabY >= mY + 22 && tabY <= mY + 50) {
+                        TriggerInstalledModFileRemove(jar, hwnd);
+                        g_tabScrollOffset = 0;
+                        PostMessageW(hwnd, WM_SIZE, 0, 0);
+                        return 0;
+                    }
+                    ++visibleIndex;
+                }
+                return 0;
+            }
 
             const int modListY = searchY + 52;
             const int modItemH = 72;
