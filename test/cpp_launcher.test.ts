@@ -156,3 +156,34 @@ test('Native launcher uses valid Mojang metadata, a verified client JAR, and dis
   assert.ok(launcherMain.includes('resolutionWidthX') && launcherMain.includes('resolutionHeightX'),
     'Resolution input controls must share the responsive settings layout');
 });
+
+test('Native launcher supports validated offline sessions and licensed Microsoft Minecraft authentication', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+  const configHpp = fs.readFileSync('src/cpp/config.hpp', 'utf8');
+
+  assert.ok(launcherMain.includes('Offline (local nickname)') && launcherMain.includes('Microsoft (licensed)'),
+    'Settings must offer explicit Offline and licensed Microsoft account modes');
+  assert.ok(launcherMain.includes('nickname.size() >= 3') && launcherMain.includes("ch == L'_'"),
+    'Offline launch must validate a Minecraft-safe local nickname');
+  assert.ok(launcherMain.includes('/devicecode') && launcherMain.includes('/token'),
+    'Microsoft sign-in must use the OAuth device-code flow');
+  assert.ok(launcherMain.includes('user.auth.xboxlive.com') && launcherMain.includes('xsts.auth.xboxlive.com') &&
+            launcherMain.includes('login_with_xbox') && launcherMain.includes('/minecraft/profile'),
+    'A Microsoft session must complete Xbox, XSTS, Minecraft Services, and profile ownership verification');
+  assert.ok(launcherMain.includes('CryptProtectData') && launcherMain.includes('CryptUnprotectData'),
+    'The persisted Microsoft refresh token must use Windows DPAPI protection');
+  assert.ok(launcherMain.includes('GetLaunchAccount') && launcherMain.includes('RefreshMicrosoftMinecraftAccount'),
+    'A licensed launch must refresh and validate a stored Microsoft account before Java starts');
+  assert.ok(configHpp.includes('accountMode') && configHpp.includes('microsoftRefreshTokenProtected') &&
+            configHpp.includes('microsoftPlayerUuid'),
+    'Account mode and protected Microsoft account identity must be persisted');
+
+  assert.ok(mcLauncher.includes('const MinecraftAccount& account') && mcLauncher.includes('L"msa"'),
+    'Java launch arguments must use the authenticated Microsoft account with userType msa');
+  assert.ok(mcLauncher.includes('finalUuid') && mcLauncher.includes('finalAccessToken') &&
+            launcherMain.includes('accessTokenExpiresAt'),
+    'Java launch arguments must receive real UUID/access token fields and refresh expired service sessions');
+  assert.ok(!mcLauncher.includes('--userType mojang'),
+    'The launcher must not hard-code the old offline mojang user type for every session');
+});

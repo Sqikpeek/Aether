@@ -391,6 +391,23 @@ static std::wstring GetClientDownloadUrl(const std::string& versionJson) {
     return std::wstring(url.begin(), url.end());
 }
 
+static bool HasUsableVersionMetadata(const std::wstring& path) {
+    if (!CheckFileExists(path)) return false;
+    FILE* file = _wfopen(path.c_str(), L"rb");
+    if (!file) return false;
+    fseek(file, 0, SEEK_END);
+    const long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    std::string json;
+    if (size > 0 && size < 10000000) {
+        std::vector<char> data(size + 1, 0);
+        fread(data.data(), 1, size, file);
+        json = data.data();
+    }
+    fclose(file);
+    return !GetClientDownloadUrl(json).empty();
+}
+
 static bool DownloadClientJarWithFallback(const std::wstring& primaryUrl, const std::wstring& destination,
                                           std::function<void(int)> progress) {
     if (!primaryUrl.empty() && MinecraftLauncher::DownloadHttpFile(primaryUrl, destination, progress) &&
@@ -643,6 +660,13 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     std::wstring libDir = storageDir + L"\\libraries";
     EnsureDirTree(libDir);
 
+    // Keep the UI log actionable: preparation used to fail with one generic
+    // message regardless of whether metadata, client.jar or a library failed.
+    auto reportPreparationFailure = [&progress](const std::wstring& stage) {
+        if (progress) progress(L"Ошибка подготовки: " + stage, 0);
+        return false;
+    };
+
     WCHAR appData[MAX_PATH] = { 0 };
     std::wstring mojangGameDir = L"";
     std::wstring mojangLibsDir = L"";
@@ -655,15 +679,18 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     // This avoids a hard network dependency when the user already owns the game.
     const std::wstring appVersionDir = mojangGameDir.empty() ? L"" :
         mojangGameDir + L"\\versions\\" + mcVersion;
-    if (!CheckFileExists(versionJson) && !appVersionDir.empty()) {
-        const std::wstring sourceJson = appVersionDir + L"\\" + mcVersion + L".json";
-        if (CheckFileExists(sourceJson)) {
-            EnsureParentDirectory(versionJson);
-            CopyFileW(sourceJson.c_str(), versionJson.c_str(), FALSE);
+    if (!HasUsableVersionMetadata(versionJson)) {
+        DeleteFileW(versionJson.c_str());
+        if (!appVersionDir.empty()) {
+            const std::wstring sourceJson = appVersionDir + L"\\" + mcVersion + L".json";
+            if (HasUsableVersionMetadata(sourceJson)) {
+                EnsureParentDirectory(versionJson);
+                CopyFileW(sourceJson.c_str(), versionJson.c_str(), FALSE);
+            }
         }
     }
 
-    if (!CheckFileExists(versionJson)) {
+    if (!HasUsableVersionMetadata(versionJson)) {
         if (progress) progress(L"Загрузка манифеста версии Minecraft...", 10);
         const std::wstring manifestUrl = L"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
         const std::wstring manifestFile = storageDir + L"\\version_manifest_v2.json";
@@ -698,9 +725,10 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
             }
         }
         const std::wstring metadataUrl = GetVersionMetadataUrl(manifestJson, mcVersion);
-        if (metadataUrl.empty() || !MinecraftLauncher::DownloadHttpFile(metadataUrl, versionJson, nullptr)) {
+        if (metadataUrl.empty() || !MinecraftLauncher::DownloadHttpFile(metadataUrl, versionJson, nullptr) ||
+            !HasUsableVersionMetadata(versionJson)) {
             DeleteFileW(versionJson.c_str());
-            return false;
+            return reportPreparationFailure(L"не удалось получить метаданные версии Minecraft");
         }
     }
 
@@ -721,7 +749,7 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         // A non-empty file is not enough: cached HTML/partial metadata must not
         // cause the invalid old '/1.20.1/client.jar' fallback to be used.
         DeleteFileW(versionJson.c_str());
-        return false;
+        return reportPreparationFailure(L"метаданные версии не содержат URL client.jar");
     }
 
     // Step 2: Reuse or fetch an actual ZIP/JAR client. A failed CDN response is
@@ -745,7 +773,9 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 progress(statusBuf, overall);
             }
         });
-        if (!downloaded || !IsZipArchive(versionJar)) return false;
+        if (!downloaded || !IsZipArchive(versionJar)) {
+            return reportPreparationFailure(L"не удалось загрузить корректный официальный client.jar");
+        }
     }
 
     // Step 2.5: Ensure sound asset index is prepared (Fixes in-game sound!)
@@ -852,7 +882,9 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 if (!found && !flib.url.empty()) {
                     found = DownloadHttpFile(flib.url, targetPath, nullptr);
                 }
-                if (!found || !CheckFileExists(targetPath)) return false;
+                if (!found || !CheckFileExists(targetPath)) {
+                    return reportPreparationFailure(L"не удалось получить библиотеку Fabric: " + flib.path);
+                }
             }
         }
     }
@@ -888,7 +920,9 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
             }
             // Do not launch with a partial classpath. This converts a later
             // NoClassDefFoundError into a clear preparation failure.
-            if (!foundInAppData || !CheckFileExists(targetPath)) return false;
+            if (!foundInAppData || !CheckFileExists(targetPath)) {
+                return reportPreparationFailure(L"не удалось получить библиотеку Minecraft: " + lib.path);
+            }
         }
 
         if (progress && (i % 5 == 0 || i == totalLibs - 1)) {
@@ -907,7 +941,7 @@ bool MinecraftLauncher::LaunchMinecraft(
     const std::wstring& storageDir,
     const std::wstring& mcVersion,
     const std::wstring& loader,
-    const std::wstring& nickname,
+    const MinecraftAccount& account,
     int memoryMb,
     const std::wstring& customJava,
     const std::wstring& jvmPreset,
@@ -1124,7 +1158,12 @@ bool MinecraftLauncher::LaunchMinecraft(
         selectedPresetFlags = L"";
     }
 
-    std::wstring finalNickname = nickname.empty() ? L"Player" : nickname;
+    const std::wstring finalNickname = account.username.empty() ? L"Player" : account.username;
+    const std::wstring finalUuid = account.isMicrosoft && !account.uuid.empty()
+        ? account.uuid : L"00000000-0000-0000-0000-000000000000";
+    const std::wstring finalAccessToken = account.isMicrosoft && !account.accessToken.empty()
+        ? account.accessToken : L"0";
+    const std::wstring userType = account.isMicrosoft ? L"msa" : L"legacy";
     std::wstring flagsToUse = customArgs.empty() ? selectedPresetFlags : customArgs;
     std::wstring versionType = (loader == L"vanilla") ? L"release" : loader;
 
@@ -1141,9 +1180,9 @@ bool MinecraftLauncher::LaunchMinecraft(
         L"--gameDir \"" + instanceDir + L"\" " +
         L"--assetsDir \"" + effectiveAssetsDir + L"\" " +
         L"--assetIndex \"" + assetIndexId + L"\" " +
-        L"--uuid 00000000-0000-0000-0000-000000000000 " +
-        L"--accessToken 0 " +
-        L"--userType mojang " +
+        L"--uuid \"" + finalUuid + L"\" " +
+        L"--accessToken \"" + finalAccessToken + L"\" " +
+        L"--userType " + userType + L" " +
         L"--versionType " + versionType;
 
     if (callbacks.onLog) {

@@ -14,6 +14,16 @@ struct JavaInfo {
     bool is64Bit = true;
 };
 
+struct MinecraftAccount {
+    std::wstring username;
+    std::wstring uuid;
+    // Minecraft Services token stays in memory; it is refreshed from the
+    // DPAPI-protected Microsoft refresh token when this timestamp is near.
+    std::wstring accessToken;
+    long long accessTokenExpiresAt = 0;
+    bool isMicrosoft = false;
+};
+
 struct LaunchProgressCallback {
     std::function<void(const std::wstring& status, int percent)> onProgress;
     std::function<void(const std::wstring& line, bool isError)> onLog;
@@ -47,7 +57,7 @@ public:
         const std::wstring& storageDir,
         const std::wstring& mcVersion,
         const std::wstring& loader,
-        const std::wstring& nickname,
+        const MinecraftAccount& account,
         int memoryMb,
         const std::wstring& customJava,
         const std::wstring& jvmPreset,
