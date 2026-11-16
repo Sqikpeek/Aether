@@ -76,9 +76,8 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   // Verify global RAM setting
   assert.ok(launcherMain.includes('SetGlobalRam'), 'RAM setting must be applied globally to all containers');
 
-  // Verify mod category filters, mouse wheel navigation, and details view
-  assert.ok(launcherMain.includes('g_modCategories'), 'Launcher must provide category filter selection for mods');
-  assert.ok(launcherMain.includes('WM_MOUSEWHEEL') && launcherMain.includes('g_modPage'), 'Launcher must support mouse-wheel scrolling/page-flipping for mods');
+  // Verify the scrolling catalog and details view.
+  assert.ok(launcherMain.includes('WM_MOUSEWHEEL') && launcherMain.includes('g_tabScrollOffset'), 'Launcher must scroll tab content with the mouse wheel');
   assert.ok(launcherMain.includes('g_selectedModDetail'), 'Launcher must support opening detailed mod descriptions');
 
   // Verify Mod Loader selection dropdown on launch dock and in container management
@@ -90,10 +89,10 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   assert.ok(launcherMain.includes('1.21.3') && launcherMain.includes('1.12.2') && launcherMain.includes('1.7.10'), 'Launcher must include versions from 1.21.3 down to 1.7.10');
   assert.ok(launcherMain.includes('g_versions') && launcherMain.includes('1.8.9'), 'Launcher must have comprehensive version catalog');
 
-  // Verify mod pagination (multiple pages and navigation)
-  assert.ok(launcherMain.includes('g_modPage') && launcherMain.includes('totalPages'), 'Launcher must implement mod catalog pagination');
-  assert.ok(launcherMain.includes('Предыдущая') && launcherMain.includes('Следующая'), 'Launcher must have Previous and Next page controls');
-  assert.ok(launcherMain.includes('MODS_PER_PAGE'), 'Launcher must define items per page');
+  // Verify infinite, batched Modrinth catalog rather than pages.
+  assert.ok(launcherMain.includes('MODS_PER_BATCH = 20'), 'Launcher must load catalog results in 20-item batches');
+  assert.ok(launcherMain.includes('FetchNextModrinthCatalogBatch'), 'Launcher must fetch another batch at the end of the catalog');
+  assert.ok(!launcherMain.includes('g_modPage'), 'Launcher must not use page state for the mod catalog');
 
   // Verify DWM Immersive Dark Titlebar (removing harsh white border)
   assert.ok(launcherMain.includes('DwmSetWindowAttribute'), 'Launcher must call DwmSetWindowAttribute for dark titlebar');
@@ -110,7 +109,81 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   assert.ok(launcherMain.includes('IDC_EDIT_JAVAPATH') && launcherMain.includes('g_hEditJavaPath'), 'Launcher must provide custom Java runtime path input field');
   assert.ok(launcherMain.includes('IDC_EDIT_GAMEWIDTH') && launcherMain.includes('IDC_EDIT_GAMEHEIGHT'), 'Launcher must provide game window resolution inputs');
 
-  // Verify Modrinth download capability for ANY mod
-  assert.ok(launcherMain.includes('DownloadModrinthMod') && launcherMain.includes('TriggerModDownload'), 'Launcher must support downloading any mod from Modrinth');
-  assert.ok(launcherMain.includes('Скачать любой мод'), 'Launcher must provide quick download button for any Modrinth mod');
+  // Verify catalog-only Modrinth installation with strict compatibility and dependencies.
+  assert.ok(launcherMain.includes('DownloadModrinthMod') && launcherMain.includes('TriggerModDownload'), 'Launcher must download a catalog mod from Modrinth');
+  assert.ok(launcherMain.includes('DownloadVersionAndDependencies') && launcherMain.includes('dependency_type'), 'Launcher must install required dependencies automatically');
+  assert.ok(launcherMain.includes('game_versions') && launcherMain.includes('FetchCompatibleModrinthVersion'), 'Launcher must request the active container Minecraft version');
+  assert.ok(!launcherMain.includes('Скачать любой мод'), 'Launcher must not offer arbitrary URL/slug installation');
+
+  // Container names need durable persistence and a close-safe rename prompt.
+  assert.ok(launcherMain.includes('SaveContainerProfiles') && launcherMain.includes('LoadContainerProfiles'), 'Launcher must persist complete container profiles');
+  assert.ok(launcherMain.includes('WM_SYSCOMMAND') && launcherMain.includes('SC_CLOSE'), 'Closing a rename prompt must re-enable the launcher instead of hanging it');
+});
+
+test('Native launcher keeps catalog state on the UI thread and prepares a complete Fabric/LWJGL runtime', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+
+  assert.ok(launcherMain.includes('WM_AETHER_MODRINTH_BATCH') && launcherMain.includes('ApplyModrinthCatalogBatch'),
+    'Catalog network batches must be applied by the window thread before cards are rendered');
+  assert.ok(launcherMain.includes('g_showInstalledMods') && launcherMain.includes('Установленные моды'),
+    'Mods tab must expose a distinct Installed Mods control next to its search field');
+  assert.ok(launcherMain.includes('GetSettingsThemeCardHeight') && launcherMain.includes('GetSettingsGcPillRows'),
+    'Settings controls must wrap into scrollable rows instead of overflowing horizontally');
+
+  assert.ok(mcLauncher.includes('fabric-loader-0.16.10.jar'),
+    'Fabric runtime must meet the Fabric API minimum loader requirement');
+  assert.ok(!mcLauncher.includes('fabric-loader-0.16.9.jar'),
+    'Obsolete Fabric Loader 0.16.9 must not be selected for launch');
+  assert.ok(mcLauncher.includes('ExtractWindowsNatives') && mcLauncher.includes('ExtractNativeArchive'),
+    'LWJGL native classifier archives must be extracted before Java starts');
+  assert.ok(mcLauncher.includes('lowerName.find(L"-natives-")') && mcLauncher.includes('MemoryUtil'),
+    'Native archives must be excluded from the Java classpath so LWJGL classes remain available');
+});
+
+test('Native launcher uses valid Mojang metadata, a verified client JAR, and disk-backed mod deletion', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+
+  assert.ok(mcLauncher.includes('GetVersionMetadataUrl') && mcLauncher.includes('JsonArrayField(manifestJson, "versions")'),
+    'Version manifests must be parsed as JSON rather than assuming whitespace around id fields');
+  assert.ok(mcLauncher.includes('GetClientDownloadUrl') && mcLauncher.includes('DownloadClientJarWithFallback'),
+    'The real client URL and a launcher-CDN fallback must be used');
+  assert.ok(mcLauncher.includes('appVersionDir') && mcLauncher.includes('IsZipArchive'),
+    'A valid official client installation must be reusable and downloaded JARs must be verified');
+  assert.ok(launcherMain.includes('TriggerInstalledModFileRemove') && launcherMain.includes('Удалить'),
+    'The installed-mods view must remove the exact disk file from the active container');
+  assert.ok(launcherMain.includes('resolutionWidthX') && launcherMain.includes('resolutionHeightX'),
+    'Resolution input controls must share the responsive settings layout');
+});
+
+test('Native launcher supports validated offline sessions and licensed Microsoft Minecraft authentication', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+  const configHpp = fs.readFileSync('src/cpp/config.hpp', 'utf8');
+
+  assert.ok(launcherMain.includes('Offline (local nickname)') && launcherMain.includes('Microsoft (licensed)'),
+    'Settings must offer explicit Offline and licensed Microsoft account modes');
+  assert.ok(launcherMain.includes('nickname.size() >= 3') && launcherMain.includes("ch == L'_'"),
+    'Offline launch must validate a Minecraft-safe local nickname');
+  assert.ok(launcherMain.includes('/devicecode') && launcherMain.includes('/token'),
+    'Microsoft sign-in must use the OAuth device-code flow');
+  assert.ok(launcherMain.includes('user.auth.xboxlive.com') && launcherMain.includes('xsts.auth.xboxlive.com') &&
+            launcherMain.includes('login_with_xbox') && launcherMain.includes('/minecraft/profile'),
+    'A Microsoft session must complete Xbox, XSTS, Minecraft Services, and profile ownership verification');
+  assert.ok(launcherMain.includes('CryptProtectData') && launcherMain.includes('CryptUnprotectData'),
+    'The persisted Microsoft refresh token must use Windows DPAPI protection');
+  assert.ok(launcherMain.includes('GetLaunchAccount') && launcherMain.includes('RefreshMicrosoftMinecraftAccount'),
+    'A licensed launch must refresh and validate a stored Microsoft account before Java starts');
+  assert.ok(configHpp.includes('accountMode') && configHpp.includes('microsoftRefreshTokenProtected') &&
+            configHpp.includes('microsoftPlayerUuid'),
+    'Account mode and protected Microsoft account identity must be persisted');
+
+  assert.ok(mcLauncher.includes('const MinecraftAccount& account') && mcLauncher.includes('L"msa"'),
+    'Java launch arguments must use the authenticated Microsoft account with userType msa');
+  assert.ok(mcLauncher.includes('finalUuid') && mcLauncher.includes('finalAccessToken') &&
+            launcherMain.includes('accessTokenExpiresAt'),
+    'Java launch arguments must receive real UUID/access token fields and refresh expired service sessions');
+  assert.ok(!mcLauncher.includes('--userType mojang'),
+    'The launcher must not hard-code the old offline mojang user type for every session');
 });

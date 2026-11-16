@@ -33,7 +33,26 @@ std::wstring MinecraftLauncher::CleanPath(const std::wstring& path) {
 
 static bool CheckFileExists(const std::wstring& path) {
     DWORD dwAttrib = GetFileAttributesW(path.c_str());
-    return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
+    if (dwAttrib == INVALID_FILE_ATTRIBUTES || (dwAttrib & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    LARGE_INTEGER size = {};
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    const bool hasContent = GetFileSizeEx(h, &size) && size.QuadPart > 0;
+    CloseHandle(h);
+    return hasContent;
+}
+
+static bool IsZipArchive(const std::wstring& path) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    BYTE signature[4] = {};
+    DWORD read = 0;
+    const bool valid = ReadFile(h, signature, sizeof(signature), &read, NULL) && read >= 2 &&
+        signature[0] == 0x50 && signature[1] == 0x4B; // ZIP/JAR local or central directory header
+    CloseHandle(h);
+    return valid;
 }
 
 static void EnsureDirTree(const std::wstring& path) {
@@ -48,6 +67,11 @@ static void EnsureDirTree(const std::wstring& path) {
         }
     }
     CreateDirectoryW(temp, NULL);
+}
+
+static void EnsureParentDirectory(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) EnsureDirTree(path.substr(0, slash));
 }
 
 static std::wstring GetArtifactKey(const std::wstring& path) {
@@ -95,73 +119,200 @@ static void CollectJarsRecursively(const std::wstring& dir, std::vector<std::wst
 struct VersionLibInfo {
     std::wstring path;
     std::wstring url;
+    bool isNativeArchive = false;
 };
 
+static std::string JsonStringField(const std::string& json, const char* key) {
+    const std::string marker = std::string("\"") + key + "\"";
+    const size_t keyPos = json.find(marker);
+    if (keyPos == std::string::npos) return "";
+    const size_t colon = json.find(':', keyPos + marker.size());
+    if (colon == std::string::npos) return "";
+    const size_t quote = json.find('"', colon + 1);
+    if (quote == std::string::npos) return "";
+    bool escaped = false;
+    std::string value;
+    for (size_t i = quote + 1; i < json.size(); ++i) {
+        const char c = json[i];
+        if (escaped) { value += c; escaped = false; }
+        else if (c == '\\') escaped = true;
+        else if (c == '"') return value;
+        else value += c;
+    }
+    return "";
+}
+
+static bool ExtractJsonObjectAt(const std::string& json, size_t startAt, std::string& object, size_t* after = nullptr) {
+    const size_t begin = json.find('{', startAt);
+    if (begin == std::string::npos) return false;
+    int depth = 0;
+    bool inString = false;
+    bool escaped = false;
+    for (size_t i = begin; i < json.size(); ++i) {
+        const char c = json[i];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') inString = false;
+        } else if (c == '"') {
+            inString = true;
+        } else if (c == '{') {
+            ++depth;
+        } else if (c == '}' && --depth == 0) {
+            object = json.substr(begin, i - begin + 1);
+            if (after) *after = i + 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+static std::string JsonObjectField(const std::string& json, const char* key) {
+    const std::string marker = std::string("\"") + key + "\"";
+    const size_t keyPos = json.find(marker);
+    if (keyPos == std::string::npos) return "";
+    const size_t colon = json.find(':', keyPos + marker.size());
+    if (colon == std::string::npos) return "";
+    std::string result;
+    return ExtractJsonObjectAt(json, colon + 1, result) ? result : "";
+}
+
+static std::string JsonArrayField(const std::string& json, const char* key) {
+    const std::string marker = std::string("\"") + key + "\"";
+    const size_t keyPos = json.find(marker);
+    if (keyPos == std::string::npos) return "";
+    const size_t open = json.find('[', keyPos + marker.size());
+    if (open == std::string::npos) return "";
+    int depth = 0;
+    bool inString = false;
+    bool escaped = false;
+    for (size_t i = open; i < json.size(); ++i) {
+        const char c = json[i];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') inString = false;
+        } else if (c == '"') {
+            inString = true;
+        } else if (c == '[') {
+            ++depth;
+        } else if (c == ']' && --depth == 0) {
+            return json.substr(open + 1, i - open - 1);
+        }
+    }
+    return "";
+}
+
+static void AddLibraryDownload(std::vector<VersionLibInfo>& result, std::unordered_set<std::wstring>& seenPaths,
+                               const std::string& object, bool isNativeArchive) {
+    const std::string path = JsonStringField(object, "path");
+    const std::string url = JsonStringField(object, "url");
+    if (path.empty() || url.empty()) return;
+    std::wstring widePath(path.begin(), path.end());
+    for (wchar_t& c : widePath) if (c == L'/') c = L'\\';
+    std::wstring key = widePath;
+    std::transform(key.begin(), key.end(), key.begin(), ::towlower);
+    if (!seenPaths.insert(key).second) return;
+    VersionLibInfo info;
+    info.path = widePath;
+    info.url.assign(url.begin(), url.end());
+    info.isNativeArchive = isNativeArchive;
+    result.push_back(std::move(info));
+}
+
+// Parse the official Mojang metadata as nested JSON objects instead of scanning
+// a fixed 1,200-byte window. In particular, LWJGL's "artifact" jar and its
+// "natives-windows" classifier are now distinguished reliably.
 static std::vector<VersionLibInfo> ParseLibrariesFromJson(const std::string& json) {
     std::vector<VersionLibInfo> result;
-    size_t libPos = json.find("\"libraries\":");
-    if (libPos == std::string::npos) return result;
+    std::unordered_set<std::wstring> seenPaths;
+    const std::string libraries = JsonArrayField(json, "libraries");
+    size_t cursor = 0;
+    while (!libraries.empty() && cursor < libraries.size()) {
+        std::string library;
+        size_t after = 0;
+        if (!ExtractJsonObjectAt(libraries, cursor, library, &after)) break;
+        cursor = after;
 
-    // 1. Search for artifact blocks
-    size_t cur = libPos;
-    while ((cur = json.find("\"artifact\":", cur)) != std::string::npos) {
-        size_t nextLib = cur + 1200;
-        std::string block = json.substr(cur, nextLib > json.size() ? json.size() - cur : 1200);
+        const std::string downloads = JsonObjectField(library, "downloads");
+        if (downloads.empty()) continue;
+        const std::string artifact = JsonObjectField(downloads, "artifact");
+        if (!artifact.empty()) AddLibraryDownload(result, seenPaths, artifact, false);
 
-        size_t pathPos = block.find("\"path\":");
-        size_t urlPos = block.find("\"url\":");
-        if (pathPos != std::string::npos && urlPos != std::string::npos) {
-            size_t q1 = block.find("\"", pathPos + 7);
-            if (q1 != std::string::npos) {
-                size_t q2 = block.find("\"", q1 + 1);
-                if (q2 != std::string::npos) {
-                    std::string pStr = block.substr(q1 + 1, q2 - q1 - 1);
-                    size_t u1 = block.find("\"", urlPos + 6);
-                    if (u1 != std::string::npos) {
-                        size_t u2 = block.find("\"", u1 + 1);
-                        if (u2 != std::string::npos) {
-                            std::string uStr = block.substr(u1 + 1, u2 - u1 - 1);
-                            for (char& c : pStr) {
-                                if (c == '/') c = '\\';
-                            }
-                            VersionLibInfo v;
-                            v.path = std::wstring(pStr.begin(), pStr.end());
-                            v.url = std::wstring(uStr.begin(), uStr.end());
-                            result.push_back(v);
-                        }
-                    }
-                }
-            }
-        }
-        cur += 11;
+        const std::string natives = JsonObjectField(library, "natives");
+        std::string classifier = JsonStringField(natives, "windows");
+        if (classifier.empty()) continue;
+        const std::string archToken = "${arch}";
+        const size_t arch = classifier.find(archToken);
+        if (arch != std::string::npos) classifier.replace(arch, archToken.size(), "64");
+
+        const std::string classifiers = JsonObjectField(downloads, "classifiers");
+        const std::string nativeDownload = JsonObjectField(classifiers, classifier.c_str());
+        if (!nativeDownload.empty()) AddLibraryDownload(result, seenPaths, nativeDownload, true);
     }
-
-    // 2. Search for Windows natives classifiers
-    cur = libPos;
-    while ((cur = json.find("\"natives-windows\":", cur)) != std::string::npos) {
-        size_t pathPos = json.find("\"path\":", cur);
-        size_t urlPos = json.find("\"url\":", cur);
-        if (pathPos != std::string::npos && urlPos != std::string::npos && pathPos < cur + 500 && urlPos < cur + 500) {
-            size_t q1 = json.find("\"", pathPos + 7);
-            size_t q2 = (q1 != std::string::npos) ? json.find("\"", q1 + 1) : std::string::npos;
-            size_t u1 = json.find("\"", urlPos + 6);
-            size_t u2 = (u1 != std::string::npos) ? json.find("\"", u1 + 1) : std::string::npos;
-            if (q2 != std::string::npos && u2 != std::string::npos) {
-                std::string pStr = json.substr(q1 + 1, q2 - q1 - 1);
-                std::string uStr = json.substr(u1 + 1, u2 - u1 - 1);
-                for (char& c : pStr) {
-                    if (c == '/') c = '\\';
-                }
-                VersionLibInfo v;
-                v.path = std::wstring(pStr.begin(), pStr.end());
-                v.url = std::wstring(uStr.begin(), uStr.end());
-                result.push_back(v);
-            }
-        }
-        cur += 18;
-    }
-
     return result;
+}
+
+static std::wstring EscapePowerShellLiteral(const std::wstring& value) {
+    std::wstring escaped;
+    for (wchar_t c : value) {
+        escaped += c;
+        if (c == L'\'') escaped += L'\'';
+    }
+    return escaped;
+}
+
+static void ClearExtractedNativeDlls(const std::wstring& nativesDir) {
+    WIN32_FIND_DATAW fd;
+    HANDLE find = FindFirstFileW((nativesDir + L"\\*.dll").c_str(), &fd);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+            DeleteFileW((nativesDir + L"\\" + fd.cFileName).c_str());
+        }
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+}
+
+static bool ExtractNativeArchive(const std::wstring& archive, const std::wstring& nativesDir) {
+    // Native classifier JARs are ZIPs. PowerShell's .NET ZipFile API handles
+    // the JAR extension directly and is available on supported Windows builds.
+    const std::wstring script =
+        L"Add-Type -AssemblyName System.IO.Compression.FileSystem; "
+        L"[System.IO.Compression.ZipFile]::ExtractToDirectory('" +
+        EscapePowerShellLiteral(archive) + L"','" +
+        EscapePowerShellLiteral(nativesDir) + L"',$true)";
+    std::wstring command = L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script + L"\"";
+    std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+    mutableCommand.push_back(L'\0');
+    STARTUPINFOW startup = { sizeof(startup) };
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION process = {};
+    if (!CreateProcessW(NULL, mutableCommand.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW,
+                        NULL, NULL, &startup, &process)) {
+        return false;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(process.hProcess, &exitCode);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return exitCode == 0;
+}
+
+static bool ExtractWindowsNatives(const std::vector<VersionLibInfo>& libraries,
+                                  const std::wstring& libDir,
+                                  const std::wstring& nativesDir) {
+    int nativeArchiveCount = 0;
+    ClearExtractedNativeDlls(nativesDir);
+    for (const VersionLibInfo& lib : libraries) {
+        if (!lib.isNativeArchive) continue;
+        ++nativeArchiveCount;
+        const std::wstring archive = libDir + L"\\" + lib.path;
+        if (!CheckFileExists(archive) || !ExtractNativeArchive(archive, nativesDir)) return false;
+    }
+    return nativeArchiveCount > 0;
 }
 
 static std::vector<VersionLibInfo> GetStandardFallbackLibraries() {
@@ -215,6 +366,69 @@ static std::vector<VersionLibInfo> GetStandardFallbackLibraries() {
         { L"org\\lwjgl\\lwjgl-tinyfd\\3.3.3\\lwjgl-tinyfd-3.3.3.jar",
           L"https://libraries.minecraft.net/org/lwjgl/lwjgl-tinyfd/3.3.3/lwjgl-tinyfd-3.3.3.jar" }
     };
+}
+
+static std::wstring GetVersionMetadataUrl(const std::string& manifestJson, const std::wstring& mcVersion) {
+    const std::string wantedId(mcVersion.begin(), mcVersion.end());
+    const std::string versions = JsonArrayField(manifestJson, "versions");
+    size_t cursor = 0;
+    while (!versions.empty() && cursor < versions.size()) {
+        std::string item;
+        size_t after = 0;
+        if (!ExtractJsonObjectAt(versions, cursor, item, &after)) break;
+        cursor = after;
+        if (JsonStringField(item, "id") != wantedId) continue;
+        const std::string url = JsonStringField(item, "url");
+        return std::wstring(url.begin(), url.end());
+    }
+    return L"";
+}
+
+static std::wstring GetClientDownloadUrl(const std::string& versionJson) {
+    const std::string downloads = JsonObjectField(versionJson, "downloads");
+    const std::string client = JsonObjectField(downloads, "client");
+    const std::string url = JsonStringField(client, "url");
+    return std::wstring(url.begin(), url.end());
+}
+
+static bool HasUsableVersionMetadata(const std::wstring& path) {
+    if (!CheckFileExists(path)) return false;
+    FILE* file = _wfopen(path.c_str(), L"rb");
+    if (!file) return false;
+    fseek(file, 0, SEEK_END);
+    const long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    std::string json;
+    if (size > 0 && size < 10000000) {
+        std::vector<char> data(size + 1, 0);
+        fread(data.data(), 1, size, file);
+        json = data.data();
+    }
+    fclose(file);
+    return !GetClientDownloadUrl(json).empty();
+}
+
+static bool DownloadClientJarWithFallback(const std::wstring& primaryUrl, const std::wstring& destination,
+                                          std::function<void(int)> progress) {
+    if (!primaryUrl.empty() && MinecraftLauncher::DownloadHttpFile(primaryUrl, destination, progress) &&
+        IsZipArchive(destination)) {
+        return true;
+    }
+    DeleteFileW(destination.c_str());
+
+    // Piston Data is the canonical location. The legacy Mojang launcher endpoint
+    // serves the same immutable object and gives affected networks a second path.
+    const std::wstring marker = L"/v1/objects/";
+    const size_t objectPos = primaryUrl.find(marker);
+    if (objectPos != std::wstring::npos) {
+        const std::wstring objectPath = primaryUrl.substr(objectPos + marker.size());
+        const std::wstring fallbackUrl = L"https://launcher.mojang.com/v1/objects/" + objectPath;
+        if (MinecraftLauncher::DownloadHttpFile(fallbackUrl, destination, progress) && IsZipArchive(destination)) {
+            return true;
+        }
+    }
+    DeleteFileW(destination.c_str());
+    return false;
 }
 
 int MinecraftLauncher::GetRequiredJavaVersion(const std::wstring& mcVersion) {
@@ -373,6 +587,17 @@ bool MinecraftLauncher::DownloadHttpFile(
         return false;
     }
 
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    DWORD statusIndex = 0;
+    if (!HttpQueryInfoW(hUrl, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                        &statusCode, &statusSize, &statusIndex) ||
+        statusCode < 200 || statusCode >= 300) {
+        InternetCloseHandle(hUrl);
+        InternetCloseHandle(hInternet);
+        return false;
+    }
+
     DWORD contentLength = 0;
     DWORD sizeOfLen = sizeof(contentLength);
     DWORD index = 0;
@@ -396,10 +621,13 @@ bool MinecraftLauncher::DownloadHttpFile(
     BYTE buffer[16384];
     DWORD bytesRead = 0;
     DWORD totalDownloaded = 0;
-
+    bool transferOk = true;
     while (InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
         DWORD written = 0;
-        WriteFile(hFile, buffer, bytesRead, &written, NULL);
+        if (!WriteFile(hFile, buffer, bytesRead, &written, NULL) || written != bytesRead) {
+            transferOk = false;
+            break;
+        }
         totalDownloaded += bytesRead;
 
         if (contentLength > 0 && progress) {
@@ -411,8 +639,11 @@ bool MinecraftLauncher::DownloadHttpFile(
     CloseHandle(hFile);
     InternetCloseHandle(hUrl);
     InternetCloseHandle(hInternet);
-
-    return totalDownloaded > 0;
+    if (!transferOk || totalDownloaded == 0) {
+        DeleteFileW(destPath.c_str());
+        return false;
+    }
+    return true;
 }
 
 bool MinecraftLauncher::PrepareMinecraftFiles(
@@ -429,92 +660,122 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     std::wstring libDir = storageDir + L"\\libraries";
     EnsureDirTree(libDir);
 
+    // Keep the UI log actionable: preparation used to fail with one generic
+    // message regardless of whether metadata, client.jar or a library failed.
+    auto reportPreparationFailure = [&progress](const std::wstring& stage) {
+        if (progress) progress(L"Ошибка подготовки: " + stage, 0);
+        return false;
+    };
+
     WCHAR appData[MAX_PATH] = { 0 };
+    std::wstring mojangGameDir = L"";
     std::wstring mojangLibsDir = L"";
     if (GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH) > 0) {
-        mojangLibsDir = std::wstring(appData) + L"\\.minecraft\\libraries";
+        mojangGameDir = std::wstring(appData) + L"\\.minecraft";
+        mojangLibsDir = mojangGameDir + L"\\libraries";
     }
 
-    // Step 1: Ensure version.json is available
-    if (!CheckFileExists(versionJson)) {
+    // Step 1: Reuse official Launcher files first, then fetch version metadata.
+    // This avoids a hard network dependency when the user already owns the game.
+    const std::wstring appVersionDir = mojangGameDir.empty() ? L"" :
+        mojangGameDir + L"\\versions\\" + mcVersion;
+    if (!HasUsableVersionMetadata(versionJson)) {
+        DeleteFileW(versionJson.c_str());
+        if (!appVersionDir.empty()) {
+            const std::wstring sourceJson = appVersionDir + L"\\" + mcVersion + L".json";
+            if (HasUsableVersionMetadata(sourceJson)) {
+                EnsureParentDirectory(versionJson);
+                CopyFileW(sourceJson.c_str(), versionJson.c_str(), FALSE);
+            }
+        }
+    }
+
+    if (!HasUsableVersionMetadata(versionJson)) {
         if (progress) progress(L"Загрузка манифеста версии Minecraft...", 10);
-        std::wstring manifestUrl = L"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
-        std::wstring manifestFile = storageDir + L"\\version_manifest_v2.json";
-        DownloadHttpFile(manifestUrl, manifestFile, nullptr);
-
-        FILE* fp = _wfopen(manifestFile.c_str(), L"rb");
-        if (fp) {
-            fseek(fp, 0, SEEK_END);
-            long sz = ftell(fp);
-            fseek(fp, 0, SEEK_SET);
-
-            if (sz > 0 && sz < 20000000) {
-                std::vector<char> buf(sz + 1, 0);
-                fread(buf.data(), 1, sz, fp);
-
-                std::string targetId = "\"id\": \"" + std::string(mcVersion.begin(), mcVersion.end()) + "\"";
-                char* p = strstr(buf.data(), targetId.c_str());
-                if (p) {
-                    char* urlKey = strstr(p, "\"url\": \"");
-                    if (urlKey) {
-                        urlKey += 8;
-                        char* endQuote = strchr(urlKey, '\"');
-                        if (endQuote) {
-                            std::string vUrl(urlKey, endQuote - urlKey);
-                            std::wstring wideVUrl(vUrl.begin(), vUrl.end());
-                            DownloadHttpFile(wideVUrl, versionJson, nullptr);
-                        }
-                    }
+        const std::wstring manifestUrl = L"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+        const std::wstring manifestFile = storageDir + L"\\version_manifest_v2.json";
+        std::string manifestJson;
+        if (CheckFileExists(manifestFile)) {
+            if (FILE* file = _wfopen(manifestFile.c_str(), L"rb")) {
+                fseek(file, 0, SEEK_END);
+                const long size = ftell(file);
+                fseek(file, 0, SEEK_SET);
+                if (size > 0 && size < 20000000) {
+                    std::vector<char> data(size + 1, 0);
+                    fread(data.data(), 1, size, file);
+                    manifestJson = data.data();
                 }
+                fclose(file);
             }
-            fclose(fp);
         }
-    }
-
-    // Step 2: Read version.json and download client.jar if missing
-    std::string versionJsonContent = "";
-    FILE* vfp = _wfopen(versionJson.c_str(), L"rb");
-    if (vfp) {
-        fseek(vfp, 0, SEEK_END);
-        long vsz = ftell(vfp);
-        fseek(vfp, 0, SEEK_SET);
-        if (vsz > 0 && vsz < 10000000) {
-            std::vector<char> vbuf(vsz + 1, 0);
-            fread(vbuf.data(), 1, vsz, vfp);
-            versionJsonContent = vbuf.data();
-        }
-        fclose(vfp);
-    }
-
-    if (!CheckFileExists(versionJar)) {
-        std::string clientJarUrl = "";
-        if (!versionJsonContent.empty()) {
-            char* clientBlock = strstr((char*)versionJsonContent.c_str(), "\"client\":");
-            if (clientBlock) {
-                char* curl = strstr(clientBlock, "\"url\": \"");
-                if (curl) {
-                    curl += 8;
-                    char* eq = strchr(curl, '\"');
-                    if (eq) {
-                        clientJarUrl = std::string(curl, eq - curl);
+        if (GetVersionMetadataUrl(manifestJson, mcVersion).empty()) {
+            DeleteFileW(manifestFile.c_str());
+            if (MinecraftLauncher::DownloadHttpFile(manifestUrl, manifestFile, nullptr)) {
+                if (FILE* file = _wfopen(manifestFile.c_str(), L"rb")) {
+                    fseek(file, 0, SEEK_END);
+                    const long size = ftell(file);
+                    fseek(file, 0, SEEK_SET);
+                    if (size > 0 && size < 20000000) {
+                        std::vector<char> data(size + 1, 0);
+                        fread(data.data(), 1, size, file);
+                        manifestJson = data.data();
                     }
+                    fclose(file);
                 }
             }
         }
-        if (clientJarUrl.empty()) {
-            clientJarUrl = "https://launcher.mojang.com/v1/objects/" + std::string(mcVersion.begin(), mcVersion.end()) + "/client.jar";
+        const std::wstring metadataUrl = GetVersionMetadataUrl(manifestJson, mcVersion);
+        if (metadataUrl.empty() || !MinecraftLauncher::DownloadHttpFile(metadataUrl, versionJson, nullptr) ||
+            !HasUsableVersionMetadata(versionJson)) {
+            DeleteFileW(versionJson.c_str());
+            return reportPreparationFailure(L"не удалось получить метаданные версии Minecraft");
         }
+    }
 
-        std::wstring wideClientUrl(clientJarUrl.begin(), clientJarUrl.end());
+    std::string versionJsonContent;
+    if (FILE* file = _wfopen(versionJson.c_str(), L"rb")) {
+        fseek(file, 0, SEEK_END);
+        const long size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        if (size > 0 && size < 10000000) {
+            std::vector<char> data(size + 1, 0);
+            fread(data.data(), 1, size, file);
+            versionJsonContent = data.data();
+        }
+        fclose(file);
+    }
+    const std::wstring clientJarUrl = GetClientDownloadUrl(versionJsonContent);
+    if (clientJarUrl.empty()) {
+        // A non-empty file is not enough: cached HTML/partial metadata must not
+        // cause the invalid old '/1.20.1/client.jar' fallback to be used.
+        DeleteFileW(versionJson.c_str());
+        return reportPreparationFailure(L"метаданные версии не содержат URL client.jar");
+    }
+
+    // Step 2: Reuse or fetch an actual ZIP/JAR client. A failed CDN response is
+    // not retained as a fake client.jar and the official launcher mirror is tried.
+    if (!IsZipArchive(versionJar) && !appVersionDir.empty()) {
+        const std::wstring sourceJar = appVersionDir + L"\\" + mcVersion + L".jar";
+        if (IsZipArchive(sourceJar)) {
+            DeleteFileW(versionJar.c_str());
+            EnsureParentDirectory(versionJar);
+            CopyFileW(sourceJar.c_str(), versionJar.c_str(), FALSE);
+        }
+    }
+    if (!IsZipArchive(versionJar)) {
+        DeleteFileW(versionJar.c_str());
         if (progress) progress(L"Загрузка официального client.jar...", 25);
-        DownloadHttpFile(wideClientUrl, versionJar, [&](int pct) {
+        const bool downloaded = DownloadClientJarWithFallback(clientJarUrl, versionJar, [&](int pct) {
             if (progress) {
-                int overall = 25 + (pct * 30) / 100;
+                const int overall = 25 + (pct * 30) / 100;
                 WCHAR statusBuf[128];
                 swprintf(statusBuf, 128, L"Загрузка client.jar (%d%%)...", pct);
                 progress(statusBuf, overall);
             }
         });
+        if (!downloaded || !IsZipArchive(versionJar)) {
+            return reportPreparationFailure(L"не удалось загрузить корректный официальный client.jar");
+        }
     }
 
     // Step 2.5: Ensure sound asset index is prepared (Fixes in-game sound!)
@@ -581,8 +842,8 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     if (loader == L"fabric") {
         if (progress) progress(L"Подготовка библиотек Fabric...", 50);
         std::vector<VersionLibInfo> fabricLibs = {
-            { L"net\\fabricmc\\fabric-loader\\0.16.9\\fabric-loader-0.16.9.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.9/fabric-loader-0.16.9.jar" },
+            { L"net\\fabricmc\\fabric-loader\\0.16.10\\fabric-loader-0.16.10.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar" },
             { L"net\\fabricmc\\intermediary\\" + mcVersion + L"\\intermediary-" + mcVersion + L".jar",
               L"https://maven.fabricmc.net/net/fabricmc/intermediary/" + mcVersion + L"/intermediary-" + mcVersion + L".jar" },
             { L"net\\fabricmc\\sponge-mixin\\0.15.3+mixin.0.8.7\\sponge-mixin-0.15.3+mixin.0.8.7.jar",
@@ -614,13 +875,15 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 if (!mojangLibsDir.empty()) {
                     std::wstring appDataLib = mojangLibsDir + L"\\" + flib.path;
                     if (CheckFileExists(appDataLib)) {
-                        EnsureDirTree(targetPath);
-                        CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE);
-                        found = true;
+                        EnsureParentDirectory(targetPath);
+                        found = CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE) != FALSE;
                     }
                 }
                 if (!found && !flib.url.empty()) {
-                    DownloadHttpFile(flib.url, targetPath, nullptr);
+                    found = DownloadHttpFile(flib.url, targetPath, nullptr);
+                }
+                if (!found || !CheckFileExists(targetPath)) {
+                    return reportPreparationFailure(L"не удалось получить библиотеку Fabric: " + flib.path);
                 }
             }
         }
@@ -647,14 +910,18 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
             if (!mojangLibsDir.empty()) {
                 std::wstring appDataLibPath = mojangLibsDir + L"\\" + lib.path;
                 if (CheckFileExists(appDataLibPath)) {
-                    EnsureDirTree(targetPath);
-                    CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE);
-                    foundInAppData = true;
+                    EnsureParentDirectory(targetPath);
+                    foundInAppData = CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE) != FALSE;
                 }
             }
 
             if (!foundInAppData && !lib.url.empty()) {
-                DownloadHttpFile(lib.url, targetPath, nullptr);
+                foundInAppData = DownloadHttpFile(lib.url, targetPath, nullptr);
+            }
+            // Do not launch with a partial classpath. This converts a later
+            // NoClassDefFoundError into a clear preparation failure.
+            if (!foundInAppData || !CheckFileExists(targetPath)) {
+                return reportPreparationFailure(L"не удалось получить библиотеку Minecraft: " + lib.path);
             }
         }
 
@@ -674,7 +941,7 @@ bool MinecraftLauncher::LaunchMinecraft(
     const std::wstring& storageDir,
     const std::wstring& mcVersion,
     const std::wstring& loader,
-    const std::wstring& nickname,
+    const MinecraftAccount& account,
     int memoryMb,
     const std::wstring& customJava,
     const std::wstring& jvmPreset,
@@ -726,6 +993,31 @@ bool MinecraftLauncher::LaunchMinecraft(
     EnsureDirTree(assetsDir);
     EnsureDirTree(nativesDir);
 
+    // Native LWJGL archives are not classpath jars. Extract the Windows DLLs
+    // before starting Java, otherwise -Djava.library.path points at an empty
+    // directory and rendering crashes later in startup.
+    const std::wstring versionMetadataPath = storageDir + L"\\versions\\" + mcVersion + L"\\" + mcVersion + L".json";
+    std::string versionMetadata;
+    if (FILE* metadataFile = _wfopen(versionMetadataPath.c_str(), L"rb")) {
+        fseek(metadataFile, 0, SEEK_END);
+        const long size = ftell(metadataFile);
+        fseek(metadataFile, 0, SEEK_SET);
+        if (size > 0 && size < 10000000) {
+            std::vector<char> data(size + 1, 0);
+            fread(data.data(), 1, size, metadataFile);
+            versionMetadata = data.data();
+        }
+        fclose(metadataFile);
+    }
+    const std::vector<VersionLibInfo> metadataLibraries = ParseLibrariesFromJson(versionMetadata);
+    const std::wstring localLibrariesDir = storageDir + L"\\libraries";
+    if (metadataLibraries.empty() || !ExtractWindowsNatives(metadataLibraries, localLibrariesDir, nativesDir)) {
+        if (callbacks.onLog) callbacks.onLog(
+            L"[Aether Launcher] Не удалось подготовить Windows native-библиотеки LWJGL.", true);
+        if (callbacks.onProgress) callbacks.onProgress(L"Ошибка подготовки LWJGL natives", 0);
+        return false;
+    }
+
     // Audio / Sound: Check for complete sound objects in %APPDATA%\.minecraft\assets
     std::wstring effectiveAssetsDir = assetsDir;
     WCHAR appDataAssets[MAX_PATH] = { 0 };
@@ -743,14 +1035,8 @@ bool MinecraftLauncher::LaunchMinecraft(
     std::wstring libDir = storageDir + L"\\libraries";
     CollectJarsRecursively(libDir, allJars);
 
-    // Also scan %APPDATA%\.minecraft\libraries recursively
-    WCHAR appData[MAX_PATH] = { 0 };
-    if (GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH) > 0) {
-        std::wstring mojangLibs = std::wstring(appData) + L"\\.minecraft\\libraries";
-        if (PathFileExistsW(mojangLibs.c_str())) {
-            CollectJarsRecursively(mojangLibs, allJars);
-        }
-    }
+    // Preparation copied/downloaded the exact metadata paths into our storage.
+    // Do not mix a second AppData classpath with potentially older artifacts.
 
     // Client jar first
     std::wstring classpath = L"\"" + clientJar + L"\"";
@@ -771,6 +1057,17 @@ bool MinecraftLauncher::LaunchMinecraft(
         std::wstring fname = (lastSlash == std::wstring::npos) ? jarPath : jarPath.substr(lastSlash + 1);
         std::wstring lowerName = fname;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
+
+        // Classifier archives contain DLLs, not Java classes. Including one
+        // first can make artifact de-duplication discard lwjgl-*.jar and cause
+        // NoClassDefFoundError: org/lwjgl/system/MemoryUtil.
+        if (lowerName.find(L"-natives-") != std::wstring::npos) continue;
+        if ((loader == L"fabric" || loader == L"quilt") &&
+            lowerName.find(L"fabric-loader-") == 0 && lowerName != L"fabric-loader-0.16.10.jar") {
+            // A previous launcher run may have left an obsolete loader in the
+            // shared library tree. Never let directory enumeration select it.
+            continue;
+        }
 
         std::wstring artKey = GetArtifactKey(jarPath);
 
@@ -861,7 +1158,12 @@ bool MinecraftLauncher::LaunchMinecraft(
         selectedPresetFlags = L"";
     }
 
-    std::wstring finalNickname = nickname.empty() ? L"Player" : nickname;
+    const std::wstring finalNickname = account.username.empty() ? L"Player" : account.username;
+    const std::wstring finalUuid = account.isMicrosoft && !account.uuid.empty()
+        ? account.uuid : L"00000000-0000-0000-0000-000000000000";
+    const std::wstring finalAccessToken = account.isMicrosoft && !account.accessToken.empty()
+        ? account.accessToken : L"0";
+    const std::wstring userType = account.isMicrosoft ? L"msa" : L"legacy";
     std::wstring flagsToUse = customArgs.empty() ? selectedPresetFlags : customArgs;
     std::wstring versionType = (loader == L"vanilla") ? L"release" : loader;
 
@@ -878,9 +1180,9 @@ bool MinecraftLauncher::LaunchMinecraft(
         L"--gameDir \"" + instanceDir + L"\" " +
         L"--assetsDir \"" + effectiveAssetsDir + L"\" " +
         L"--assetIndex \"" + assetIndexId + L"\" " +
-        L"--uuid 00000000-0000-0000-0000-000000000000 " +
-        L"--accessToken 0 " +
-        L"--userType mojang " +
+        L"--uuid \"" + finalUuid + L"\" " +
+        L"--accessToken \"" + finalAccessToken + L"\" " +
+        L"--userType " + userType + L" " +
         L"--versionType " + versionType;
 
     if (callbacks.onLog) {

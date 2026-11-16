@@ -124,6 +124,76 @@ export class ModrinthClient {
     return this.getJson<any>(url);
   }
 
+  public async getVersion(versionId: string): Promise<ModrinthProjectVersion> {
+    const url = `${this.baseUrl}/version/${encodeURIComponent(versionId)}`;
+    return this.getJson<ModrinthProjectVersion>(url);
+  }
+
+  /**
+   * Installs a selected version and its complete required-dependency tree.
+   *
+   * Every dependency, including a dependency referenced by `version_id`, is
+   * checked against the active container's exact Minecraft version and loader.
+   * Project-only dependencies are resolved with those same filters. Optional,
+   * incompatible and embedded entries are not downloaded as separate jars.
+   */
+  public async installVersionWithDependencies(
+    version: ModrinthProjectVersion,
+    targetDir: string,
+    compatibility: { loaders?: string[]; gameVersions?: string[] } = {},
+    onProgress?: (bytes: number, total: number) => void
+  ): Promise<{ installed: Array<{ fileName: string; filePath: string }>; dependencyCount: number }> {
+    const installed: Array<{ fileName: string; filePath: string }> = [];
+    const visited = new Set<string>();
+    const compatibleWithContainer = (candidate: ModrinthProjectVersion): boolean => {
+      const versionOk = !compatibility.gameVersions?.length ||
+        compatibility.gameVersions.some(version => candidate.game_versions.includes(version));
+      const candidateLoaders = candidate.loaders.map(loader => loader.toLowerCase());
+      const loaderOk = !compatibility.loaders?.length ||
+        compatibility.loaders.some(loader => candidateLoaders.includes(loader.toLowerCase()));
+      return versionOk && loaderOk;
+    };
+
+    if (!compatibleWithContainer(version)) {
+      throw new Error(`Selected mod version ${version.version_number} does not match the active container`);
+    }
+
+    const installTree = async (current: ModrinthProjectVersion): Promise<void> => {
+      if (visited.has(current.id)) return;
+      // Mark before walking children to handle circular/duplicate dependency references.
+      visited.add(current.id);
+
+      for (const dependency of current.dependencies || []) {
+        if (dependency.dependency_type !== 'required') continue;
+
+        let dependencyVersion: ModrinthProjectVersion | undefined;
+        if (dependency.version_id) {
+          dependencyVersion = await this.getVersion(dependency.version_id);
+        } else if (dependency.project_id) {
+          const candidates = await this.getProjectVersions(
+            dependency.project_id,
+            compatibility.loaders,
+            compatibility.gameVersions
+          );
+          dependencyVersion = candidates[0];
+        }
+
+        if (!dependencyVersion || !compatibleWithContainer(dependencyVersion)) {
+          throw new Error(`No compatible required dependency could be resolved for ${current.name}`);
+        }
+        await installTree(dependencyVersion);
+      }
+
+      installed.push(await this.installVersion(current, targetDir, onProgress));
+    };
+
+    await installTree(version);
+    return {
+      installed,
+      dependencyCount: Math.max(0, installed.length - 1)
+    };
+  }
+
   /**
    * Installs a mod or mod version into the target directory.
    */

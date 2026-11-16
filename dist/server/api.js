@@ -282,7 +282,13 @@ export class LauncherServer {
             if (!container)
                 return jsonResponse({ error: 'Container not found' }, 404);
             const targetDir = this.containerManager.getContainerModsDir(body.containerId);
-            const installed = await this.modrinth.installVersion(body.version, targetDir);
+            // Resolve any project-only required dependencies against this exact
+            // container's loader and Minecraft version, never against a global default.
+            const compatibility = {
+                loaders: container.loaderType === 'vanilla' ? undefined : [container.loaderType],
+                gameVersions: [container.minecraftVersion]
+            };
+            const installed = await this.modrinth.installVersionWithDependencies(body.version, targetDir, compatibility);
             return jsonResponse(installed);
         }
         // --- Java Detection ---
