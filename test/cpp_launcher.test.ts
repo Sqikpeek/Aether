@@ -166,8 +166,13 @@ test('Native launcher supports validated offline sessions and licensed Microsoft
     'Settings must offer explicit Offline and licensed Microsoft account modes');
   assert.ok(launcherMain.includes('nickname.size() >= 3') && launcherMain.includes("ch == L'_'"),
     'Offline launch must validate a Minecraft-safe local nickname');
-  assert.ok(launcherMain.includes('/devicecode') && launcherMain.includes('/token'),
-    'Microsoft sign-in must use the OAuth device-code flow');
+  assert.ok(launcherMain.includes('oauth20_authorize.srf') && launcherMain.includes('oauth20_token.srf') &&
+            launcherMain.includes('ExtractMicrosoftAuthorizationCode'),
+    'Microsoft sign-in must use the supported Live desktop authorization-code flow');
+  assert.ok(!launcherMain.includes('/devicecode'),
+    'The unsupported Azure device-code endpoint must not block Minecraft Java sign-in');
+  assert.ok(launcherMain.includes('Selecting the licensed mode') && launcherMain.includes('PromptTextInput'),
+    'Selecting Microsoft mode must visibly start browser sign-in and accept its completion callback');
   assert.ok(launcherMain.includes('user.auth.xboxlive.com') && launcherMain.includes('xsts.auth.xboxlive.com') &&
             launcherMain.includes('login_with_xbox') && launcherMain.includes('/minecraft/profile'),
     'A Microsoft session must complete Xbox, XSTS, Minecraft Services, and profile ownership verification');

@@ -1865,14 +1865,18 @@ static int GetJsonIntegerField(const std::string& json, const char* key, int fal
 }
 
 // ----------------------------------------------------------------------------
-// Microsoft device-code authentication for owned Minecraft Java accounts.
-// Tokens are exchanged with Microsoft, Xbox Live, XSTS and Minecraft Services;
-// only the refresh token is persisted, protected by Windows DPAPI.
+// Microsoft authorization-code authentication for owned Minecraft Java
+// accounts. The Minecraft Java public client supports the Live desktop
+// callback, while the Azure device-code endpoint rejects this client on many
+// consumer accounts. Tokens are exchanged with Microsoft, Xbox Live, XSTS and
+// Minecraft Services; only the refresh token is persisted with Windows DPAPI.
 // ----------------------------------------------------------------------------
 static const wchar_t* MICROSOFT_DEVICE_CLIENT_ID = L"00000000402b5328";
+static const wchar_t* MICROSOFT_DESKTOP_REDIRECT = L"https://login.live.com/oauth20_desktop.srf";
 
 struct NativeHttpResponse {
     int status = 0;
+    DWORD wininetError = ERROR_SUCCESS;
     std::string body;
 };
 
@@ -1925,12 +1929,19 @@ static NativeHttpResponse SendHttpRequest(
     parts.dwUrlPathLength = (DWORD)(sizeof(path) / sizeof(path[0]));
     parts.lpszExtraInfo = extra;
     parts.dwExtraInfoLength = (DWORD)(sizeof(extra) / sizeof(extra[0]));
-    if (!InternetCrackUrlW(url.c_str(), 0, 0, &parts)) return result;
+    if (!InternetCrackUrlW(url.c_str(), 0, 0, &parts)) {
+        result.wininetError = GetLastError();
+        return result;
+    }
 
     HINTERNET internet = InternetOpenW(L"AetherLauncher/1.0.38", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-    if (!internet) return result;
+    if (!internet) {
+        result.wininetError = GetLastError();
+        return result;
+    }
     HINTERNET connection = InternetConnectW(internet, host, parts.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
     if (!connection) {
+        result.wininetError = GetLastError();
         InternetCloseHandle(internet);
         return result;
     }
@@ -1941,6 +1952,7 @@ static NativeHttpResponse SendHttpRequest(
     const wchar_t* accepts[] = { L"application/json", L"*/*", NULL };
     HINTERNET request = HttpOpenRequestW(connection, method.c_str(), resource.c_str(), NULL, NULL, accepts, flags, 0);
     if (!request) {
+        result.wininetError = GetLastError();
         InternetCloseHandle(connection);
         InternetCloseHandle(internet);
         return result;
@@ -1962,11 +1974,61 @@ static NativeHttpResponse SendHttpRequest(
             result.body.append(buffer, read);
             if (result.body.size() > 2 * 1024 * 1024) break;
         }
+    } else {
+        result.wininetError = GetLastError();
     }
     InternetCloseHandle(request);
     InternetCloseHandle(connection);
     InternetCloseHandle(internet);
     return result;
+}
+
+// Error details deliberately include only an HTTP/WinINet code and OAuth error
+// name. Response bodies and tokens are never copied to the launcher log.
+static std::wstring DescribeMicrosoftHttpFailure(const NativeHttpResponse& response, const std::wstring& step) {
+    std::wstring detail = step + L" (HTTP " + std::to_wstring(response.status) + L")";
+    if (response.status == 0 && response.wininetError != ERROR_SUCCESS) {
+        detail = step + L" (WinINet " + std::to_wstring(response.wininetError) + L")";
+    }
+    const std::string oauthError = GetJsonStringField(response.body, "error");
+    if (!oauthError.empty()) detail += L": " + WideFromUtf8(oauthError);
+    return detail;
+}
+
+static std::wstring ExtractMicrosoftAuthorizationCode(std::wstring input) {
+    while (!input.empty() && input.front() <= L' ') input.erase(input.begin());
+    while (!input.empty() && input.back() <= L' ') input.pop_back();
+    const size_t codePos = input.find(L"code=");
+    if (codePos != std::wstring::npos) {
+        input = input.substr(codePos + 5);
+        const size_t end = input.find_first_of(L"&# ");
+        if (end != std::wstring::npos) input.resize(end);
+    }
+    // The authorization code is normally URL-safe already. Decode %XX only
+    // when the browser copied an escaped callback URL.
+    std::wstring decoded;
+    decoded.reserve(input.size());
+    auto hex = [](wchar_t value) -> int {
+        if (value >= L'0' && value <= L'9') return value - L'0';
+        if (value >= L'a' && value <= L'f') return value - L'a' + 10;
+        if (value >= L'A' && value <= L'F') return value - L'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < input.size(); ++i) {
+        if (input[i] == L'%' && i + 2 < input.size()) {
+            const int hi = hex(input[i + 1]);
+            const int lo = hex(input[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                decoded.push_back((wchar_t)((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        // Preserve a literal '+' in a pasted raw code; it is legal in an OAuth
+        // code and UrlEncodeQuery will escape it correctly for the token POST.
+        decoded.push_back(input[i]);
+    }
+    return decoded;
 }
 
 static std::wstring ProtectForCurrentWindowsUser(const std::wstring& secret) {
@@ -2029,7 +2091,8 @@ static bool ExchangeMicrosoftAccessForMinecraft(
     const std::string xblToken = GetJsonStringField(xbl.body, "Token");
     const std::string userHash = GetJsonStringField(xbl.body, "uhs");
     if (xbl.status < 200 || xbl.status >= 300 || xblToken.empty() || userHash.empty()) {
-        error = Tr(L"Microsoft/Xbox Live не подтвердил вход.", L"Microsoft/Xbox Live did not confirm the sign-in.");
+        error = Tr(L"Microsoft/Xbox Live не подтвердил вход: ", L"Microsoft/Xbox Live did not confirm the sign-in: ") +
+            DescribeMicrosoftHttpFailure(xbl, L"Xbox Live");
         return false;
     }
 
@@ -2041,7 +2104,8 @@ static bool ExchangeMicrosoftAccessForMinecraft(
     const std::string xstsToken = GetJsonStringField(xsts.body, "Token");
     const std::string xstsUserHash = GetJsonStringField(xsts.body, "uhs");
     if (xsts.status < 200 || xsts.status >= 300 || xstsToken.empty()) {
-        error = Tr(L"Xbox XSTS не разрешил доступ к Minecraft.", L"Xbox XSTS did not authorize Minecraft access.");
+        error = Tr(L"Xbox XSTS не разрешил доступ к Minecraft: ", L"Xbox XSTS did not authorize Minecraft access: ") +
+            DescribeMicrosoftHttpFailure(xsts, L"XSTS");
         return false;
     }
 
@@ -2051,8 +2115,9 @@ static bool ExchangeMicrosoftAccessForMinecraft(
         L"Content-Type: application/json\r\nAccept: application/json\r\n", minecraftBody);
     const std::string minecraftToken = GetJsonStringField(minecraft.body, "access_token");
     if (minecraft.status < 200 || minecraft.status >= 300 || minecraftToken.empty()) {
-        error = Tr(L"Не удалось получить токен Minecraft. Убедитесь, что Java Edition куплена на этом аккаунте.",
-                   L"Could not obtain a Minecraft token. Make sure this account owns Java Edition.");
+        error = Tr(L"Не удалось получить токен Minecraft. Убедитесь, что Java Edition куплена на этом аккаунте. ",
+                   L"Could not obtain a Minecraft token. Make sure this account owns Java Edition. ") +
+            DescribeMicrosoftHttpFailure(minecraft, L"Minecraft Services");
         return false;
     }
 
@@ -2061,8 +2126,9 @@ static bool ExchangeMicrosoftAccessForMinecraft(
     const std::string profileName = GetJsonStringField(profile.body, "name");
     const std::string profileId = GetJsonStringField(profile.body, "id");
     if (profile.status < 200 || profile.status >= 300 || profileName.empty() || profileId.empty()) {
-        error = Tr(L"Профиль Minecraft не найден. Проверьте владение Java Edition.",
-                   L"Minecraft profile was not found. Verify Java Edition ownership.");
+        error = Tr(L"Профиль Minecraft не найден. Проверьте владение Java Edition. ",
+                   L"Minecraft profile was not found. Verify Java Edition ownership. ") +
+            DescribeMicrosoftHttpFailure(profile, L"Minecraft profile");
         return false;
     }
 
@@ -2084,15 +2150,15 @@ static bool RefreshMicrosoftMinecraftAccount(MinecraftAccount& account, std::wst
         return false;
     }
     const std::wstring form = L"client_id=" + std::wstring(MICROSOFT_DEVICE_CLIENT_ID) +
-        L"&grant_type=refresh_token&refresh_token=" + UrlEncodeQuery(refreshToken) +
-        L"&scope=" + UrlEncodeQuery(L"XboxLive.signin offline_access");
+        L"&grant_type=refresh_token&refresh_token=" + UrlEncodeQuery(refreshToken);
     NativeHttpResponse refreshed = SendHttpRequest(L"POST",
-        L"https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+        L"https://login.live.com/oauth20_token.srf",
         L"Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n", Utf8FromWide(form));
     const std::string access = GetJsonStringField(refreshed.body, "access_token");
     const std::string replacementRefresh = GetJsonStringField(refreshed.body, "refresh_token");
     if (refreshed.status < 200 || refreshed.status >= 300 || access.empty()) {
-        error = Tr(L"Сессия Microsoft истекла. Войдите снова.", L"Microsoft session expired. Sign in again.");
+        error = Tr(L"Сессия Microsoft истекла. Войдите снова. ", L"Microsoft session expired. Sign in again. ") +
+            DescribeMicrosoftHttpFailure(refreshed, L"Microsoft refresh");
         return false;
     }
     if (!ExchangeMicrosoftAccessForMinecraft(WideFromUtf8(access), account, error)) return false;
@@ -2172,71 +2238,80 @@ static void LogoutMicrosoftAccount() {
 
 void BeginMicrosoftDeviceLogin(HWND hwnd) {
     if (g_microsoftLoginInProgress.exchange(true)) return;
-    SetAccountStatus(Tr(L"Запрашиваем код Microsoft…", L"Requesting Microsoft code…"));
-    if (hwnd) PostMessageW(hwnd, WM_USER + 101, 0, 0);
 
-    std::thread([hwnd]() {
-        const std::wstring form = L"client_id=" + std::wstring(MICROSOFT_DEVICE_CLIENT_ID) +
-            L"&scope=" + UrlEncodeQuery(L"XboxLive.signin offline_access");
-        NativeHttpResponse device = SendHttpRequest(L"POST",
-            L"https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode",
-            L"Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n", Utf8FromWide(form));
-        const std::string deviceCode = GetJsonStringField(device.body, "device_code");
-        const std::string userCode = GetJsonStringField(device.body, "user_code");
-        std::string verificationUri = GetJsonStringField(device.body, "verification_uri_complete");
-        if (verificationUri.empty()) verificationUri = GetJsonStringField(device.body, "verification_uri");
-        const int interval = std::max(2, GetJsonIntegerField(device.body, "interval", 5));
-        const int expiresIn = std::max(60, GetJsonIntegerField(device.body, "expires_in", 900));
-        if (device.status < 200 || device.status >= 300 || deviceCode.empty() || userCode.empty() || verificationUri.empty()) {
-            SetAccountStatus(Tr(L"Не удалось начать вход Microsoft.", L"Could not start Microsoft sign-in."));
-            AppendLog(Tr(L"[Microsoft] [ОШИБКА] Не удалось получить код входа.",
-                         L"[Microsoft] [ERROR] Could not obtain a device sign-in code."));
-            g_microsoftLoginInProgress.store(false);
-            if (hwnd) PostMessageW(hwnd, WM_USER + 101, 0, 0);
-            return;
-        }
-
-        const std::wstring verifyUrl = WideFromUtf8(verificationUri);
-        const std::wstring shownCode = WideFromUtf8(userCode);
-        SetAccountStatus(Tr(L"Откройте Microsoft и введите код: ", L"Open Microsoft and enter code: ") + shownCode);
-        AppendLog(Tr(L"[Microsoft] Откройте " + verifyUrl + L" и введите код: " + shownCode,
-                     L"[Microsoft] Open " + verifyUrl + L" and enter code: " + shownCode));
-        ShellExecuteW(NULL, L"open", verifyUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    // Minecraft Java's public Microsoft client is compatible with the Live
+    // desktop redirect, not reliably with the Azure v2 device-code endpoint.
+    // Open the normal Microsoft consent page, then accept either the resulting
+    // full desktop callback URL or only its code= value in a native prompt.
+    const std::wstring authorizeUrl =
+        L"https://login.live.com/oauth20_authorize.srf?client_id=" +
+        std::wstring(MICROSOFT_DEVICE_CLIENT_ID) +
+        L"&response_type=code&redirect_uri=" + UrlEncodeQuery(MICROSOFT_DESKTOP_REDIRECT) +
+        L"&scope=" + UrlEncodeQuery(L"XboxLive.signin offline_access") +
+        L"&prompt=select_account";
+    SetAccountStatus(Tr(L"Откройте браузер, войдите и вставьте адрес страницы завершения.",
+                        L"Complete sign-in in the browser, then paste the completion page address."));
+    AppendLog(Tr(L"[Microsoft] Открыт защищенный вход Microsoft в браузере.",
+                 L"[Microsoft] Opened secure Microsoft sign-in in the browser."));
+    const INT_PTR openResult = (INT_PTR)ShellExecuteW(hwnd, L"open", authorizeUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    if (openResult <= 32) {
+        const std::wstring error = Tr(L"Не удалось открыть браузер для Microsoft (ShellExecute ",
+                                      L"Could not open the browser for Microsoft (ShellExecute ") +
+            std::to_wstring((long long)openResult) + L")";
+        SetAccountStatus(error);
+        AppendLog(Tr(L"[Microsoft] [ОШИБКА] ", L"[Microsoft] [ERROR] ") + error);
+        g_microsoftLoginInProgress.store(false);
         if (hwnd) PostMessageW(hwnd, WM_USER + 101, 0, 0);
+        return;
+    }
 
-        std::string microsoftAccess;
-        std::string refresh;
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(expiresIn);
-        int pollSeconds = interval;
-        while (std::chrono::steady_clock::now() < deadline) {
-            Sleep(pollSeconds * 1000);
-            const std::wstring pollForm = L"client_id=" + std::wstring(MICROSOFT_DEVICE_CLIENT_ID) +
-                L"&grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=" + UrlEncodeQuery(WideFromUtf8(deviceCode));
-            NativeHttpResponse token = SendHttpRequest(L"POST",
-                L"https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
-                L"Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n", Utf8FromWide(pollForm));
-            microsoftAccess = GetJsonStringField(token.body, "access_token");
-            refresh = GetJsonStringField(token.body, "refresh_token");
-            if (!microsoftAccess.empty()) break;
-            const std::string tokenError = GetJsonStringField(token.body, "error");
-            if (tokenError == "slow_down") { ++pollSeconds; continue; }
-            if (tokenError == "authorization_pending") continue;
-            break;
-        }
+    std::wstring callbackUrlOrCode;
+    const bool submitted = PromptTextInput(
+        hwnd,
+        Tr(L"Microsoft — завершите вход", L"Microsoft — finish sign-in"),
+        Tr(L"В браузере войдите в Microsoft. На странице "
+           L"«You may now close this window» скопируйте ПОЛНЫЙ адрес страницы "
+           L"или значение после code= и вставьте сюда:",
+           L"Sign in with Microsoft in the browser. At the "
+           L"“You may now close this window” page, copy the FULL page address "
+           L"or the value after code= and paste it here:"),
+        L"", callbackUrlOrCode
+    );
+    const std::wstring authorizationCode = submitted
+        ? ExtractMicrosoftAuthorizationCode(callbackUrlOrCode) : L"";
+    if (authorizationCode.empty()) {
+        SetAccountStatus(Tr(L"Вход Microsoft отменен: код не получен.",
+                            L"Microsoft sign-in cancelled: no authorization code supplied."));
+        AppendLog(Tr(L"[Microsoft] Вход отменен до получения кода авторизации.",
+                     L"[Microsoft] Sign-in cancelled before an authorization code was supplied."));
+        g_microsoftLoginInProgress.store(false);
+        if (hwnd) PostMessageW(hwnd, WM_USER + 101, 0, 0);
+        return;
+    }
+
+    SetAccountStatus(Tr(L"Проверяем Microsoft и лицензию Minecraft…", L"Verifying Microsoft and Minecraft ownership…"));
+    if (hwnd) PostMessageW(hwnd, WM_USER + 101, 0, 0);
+    std::thread([hwnd, authorizationCode]() {
+        const std::wstring form = L"client_id=" + std::wstring(MICROSOFT_DEVICE_CLIENT_ID) +
+            L"&code=" + UrlEncodeQuery(authorizationCode) +
+            L"&grant_type=authorization_code&redirect_uri=" + UrlEncodeQuery(MICROSOFT_DESKTOP_REDIRECT);
+        NativeHttpResponse token = SendHttpRequest(L"POST", L"https://login.live.com/oauth20_token.srf",
+            L"Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n", Utf8FromWide(form));
+        const std::string microsoftAccess = GetJsonStringField(token.body, "access_token");
+        const std::string refresh = GetJsonStringField(token.body, "refresh_token");
 
         MinecraftAccount account;
         std::wstring error;
-        if (microsoftAccess.empty() || refresh.empty() ||
-            !ExchangeMicrosoftAccessForMinecraft(WideFromUtf8(microsoftAccess), account, error)) {
-            if (error.empty()) error = Tr(L"Вход Microsoft отменен или истек по времени.", L"Microsoft sign-in was cancelled or timed out.");
-            SetAccountStatus(error);
-            AppendLog(Tr(L"[Microsoft] [ОШИБКА] " + error, L"[Microsoft] [ERROR] " + error));
+        if (token.status < 200 || token.status >= 300 || microsoftAccess.empty() || refresh.empty()) {
+            error = Tr(L"Microsoft не выдал токен авторизации: ", L"Microsoft did not issue an authorization token: ") +
+                DescribeMicrosoftHttpFailure(token, L"Microsoft OAuth");
+        } else if (!ExchangeMicrosoftAccessForMinecraft(WideFromUtf8(microsoftAccess), account, error)) {
+            // ExchangeMicrosoftAccessForMinecraft adds a safe stage/HTTP detail.
         } else {
             const std::wstring protectedRefresh = ProtectForCurrentWindowsUser(WideFromUtf8(refresh));
             if (protectedRefresh.empty()) {
-                error = Tr(L"Не удалось безопасно сохранить сессию Microsoft.", L"Could not securely save the Microsoft session.");
-                SetAccountStatus(error);
-                AppendLog(Tr(L"[Microsoft] [ОШИБКА] " + error, L"[Microsoft] [ERROR] " + error));
+                error = Tr(L"Не удалось безопасно сохранить сессию Microsoft.",
+                           L"Could not securely save the Microsoft session.");
             } else {
                 g_config.accountMode = L"microsoft";
                 g_config.microsoftRefreshTokenProtected = protectedRefresh;
@@ -2252,6 +2327,10 @@ void BeginMicrosoftDeviceLogin(HWND hwnd) {
                              L"[Microsoft] Signed in: " + account.username));
                 if (hwnd) PostMessageW(hwnd, WM_USER + 102, 0, 0);
             }
+        }
+        if (!error.empty()) {
+            SetAccountStatus(error);
+            AppendLog(Tr(L"[Microsoft] [ОШИБКА] ", L"[Microsoft] [ERROR] ") + error);
         }
         g_microsoftLoginInProgress.store(false);
         if (hwnd) PostMessageW(hwnd, WM_USER + 101, 0, 0);
@@ -2860,8 +2939,8 @@ bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring
 
     RECT prc;
     GetWindowRect(hParent, &prc);
-    int dlgW = 440;
-    int dlgH = 170;
+    int dlgW = 620;
+    int dlgH = 198;
     int dlgX = prc.left + (prc.right - prc.left - dlgW) / 2;
     int dlgY = prc.top + (prc.bottom - prc.top - dlgH) / 2;
 
@@ -2888,7 +2967,7 @@ bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring
     HWND hStatic = CreateWindowExW(
         0, L"STATIC", prompt.c_str(),
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        20, 16, dlgW - 40, 24,
+        20, 16, dlgW - 40, 46,
         hDlg, NULL, g_hInstance, NULL
     );
     SendMessageW(hStatic, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2896,7 +2975,7 @@ bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring
     HWND hEdit = CreateWindowExW(
         WS_EX_CLIENTEDGE, L"EDIT", initialVal.c_str(),
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-        20, 46, dlgW - 55, 26,
+        20, 76, dlgW - 55, 26,
         hDlg, (HMENU)201, g_hInstance, NULL
     );
     SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2906,7 +2985,7 @@ bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring
     HWND hBtnOk = CreateWindowExW(
         0, L"BUTTON", Tr(L"OK", L"OK"),
         WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-        dlgW - 205, 88, 80, 28,
+        dlgW - 205, 122, 80, 28,
         hDlg, (HMENU)IDOK, g_hInstance, NULL
     );
     SendMessageW(hBtnOk, WM_SETFONT, (WPARAM)hFontBold, TRUE);
@@ -2914,7 +2993,7 @@ bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring
     HWND hBtnCancel = CreateWindowExW(
         0, L"BUTTON", Tr(L"Отмена", L"Cancel"),
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        dlgW - 115, 88, 80, 28,
+        dlgW - 115, 122, 80, 28,
         hDlg, (HMENU)IDCANCEL, g_hInstance, NULL
     );
     SendMessageW(hBtnCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2937,8 +3016,8 @@ bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring
         const bool belongsToPrompt = msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd);
         if (belongsToPrompt && msg.message == WM_KEYDOWN) {
             if (msg.wParam == VK_RETURN) {
-                WCHAR buf[512] = { 0 };
-                GetWindowTextW(hEdit, buf, 511);
+                WCHAR buf[4096] = { 0 };
+                GetWindowTextW(hEdit, buf, 4095);
                 outVal = buf;
                 okClicked = true;
                 running = false;
@@ -2952,8 +3031,8 @@ bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring
         if (msg.hwnd == hDlg && msg.message == WM_COMMAND) {
             const int id = LOWORD(msg.wParam);
             if (id == IDOK) {
-                WCHAR buf[512] = { 0 };
-                GetWindowTextW(hEdit, buf, 511);
+                WCHAR buf[4096] = { 0 };
+                GetWindowTextW(hEdit, buf, 4095);
                 outVal = buf;
                 okClicked = true;
                 running = false;
@@ -3672,8 +3751,81 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                         L"Memory allocation (RAM), custom JVM arguments, garbage collector & Java runtime"),
                      -1, &fontSubtitle, subPt, &mutedBrush);
 
-        // 1. RAM Allocation Card (Global across all containers)
-        int setY = contentY + 62;
+        // 1. Account card. It is deliberately the first Settings card so the
+        // official sign-in cannot be missed below Java and theme controls.
+        const int accountY = contentY + 62;
+        const int accountH = GetSettingsAccountCardHeight(contentW);
+        const bool compactAccount = contentW < 420;
+        DrawCard(g, (float)contentX, (float)accountY, (float)contentW, (float)accountH, 8,
+                 g_currentTheme.bgCard, g_currentTheme.border);
+        PointF accountTitle((float)contentX + 16, (float)accountY + 10);
+        g.DrawString(Tr(L"Профиль и вход в Minecraft", L"Minecraft profile & sign-in"), -1,
+                     &fontSmallBold, accountTitle, &whiteBrush);
+        PointF accountHint((float)contentX + 16, (float)accountY + 28);
+        g.DrawString(Tr(L"Офлайн работает только на серверах без проверки аккаунта.",
+                         L"Offline mode works only on servers without account verification."), -1,
+                     &fontSmall, accountHint, &mutedBrush);
+
+        const int modeY = accountY + 50;
+        const int modeX = contentX + 16;
+        const int modeW = compactAccount ? contentW - 32 : std::min(174, (contentW - 48) / 2);
+        const bool offlineMode = !IsMicrosoftAccountMode();
+        DrawCard(g, (float)modeX, (float)modeY, (float)modeW, 26, 5,
+                 offlineMode ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
+                 offlineMode ? g_currentTheme.accent : g_currentTheme.border);
+        RectF offlineRc((float)modeX, (float)modeY, (float)modeW, 26);
+        SolidBrush offlineTxt(offlineMode ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+        g.DrawString(Tr(L"Офлайн (локальный ник)", L"Offline (local nickname)"), -1,
+                     &fontSmallBold, offlineRc, &sfCenter, &offlineTxt);
+        const int microsoftY = compactAccount ? modeY + 30 : modeY;
+        const int microsoftX = compactAccount ? modeX : modeX + modeW + 8;
+        const bool microsoftMode = IsMicrosoftAccountMode();
+        DrawCard(g, (float)microsoftX, (float)microsoftY, (float)modeW, 26, 5,
+                 microsoftMode ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
+                 microsoftMode ? g_currentTheme.accent : g_currentTheme.border);
+        RectF microsoftRc((float)microsoftX, (float)microsoftY, (float)modeW, 26);
+        SolidBrush microsoftTxt(microsoftMode ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
+        g.DrawString(Tr(L"Microsoft (лицензия)", L"Microsoft (licensed)"), -1,
+                     &fontSmallBold, microsoftRc, &sfCenter, &microsoftTxt);
+
+        const int accountStatusY = compactAccount ? accountY + 88 : accountY + 80;
+        std::wstring accountState = offlineMode
+            ? Tr(L"Ник: ", L"Nickname: ") + g_config.nickname
+            : GetAccountStatus();
+        if (microsoftMode && accountState.empty()) {
+            accountState = g_config.microsoftPlayerName.empty()
+                ? Tr(L"Войдите, чтобы подтвердить владение Java Edition.", L"Sign in to verify Java Edition ownership.")
+                : Tr(L"Сохранен аккаунт: ", L"Saved account: ") + g_config.microsoftPlayerName;
+        }
+        PointF accountStatus((float)contentX + 16, (float)accountStatusY);
+        g.DrawString(accountState.c_str(), -1, &fontSmall, accountStatus, &mutedBrush);
+
+        const int accountActionY = compactAccount ? accountY + 122 : accountY + 100;
+        const int signinW = compactAccount ? std::max(100, contentW - 32) : 190;
+        const bool signingIn = g_microsoftLoginInProgress.load();
+        DrawGradientButton(g, (float)contentX + 16, (float)accountActionY, (float)signinW, 28, 6,
+                           g_currentTheme.accent, g_currentTheme.accentSecondary,
+                           Color(255, 255, 255, 255),
+                           signingIn ? Tr(L"Ожидание входа…", L"Waiting for sign-in…") :
+                           Tr(L"Войти в Microsoft в браузере", L"Sign in to Microsoft in browser"),
+                           fontSmallBold, false, false);
+        if (!compactAccount) {
+            const int logoutX = contentX + 16 + signinW + 8;
+            DrawCard(g, (float)logoutX, (float)accountActionY, 112, 28, 6,
+                     g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+            RectF logoutRc((float)logoutX, (float)accountActionY, 112, 28);
+            g.DrawString(Tr(L"Выйти", L"Sign out"), -1, &fontSmallBold, logoutRc, &sfCenter, &mutedBrush);
+        } else {
+            const int compactLogoutY = accountActionY + 32;
+            DrawCard(g, (float)contentX + 16, (float)compactLogoutY, (float)signinW, 28, 6,
+                     g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
+            RectF logoutRc((float)contentX + 16, (float)compactLogoutY, (float)signinW, 28);
+            g.DrawString(Tr(L"Выйти из Microsoft", L"Sign out of Microsoft"), -1,
+                         &fontSmallBold, logoutRc, &sfCenter, &mutedBrush);
+        }
+
+        // 2. RAM Allocation Card (Global across all containers)
+        int setY = accountY + accountH + 8;
         DrawCard(g, (float)contentX, (float)setY, (float)contentW, 110, 10, g_currentTheme.bgCard, g_currentTheme.border);
 
         PointF ramLblPt((float)contentX + 16, (float)setY + 12);
@@ -3878,79 +4030,7 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
             tX += themePillW + themeGap;
         }
 
-        // 5. Account card. Offline sessions deliberately retain the editable
-        // local nickname; Microsoft sessions can only launch after the full
-        // ownership/profile exchange succeeds.
-        const int accountY = themeY + themeCardH + 8;
-        const int accountH = GetSettingsAccountCardHeight(contentW);
-        const bool compactAccount = contentW < 420;
-        DrawCard(g, (float)contentX, (float)accountY, (float)contentW, (float)accountH, 8,
-                 g_currentTheme.bgCard, g_currentTheme.border);
-        PointF accountTitle((float)contentX + 16, (float)accountY + 10);
-        g.DrawString(Tr(L"Профиль и вход в Minecraft", L"Minecraft profile & sign-in"), -1,
-                     &fontSmallBold, accountTitle, &whiteBrush);
-        PointF accountHint((float)contentX + 16, (float)accountY + 28);
-        g.DrawString(Tr(L"Офлайн работает только на серверах без проверки аккаунта.",
-                         L"Offline mode works only on servers without account verification."), -1,
-                     &fontSmall, accountHint, &mutedBrush);
 
-        const int modeY = accountY + 50;
-        const int modeX = contentX + 16;
-        const int modeW = compactAccount ? contentW - 32 : std::min(174, (contentW - 48) / 2);
-        const bool offlineMode = !IsMicrosoftAccountMode();
-        DrawCard(g, (float)modeX, (float)modeY, (float)modeW, 26, 5,
-                 offlineMode ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
-                 offlineMode ? g_currentTheme.accent : g_currentTheme.border);
-        RectF offlineRc((float)modeX, (float)modeY, (float)modeW, 26);
-        SolidBrush offlineTxt(offlineMode ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
-        g.DrawString(Tr(L"Офлайн (локальный ник)", L"Offline (local nickname)"), -1,
-                     &fontSmallBold, offlineRc, &sfCenter, &offlineTxt);
-        const int microsoftY = compactAccount ? modeY + 30 : modeY;
-        const int microsoftX = compactAccount ? modeX : modeX + modeW + 8;
-        const bool microsoftMode = IsMicrosoftAccountMode();
-        DrawCard(g, (float)microsoftX, (float)microsoftY, (float)modeW, 26, 5,
-                 microsoftMode ? g_currentTheme.accent : g_currentTheme.bgSurfaceElevated,
-                 microsoftMode ? g_currentTheme.accent : g_currentTheme.border);
-        RectF microsoftRc((float)microsoftX, (float)microsoftY, (float)modeW, 26);
-        SolidBrush microsoftTxt(microsoftMode ? Color(255, 255, 255, 255) : g_currentTheme.textMuted);
-        g.DrawString(Tr(L"Microsoft (лицензия)", L"Microsoft (licensed)"), -1,
-                     &fontSmallBold, microsoftRc, &sfCenter, &microsoftTxt);
-
-        const int accountStatusY = compactAccount ? accountY + 88 : accountY + 80;
-        std::wstring accountState = offlineMode
-            ? Tr(L"Ник: ", L"Nickname: ") + g_config.nickname
-            : GetAccountStatus();
-        if (microsoftMode && accountState.empty()) {
-            accountState = g_config.microsoftPlayerName.empty()
-                ? Tr(L"Войдите, чтобы подтвердить владение Java Edition.", L"Sign in to verify Java Edition ownership.")
-                : Tr(L"Сохранен аккаунт: ", L"Saved account: ") + g_config.microsoftPlayerName;
-        }
-        PointF accountStatus((float)contentX + 16, (float)accountStatusY);
-        g.DrawString(accountState.c_str(), -1, &fontSmall, accountStatus, &mutedBrush);
-
-        const int accountActionY = compactAccount ? accountY + 122 : accountY + 100;
-        const int signinW = compactAccount ? std::max(100, contentW - 32) : 190;
-        const bool signingIn = g_microsoftLoginInProgress.load();
-        DrawGradientButton(g, (float)contentX + 16, (float)accountActionY, (float)signinW, 28, 6,
-                           g_currentTheme.accent, g_currentTheme.accentSecondary,
-                           Color(255, 255, 255, 255),
-                           signingIn ? Tr(L"Ожидание входа…", L"Waiting for sign-in…") :
-                           Tr(L"Войти через Microsoft", L"Sign in with Microsoft"),
-                           fontSmallBold, false, false);
-        if (!compactAccount) {
-            const int logoutX = contentX + 16 + signinW + 8;
-            DrawCard(g, (float)logoutX, (float)accountActionY, 112, 28, 6,
-                     g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-            RectF logoutRc((float)logoutX, (float)accountActionY, 112, 28);
-            g.DrawString(Tr(L"Выйти", L"Sign out"), -1, &fontSmallBold, logoutRc, &sfCenter, &mutedBrush);
-        } else {
-            const int compactLogoutY = accountActionY + 32;
-            DrawCard(g, (float)contentX + 16, (float)compactLogoutY, (float)signinW, 28, 6,
-                     g_currentTheme.bgSurfaceElevated, g_currentTheme.border);
-            RectF logoutRc((float)contentX + 16, (float)compactLogoutY, (float)signinW, 28);
-            g.DrawString(Tr(L"Выйти из Microsoft", L"Sign out of Microsoft"), -1,
-                         &fontSmallBold, logoutRc, &sfCenter, &mutedBrush);
-        }
     }
 
     // Content must not draw over the fixed bottom launch dock.
@@ -4474,7 +4554,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         bool isSettings = (g_currentTab == 4);
         int contentX = 220 + 24;
         int contentW = std::max(120, width - 220 - 48);
-        int setY = 54 + 16 + 62;
+        int setY = 54 + 16 + 62 + GetSettingsAccountCardHeight(contentW) + 8;
         int jvmCardY = setY + 118;
         int optCardY = jvmCardY + GetSettingsJvmCardHeight(contentW) + 8;
         const int scroll = g_tabScrollOffset;
@@ -5040,7 +5120,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int contentW = width - 220 - 48;
             int contentY = 54 + 16;
             const int tabY = y + g_tabScrollOffset;
-            int setY = contentY + 62;
+            const int accountY = contentY + 62;
+            int setY = accountY + GetSettingsAccountCardHeight(contentW) + 8;
 
             int sliderX = contentX + 16;
             int sliderY = setY + 68;
@@ -5205,10 +5286,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 tX += themePillW + 8;
             }
 
-            // Account controls are after the theme card and share the same
-            // vertical scroll coordinate system as painting.
-            const int themeCardH = GetSettingsThemeCardHeight(contentW);
-            const int accountY = themeY + themeCardH + 8;
+            // Account controls use the same top-of-settings coordinates as painting.
             const bool compactAccount = contentW < 420;
             const int modeY = accountY + 50;
             const int modeX = contentX + 16;
@@ -5236,6 +5314,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                         : Tr(L"Сохранен аккаунт: ", L"Saved account: ") + g_config.microsoftPlayerName);
                     SyncNicknameControlForAccountMode();
                 }
+                // Selecting the licensed mode is now sufficient to begin a
+                // visible browser sign-in; users no longer need to discover a
+                // second action below the settings fold.
+                BeginMicrosoftDeviceLogin(hwnd);
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
