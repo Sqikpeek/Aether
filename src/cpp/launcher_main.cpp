@@ -247,6 +247,7 @@ static std::wstring g_launchStatus = L"Готов к запуску";
 static int g_launchProgressPct = 0;
 static std::atomic<bool> g_isGameRunning(false);
 static HANDLE g_hGameProcess = NULL;
+static std::mutex g_gameProcessMutex;
 
 // Account state. Offline mode only uses the nickname; the Microsoft session is
 // populated after Xbox/Minecraft ownership verification and never logs tokens.
@@ -256,9 +257,14 @@ static std::wstring g_accountStatus = L"Офлайн-режим";
 static std::atomic<bool> g_microsoftLoginInProgress(false);
 static std::atomic<bool> g_microsoftLoginAttempted(false);
 
-// Logs
+// Logs. Keep a persistent UTF-8 diagnostics file as well as the in-app tail so
+// failures are still available after a restart or an early game-process exit.
 static std::vector<std::wstring> g_logs;
 static std::mutex g_logsMutex;
+static HANDLE g_hPersistentLog = INVALID_HANDLE_VALUE;
+static std::wstring g_persistentLogPath;
+static DWORD g_persistentLogOpenError = ERROR_SUCCESS;
+static bool g_persistentLogWriteFailed = false;
 static std::wstring g_lastCrashTitle = L"";
 static std::wstring g_lastCrashCause = L"";
 static std::wstring g_lastCrashSolution = L"";
@@ -4662,49 +4668,10 @@ void StartMinecraftLaunch() {
         AppendLog(Tr(L"[Aether] Выделение RAM (глобально): " + std::to_wstring(g_config.memoryMb) + L" MB",
                      L"[Aether] RAM (global): " + std::to_wstring(g_config.memoryMb) + L" MB"));
 
-        AppendLog(Tr(L"[JavaDetector] Сканирование установленных сред выполнения Java...",
-                     L"[JavaDetector] Scanning installed Java runtimes..."));
-        JavaInfo java = MinecraftLauncher::DetectJava(g_config.customJavaPath);
-
-        std::wstring javaPath = java.path;
-        if (javaPath.empty()) {
-            AppendLog(Tr(L"[JavaDetector] ВНИМАНИЕ: Java не найдена в системных путях, используется javaw.exe",
-                         L"[JavaDetector] WARNING: Java not found, falling back to javaw.exe"));
-            javaPath = L"javaw.exe";
-        } else {
-            AppendLog(Tr(L"[JavaDetector] Найдена совместимая Java: " + javaPath + L" (Java " + std::to_wstring(java.majorVersion) + L")",
-                         L"[JavaDetector] Found compatible Java: " + javaPath));
-        }
-
-        AppendLog(Tr(L"[PistonMeta] Проверка и подготовка клиента Minecraft " + g_activeVersion + L"...",
-                     L"[PistonMeta] Validating and downloading Minecraft " + g_activeVersion + L"..."));
-
-        bool prepared = MinecraftLauncher::PrepareMinecraftFiles(
-            g_config.storagePath,
-            g_activeVersion,
-            g_config.loader,
-            [](const std::wstring& status, int pct) {
-                g_launchStatus = status;
-                g_launchProgressPct = pct;
-                if (status.rfind(L"Ошибка подготовки:", 0) == 0) {
-                    AppendLog(L"[Aether] [ERROR] " + status);
-                }
-                PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
-            }
-        );
-
-        if (!prepared) {
-            AppendLog(Tr(L"[Aether] [ERROR] Не удалось подготовить файлы Minecraft. Проверьте интернет или установленный официальный клиент.",
-                         L"[Aether] [ERROR] Could not prepare Minecraft files. Check the connection or installed official client."));
-            g_launchStatus = Tr(L"Ошибка загрузки!", L"Download failed!");
-            g_isGameRunning.store(false);
-            PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
-            return;
-        }
-
-        AppendLog(Tr(L"[Aether] Запуск процесса Minecraft net.minecraft.client.main.Main...",
-                     L"[Aether] Starting Minecraft process net.minecraft.client.main.Main..."));
-        g_launchStatus = Tr(L"Игра запущена!", L"Game running!");
+        AppendLog(Tr(L"[Launch] Передача запуска нативному процессу; проверка Java и подготовка будут выполнены с подробной диагностикой.",
+                     L"[Launch] Handing off to the native launch pipeline; Java validation and preparation will report detailed diagnostics."));
+        g_launchStatus = Tr(L"Запуск Minecraft...", L"Launching Minecraft...");
+        g_launchProgressPct = 0;
         PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
 
         LaunchProgressCallback callbacks;
@@ -4713,10 +4680,23 @@ void StartMinecraftLaunch() {
             g_launchProgressPct = pct;
             PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
         };
-        callbacks.onLog = [](const std::wstring& line, bool) {
-            AppendLog(line);
+        callbacks.onLog = [](const std::wstring& line, bool isError) {
+            if (isError && line.find(L"[ERROR]") == std::wstring::npos &&
+                line.find(L"[FATAL]") == std::wstring::npos) {
+                AppendLog(L"[ERROR] " + line);
+            } else {
+                AppendLog(line);
+            }
         };
-        callbacks.onGameExited = [](int exitCode) {
+        std::shared_ptr<HANDLE> launchProcessHandle = std::make_shared<HANDLE>(nullptr);
+        callbacks.onGameExited = [launchProcessHandle](int exitCode) {
+            {
+                std::lock_guard<std::mutex> processLock(g_gameProcessMutex);
+                HANDLE completedProcess = *launchProcessHandle;
+                *launchProcessHandle = NULL;
+                if (g_hGameProcess == completedProcess) g_hGameProcess = NULL;
+                if (completedProcess && completedProcess != INVALID_HANDLE_VALUE) CloseHandle(completedProcess);
+            }
             g_isGameRunning.store(false);
             g_launchStatus = Tr(L"Готов к запуску", L"Ready to launch");
 
@@ -4754,43 +4734,144 @@ void StartMinecraftLaunch() {
             g_config.loader,
             launchAccount,
             g_config.memoryMb,
-            javaPath,
+            g_config.customJavaPath,
             g_config.jvmPreset,
             g_config.customJvmArgs,
             callbacks,
-            &g_hGameProcess,
+            launchProcessHandle.get(),
             containerDir
         );
+        if (launched) {
+            std::lock_guard<std::mutex> processLock(g_gameProcessMutex);
+            if (*launchProcessHandle && *launchProcessHandle != INVALID_HANDLE_VALUE) {
+                g_hGameProcess = *launchProcessHandle;
+            }
+        }
 
         if (!launched) {
             g_isGameRunning.store(false);
             g_launchStatus = Tr(L"Ошибка запуска!", L"Launch failed!");
-            AppendLog(Tr(L"[Aether] [ERROR] Не удалось запустить процесс CreateProcessW!",
-                         L"[Aether] [ERROR] CreateProcessW failed!"));
+            AppendLog(Tr(L"[Launch] [ERROR] Конвейер запуска завершился неудачно; найдите первое сообщение [ERROR] выше. CreateProcessW мог не вызываться.",
+                         L"[Launch] [ERROR] Launch pipeline failed; inspect the first [ERROR] above. CreateProcessW may not have been reached."));
             PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
         }
     }).detach();
 }
 
+static void InitializePersistentLog() {
+    if (g_config.storagePath.empty()) return;
+
+    const std::wstring logDirectory = g_config.storagePath + L"\\logs";
+    EnsureDirectoryExists(logDirectory);
+    g_persistentLogPath = logDirectory + L"\\launcher.log";
+
+    WIN32_FILE_ATTRIBUTE_DATA attributes = {};
+    if (GetFileAttributesExW(g_persistentLogPath.c_str(), GetFileExInfoStandard, &attributes)) {
+        const ULONGLONG size = ((ULONGLONG)attributes.nFileSizeHigh << 32) | attributes.nFileSizeLow;
+        constexpr ULONGLONG MAX_LOG_BYTES = 12ULL * 1024 * 1024;
+        if (size > MAX_LOG_BYTES) {
+            const std::wstring previousPath = logDirectory + L"\\launcher.previous.log";
+            MoveFileExW(g_persistentLogPath.c_str(), previousPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
+    }
+
+    g_hPersistentLog = CreateFileW(g_persistentLogPath.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    if (g_hPersistentLog == INVALID_HANDLE_VALUE) {
+        g_persistentLogOpenError = GetLastError();
+    }
+}
+
+static void FlushPersistentLogLocked() {
+    if (g_hPersistentLog != INVALID_HANDLE_VALUE) FlushFileBuffers(g_hPersistentLog);
+}
+
+static void LogStartupDiagnostics() {
+    AppendLog(L"[Diagnostics] Launcher version 1.0.38; build " +
+              WideFromUtf8(std::string(__DATE__) + " " + __TIME__));
+    if (!g_persistentLogPath.empty()) {
+        AppendLog(L"[Diagnostics] Persistent log file: " + g_persistentLogPath);
+    }
+    if (g_persistentLogOpenError != ERROR_SUCCESS) {
+        AppendLog(L"[Diagnostics] [ERROR] Could not open persistent log (Win32 " +
+                  std::to_wstring(g_persistentLogOpenError) + L").");
+    }
+
+    WCHAR executablePath[1024] = {};
+    const DWORD executableLength = GetModuleFileNameW(NULL, executablePath,
+        (DWORD)(sizeof(executablePath) / sizeof(executablePath[0])));
+    if (executableLength > 0) AppendLog(L"[System] Launcher executable: " + std::wstring(executablePath, executableLength));
+
+    SYSTEM_INFO systemInfo = {};
+    GetNativeSystemInfo(&systemInfo);
+    const wchar_t* architecture = L"unknown";
+    if (systemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64) architecture = L"x64";
+    else if (systemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL) architecture = L"x86";
+#ifdef PROCESSOR_ARCHITECTURE_ARM64
+    else if (systemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64) architecture = L"ARM64";
+#endif
+    MEMORYSTATUSEX memory = {};
+    memory.dwLength = sizeof(memory);
+    const bool memoryAvailable = GlobalMemoryStatusEx(&memory) != FALSE;
+    std::wstring systemLine = L"[System] Windows native architecture=" + std::wstring(architecture) +
+        L"; logical CPUs=" + std::to_wstring(systemInfo.dwNumberOfProcessors);
+    if (memoryAvailable) {
+        systemLine += L"; RAM total=" + std::to_wstring(memory.ullTotalPhys / (1024 * 1024)) +
+            L" MiB; available=" + std::to_wstring(memory.ullAvailPhys / (1024 * 1024)) + L" MiB";
+    }
+    AppendLog(systemLine);
+    AppendLog(L"[Configuration] Storage path: " + g_config.storagePath);
+    if (g_activeContainerIndex >= 0 && g_activeContainerIndex < (int)g_containers.size()) {
+        const ContainerProfile& active = g_containers[g_activeContainerIndex];
+        AppendLog(L"[Configuration] Active profile: " + active.name + L"; id=" + active.id +
+                  L"; Minecraft=" + active.version + L"; loader=" + active.loader +
+                  L"; RAM=" + std::to_wstring(active.memoryMb) + L" MiB");
+    }
+    AppendLog(L"[Configuration] Account mode=" + g_config.accountMode +
+              L"; custom Java path=" + (g_config.customJavaPath.empty() ? L"(auto-detect)" : g_config.customJavaPath));
+}
+
 void AppendLog(const std::wstring& line) {
     std::lock_guard<std::mutex> lock(g_logsMutex);
 
-    auto now = std::chrono::system_clock::now();
-    auto in_time_t = std::chrono::system_clock::to_time_t(now);
-    struct tm buf;
-    localtime_s(&buf, &in_time_t);
+    const auto now = std::chrono::system_clock::now();
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count() % 1000;
+    const auto inTimeT = std::chrono::system_clock::to_time_t(now);
+    struct tm timeBuffer;
+    localtime_s(&timeBuffer, &inTimeT);
 
-    std::wstringstream ss;
-    ss << L"[" << std::put_time(&buf, L"%H:%M:%S") << L"] " << line;
+    std::wstring safeLine = line;
+    if (safeLine.size() > 16384) {
+        safeLine.resize(16384);
+        safeLine += L" …[line truncated]";
+    }
+    std::wstringstream stream;
+    stream << L"[" << std::put_time(&timeBuffer, L"%Y-%m-%d %H:%M:%S") << L'.'
+           << std::setw(3) << std::setfill(L'0') << milliseconds
+           << L"][thread " << GetCurrentThreadId() << L"] " << safeLine;
+    const std::wstring entry = stream.str();
 
-    g_logs.push_back(ss.str());
-    if (g_logs.size() > 500) {
-        g_logs.erase(g_logs.begin());
+    g_logs.push_back(entry);
+    if (g_logs.size() > 10000) g_logs.erase(g_logs.begin(), g_logs.begin() + 1000);
+
+    if (g_hPersistentLog != INVALID_HANDLE_VALUE && !g_persistentLogWriteFailed) {
+        std::string utf8 = Utf8FromWide(entry);
+        utf8 += "\r\n";
+        DWORD bytesWritten = 0;
+        if (!WriteFile(g_hPersistentLog, utf8.data(), (DWORD)utf8.size(), &bytesWritten, NULL) ||
+            bytesWritten != utf8.size()) {
+            g_persistentLogWriteFailed = true;
+            g_persistentLogOpenError = GetLastError();
+        } else if (line.find(L"[ERROR]") != std::wstring::npos ||
+                   line.find(L"[FATAL]") != std::wstring::npos ||
+                   line.find(L"[CrashAnalyzer]") != std::wstring::npos) {
+            FlushPersistentLogLocked();
+        }
     }
 
-    if (g_hMainWindow) {
-        PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
-    }
+    if (g_hMainWindow) PostMessageW(g_hMainWindow, WM_USER + 101, 0, 0);
 }
 
 // ----------------------------------------------------------------------------
@@ -4871,7 +4952,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SendMessageW(g_hEditGameWidth, WM_SETFONT, (WPARAM)hFontNick, TRUE);
 
         g_config.customJavaPath = MinecraftLauncher::CleanPath(g_config.customJavaPath);
-        g_detectedJava = MinecraftLauncher::DetectJava(g_config.customJavaPath);
+        g_detectedJava = MinecraftLauncher::DetectJava(
+            g_config.customJavaPath, MinecraftLauncher::GetRequiredJavaVersion(g_activeVersion));
         g_detectedJava.path = MinecraftLauncher::CleanPath(g_detectedJava.path);
         EnsureContainerStructure(g_config.storagePath, g_containers[0].id);
         SyncInstalledModsWithDisk(g_config.storagePath, g_containers[0].id);
@@ -5225,15 +5307,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         int playBtnY = height - 84 + 16;
         if (x >= playBtnX && x <= playBtnX + playBtnW && y >= playBtnY && y <= playBtnY + playBtnH) {
             if (g_isGameRunning.load()) {
-                AppendLog(Tr(L"[Aether] Остановка процесса Minecraft по запросу игрока...",
-                             L"[Aether] Terminating Minecraft process on player request..."));
-                if (g_hGameProcess && g_hGameProcess != INVALID_HANDLE_VALUE) {
-                    MinecraftLauncher::TerminateRunningGame(g_hGameProcess);
-                    g_hGameProcess = NULL;
+                bool terminationRequested = false;
+                DWORD terminationError = ERROR_SUCCESS;
+                {
+                    std::lock_guard<std::mutex> processLock(g_gameProcessMutex);
+                    if (g_hGameProcess && g_hGameProcess != INVALID_HANDLE_VALUE) {
+                        terminationRequested = MinecraftLauncher::TerminateRunningGame(g_hGameProcess, &terminationError);
+                    }
                 }
-                g_isGameRunning.store(false);
-                g_launchStatus = Tr(L"Игра остановлена", L"Game stopped");
-                AppendLog(Tr(L"[Aether] Игра успешно остановлена.", L"[Aether] Game successfully stopped."));
+                if (terminationRequested) {
+                    g_launchStatus = Tr(L"Остановка игры...", L"Stopping game...");
+                    AppendLog(Tr(L"[Aether] Запрос остановки Minecraft передан процессу; ожидается завершение.",
+                                 L"[Aether] Minecraft termination requested; waiting for process exit."));
+                } else {
+                    AppendLog(Tr(L"[Aether] [WARN] Процесс Java еще не создан или уже завершился; активный запуск пока нельзя остановить.",
+                                 L"[Aether] [WARN] The Java process is not created yet or has already exited; the active launch cannot be stopped at this stage."));
+                    if (terminationError != ERROR_SUCCESS) {
+                        AppendLog(L"[Process][ERROR] TerminateProcess failed (Win32 " +
+                                  std::to_wstring(terminationError) + L").");
+                    }
+                }
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
             }
@@ -5649,7 +5742,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int autoBtnX = contentX + contentW - 192;
             if (x >= autoBtnX && x <= autoBtnX + 88 && tabY >= jvmCardY + GetSettingsJavaPathInputOffset(contentW) &&
                 tabY <= jvmCardY + GetSettingsJavaPathInputOffset(contentW) + 28) {
-                g_detectedJava = MinecraftLauncher::DetectJava(L"");
+                g_detectedJava = MinecraftLauncher::DetectJava(
+                    L"", MinecraftLauncher::GetRequiredJavaVersion(g_activeVersion));
                 g_config.customJavaPath = g_detectedJava.path;
                 if (g_hEditJavaPath) {
                     g_suppressJavaPathChange = true;
@@ -5669,7 +5763,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 tabY <= jvmCardY + GetSettingsJavaPathInputOffset(contentW) + 28) {
                 WCHAR jBuf[512] = { 0 };
                 if (g_hEditJavaPath) GetWindowTextW(g_hEditJavaPath, jBuf, 511);
-                g_detectedJava = MinecraftLauncher::DetectJava(jBuf);
+                g_detectedJava = MinecraftLauncher::DetectJava(
+                    jBuf, MinecraftLauncher::GetRequiredJavaVersion(g_activeVersion));
                 AppendLog(Tr(L"[JavaDetector] Тестирование среды Java... Обнаружена: Java " + std::to_wstring(g_detectedJava.majorVersion) +
                              L" (" + g_detectedJava.vendor + L") по пути: " + g_detectedJava.path,
                              L"[JavaDetector] Testing Java... Found Java " + std::to_wstring(g_detectedJava.majorVersion) +
@@ -5843,6 +5938,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 SaveConfig(g_config);
             }
         }
+        AppendLog(L"[Aether] Main window destroyed; finalizing current log session.");
+        {
+            std::lock_guard<std::mutex> lock(g_logsMutex);
+            FlushPersistentLogLocked();
+        }
         PostQuitMessage(0);
         return 0;
     }
@@ -5857,6 +5957,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     g_hInstance = hInstance;
 
     g_config = LoadConfig();
+    InitializePersistentLog();
+    AppendLog(L"[Aether] Launcher session starting.");
 
     for (const auto& thm : g_themes) {
         if (thm.id == g_config.theme) {
@@ -5875,6 +5977,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     g_config.memoryMb = g_containers[g_activeContainerIndex].memoryMb;
     SaveConfig(g_config);
     SaveContainerProfiles();
+    LogStartupDiagnostics();
     // Catalog cards keep stable addresses while background batches append.
     g_allMods.reserve(10000);
 

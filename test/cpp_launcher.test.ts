@@ -232,3 +232,35 @@ test('Native launcher supports validated offline sessions and licensed Microsoft
   assert.ok(!mcLauncher.includes('--userType mojang'),
     'The launcher must not hard-code the old offline mojang user type for every session');
 });
+
+test('Native launcher writes persistent stage-by-stage launch diagnostics and captures child output safely', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+  const mcHeader = fs.readFileSync('src/cpp/minecraft_launcher.hpp', 'utf8');
+
+  assert.ok(launcherMain.includes('launcher.log') && launcherMain.includes('AppendLog') &&
+            launcherMain.includes('Utf8FromWide(entry)'),
+    'Launcher diagnostics must be timestamped and retained in a durable UTF-8 log');
+  assert.ok(mcHeader.includes('onDiagnostic') && mcLauncher.includes('DescribeDownloadAttempt') &&
+            mcLauncher.includes('Content-Length mismatch') && mcLauncher.includes('FormatWin32Error'),
+    'Download logging must include transport stage, HTTP/Win32 failures, and byte-count validation');
+  assert.ok(mcLauncher.includes('DetectJava(customJava, requiredJava') &&
+            mcLauncher.includes('No runnable Java installation was detected') &&
+            !mcLauncher.includes('fallback.path = L"java.exe"'),
+    'Launch must reject missing or incompatible Java instead of guessing a fake Java 17 runtime');
+  assert.ok(mcLauncher.includes('[Natives][PowerShell]') &&
+            mcLauncher.includes('ReportCapturedProcessOutput'),
+    'PowerShell native-extraction failures must include captured stderr/stdout');
+  assert.ok(mcLauncher.includes('DecodeProcessOutput') && mcLauncher.includes('[Minecraft] ') &&
+            mcLauncher.includes('if (!accumulated.empty()) emitLine(accumulated)'),
+    'Minecraft stdout/stderr must be decoded correctly and the final unterminated line must be logged');
+  assert.ok(mcLauncher.includes('commandLineForLog.replace') && mcLauncher.includes('[REDACTED]') &&
+            mcLauncher.includes('CreateProcessW could not start Java'),
+    'The actual Java command line must be diagnosable without writing the Microsoft access token');
+  assert.ok(mcLauncher.includes('const int effectiveMemoryMb = std::max(512, memoryMb)') &&
+            mcLauncher.includes('Xms=" + std::to_wstring(initialMemoryMb)'),
+    'A low custom RAM setting must no longer silently become a 4 GiB heap');
+  assert.ok(!launcherMain.includes('CreateProcessW failed!') &&
+            launcherMain.includes('CreateProcessW may not have been reached'),
+    'A failure before process creation must not be mislabeled as a CreateProcessW failure');
+});

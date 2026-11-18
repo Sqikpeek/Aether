@@ -1,6 +1,6 @@
 # Aether Launcher
 
-[![Build & Tests](https://img.shields.io/badge/tests-19%20passed-success)](https://github.com/Sqikpeek/Aether)
+[![Build & Tests](https://img.shields.io/badge/tests-20%20passed-success)](https://github.com/Sqikpeek/Aether)
 [![Language](https://img.shields.io/badge/language-C%2B%2B%20%2F%20Win32%20GDI%2B-blue)](https://github.com/Sqikpeek/Aether)
 [![Binary Size](https://img.shields.io/badge/binary-~771%20KB-brightgreen)](https://github.com/Sqikpeek/Aether)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -24,7 +24,7 @@ Aether Launcher — нативный, легковесный и высокопр
 - **Поиск модов прямо во вкладке приложения**: Мгновенная фильтрация по каталогу Modrinth в реальном времени.
 - **Слайдер и кастомный ввод RAM**: Плавный ползунок памяти и поле точного ввода произвольного объема в МБ.
 - **Никнейм в главном меню**: Поле ввода ника доступно прямо на нижней панели главного экрана перед кнопкой «Играть».
-- **Надежный запуск игры**: Автоматический поиск Java, загрузка `client.jar` с Mojang CDN, формирование classpath и запуск `net.minecraft.client.main.Main`.
+- **Надежный запуск игры и подробные логи**: Java проверяется под выбранную версию Minecraft; вывод Java (stdout/stderr), этапы загрузки и код выхода сохраняются в UTF-8 в `<папка хранения>\logs\launcher.log`. Токены входа в лог не попадают.
 - **Нативный установщик**: `Aether Installer.exe` для автоматического развертывания и создания ярлыков.
 
 ### Ссылки:
@@ -48,7 +48,7 @@ Aether Launcher is a 100% pure native C++ Win32 GDI+ Minecraft launcher engineer
 - **In-App Modrinth Search**: Live mod filtering by title, category, and description directly inside the Mods tab.
 - **RAM Slider & Custom Numeric Input**: Smooth draggable memory slider with direct numeric input box (MB/GB).
 - **Nickname on Main Launch Dock**: Enter your player nickname directly on the primary launch screen without diving into settings.
-- **Robust Minecraft Launch Engine**: Java auto-discovery, Mojang client and library downloads with alternate endpoints and archive/checksum validation, and async process management via `CreateProcessW`.
+- **Robust Minecraft Launch Engine**: Java auto-discovery and version validation, Mojang client/library downloads with retries and archive/checksum validation, plus async `CreateProcessW` management with UTF-8 stdout/stderr capture. Detailed launch diagnostics are persisted to `<storage path>\logs\launcher.log`; authentication tokens are redacted.
 
 ### Links:
 - Releases: https://github.com/Sqikpeek/Aether/releases

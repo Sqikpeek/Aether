@@ -4,6 +4,7 @@
 #include <wincrypt.h>
 #include <stdio.h>
 #include <algorithm>
+#include <cwctype>
 #include <unordered_set>
 #include <set>
 
@@ -28,6 +29,14 @@ static constexpr DWORD AETHER_WINHTTP_FLAG_SECURE = 0x00800000;
 static constexpr DWORD AETHER_WINHTTP_QUERY_CONTENT_LENGTH = 5;
 static constexpr DWORD AETHER_WINHTTP_QUERY_STATUS_CODE = 19;
 static constexpr DWORD AETHER_WINHTTP_QUERY_FLAG_NUMBER = 0x20000000;
+
+static std::wstring FormatWin32Error(DWORD error);
+static std::wstring DecodeProcessOutput(const std::string& bytes);
+static void ReportCapturedProcessOutput(
+    const std::function<void(const std::wstring&)>& onDiagnostic,
+    const std::wstring& prefix,
+    const std::string& output
+);
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -306,7 +315,8 @@ static void ClearExtractedNativeDlls(const std::wstring& nativesDir) {
     FindClose(find);
 }
 
-static bool ExtractNativeArchive(const std::wstring& archive, const std::wstring& nativesDir) {
+static bool ExtractNativeArchive(const std::wstring& archive, const std::wstring& nativesDir,
+                                 std::function<void(const std::wstring&)> onDiagnostic) {
     // Native classifier JARs are ZIPs. PowerShell's .NET ZipFile API handles
     // the JAR extension directly and is available on supported Windows builds.
     const std::wstring script =
@@ -317,34 +327,136 @@ static bool ExtractNativeArchive(const std::wstring& archive, const std::wstring
     std::wstring command = L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script + L"\"";
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');
-    STARTUPINFOW startup = { sizeof(startup) };
-    startup.dwFlags = STARTF_USESHOWWINDOW;
-    startup.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION process = {};
-    if (!CreateProcessW(NULL, mutableCommand.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW,
-                        NULL, NULL, &startup, &process)) {
+
+    SECURITY_ATTRIBUTES security = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+    HANDLE outputRead = NULL;
+    HANDLE outputWrite = NULL;
+    if (!CreatePipe(&outputRead, &outputWrite, &security, 0)) {
+        const DWORD error = GetLastError();
+        if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Could not create PowerShell output pipe (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
         return false;
     }
-    WaitForSingleObject(process.hProcess, INFINITE);
+    if (!SetHandleInformation(outputRead, HANDLE_FLAG_INHERIT, 0)) {
+        const DWORD error = GetLastError();
+        if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Could not protect PowerShell read handle (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+        CloseHandle(outputRead);
+        CloseHandle(outputWrite);
+        return false;
+    }
+
+    HANDLE inputHandle = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (inputHandle == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Could not open NUL for PowerShell (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+        CloseHandle(outputRead);
+        CloseHandle(outputWrite);
+        return false;
+    }
+
+    STARTUPINFOW startup = { sizeof(startup) };
+    startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    startup.hStdInput = inputHandle;
+    startup.hStdOutput = outputWrite;
+    startup.hStdError = outputWrite;
+    PROCESS_INFORMATION process = {};
+    if (onDiagnostic) onDiagnostic(L"[Natives] Starting hidden PowerShell ZIP extraction for " + archive);
+    if (!CreateProcessW(NULL, mutableCommand.data(), NULL, NULL, TRUE, CREATE_NO_WINDOW,
+                        NULL, NULL, &startup, &process)) {
+        const DWORD error = GetLastError();
+        if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] PowerShell CreateProcessW failed (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+        CloseHandle(outputRead);
+        CloseHandle(outputWrite);
+        CloseHandle(inputHandle);
+        return false;
+    }
+    CloseHandle(outputWrite);
+    CloseHandle(inputHandle);
+
+    std::string output;
+    bool outputTruncated = false;
+    char buffer[2048];
+    DWORD bytesRead = 0;
+    DWORD readError = ERROR_SUCCESS;
+    while (true) {
+        if (!ReadFile(outputRead, buffer, sizeof(buffer), &bytesRead, NULL)) {
+            readError = GetLastError();
+            break;
+        }
+        if (bytesRead == 0) break;
+        const size_t remaining = output.size() < 65536 ? 65536 - output.size() : 0;
+        if (remaining > 0) output.append(buffer, std::min<size_t>(bytesRead, remaining));
+        if (bytesRead > remaining) outputTruncated = true;
+    }
+    CloseHandle(outputRead);
+
+    const DWORD waitResult = WaitForSingleObject(process.hProcess, INFINITE);
+    const DWORD waitError = waitResult == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
     DWORD exitCode = 1;
-    GetExitCodeProcess(process.hProcess, &exitCode);
+    const bool exitCodeRead = GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
+    if (waitResult == WAIT_FAILED && onDiagnostic) {
+        const DWORD error = waitError;
+        onDiagnostic(L"[Natives][ERROR] Waiting for PowerShell failed (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+    }
+    ReportCapturedProcessOutput(onDiagnostic, L"[Natives][PowerShell] ", output);
+    if (outputTruncated && onDiagnostic) {
+        onDiagnostic(L"[Natives][PowerShell][WARN] PowerShell output exceeded 65536 bytes and was truncated in the log.");
+    }
+    if (readError != ERROR_SUCCESS && readError != ERROR_BROKEN_PIPE && onDiagnostic) {
+        onDiagnostic(L"[Natives][ERROR] Reading PowerShell output failed (Win32 " +
+            std::to_wstring(readError) + L": " + FormatWin32Error(readError) + L").");
+    }
+    if (onDiagnostic) {
+        onDiagnostic(L"[Natives] PowerShell exit: wait=" + std::to_wstring(waitResult) +
+            L"; exitCode=" + std::to_wstring(exitCode) +
+            (exitCodeRead && exitCode == 0 ? L" (success)" : L" (failure)"));
+    }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    return exitCode == 0;
+    return waitResult == WAIT_OBJECT_0 && exitCodeRead && exitCode == 0 &&
+           (readError == ERROR_SUCCESS || readError == ERROR_BROKEN_PIPE);
 }
 
 static bool ExtractWindowsNatives(const std::vector<VersionLibInfo>& libraries,
                                   const std::wstring& libDir,
-                                  const std::wstring& nativesDir) {
+                                  const std::wstring& nativesDir,
+                                  std::function<void(const std::wstring&)> onDiagnostic) {
     int nativeArchiveCount = 0;
     ClearExtractedNativeDlls(nativesDir);
+    if (onDiagnostic) onDiagnostic(L"[Natives] Clearing old DLLs and preparing Windows LWJGL natives in " + nativesDir);
     for (const VersionLibInfo& lib : libraries) {
         if (!lib.isNativeArchive) continue;
         ++nativeArchiveCount;
         const std::wstring archive = libDir + L"\\" + lib.path;
-        if (!CheckFileExists(archive) || !ExtractNativeArchive(archive, nativesDir)) return false;
+        if (!CheckFileExists(archive)) {
+            if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Native archive missing or empty: " + archive);
+            return false;
+        }
+        if (!ExtractNativeArchive(archive, nativesDir, onDiagnostic)) {
+            if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Failed to extract archive: " + archive);
+            return false;
+        }
     }
-    return nativeArchiveCount > 0;
+    size_t nativeDllCount = 0;
+    WIN32_FIND_DATAW dllData = {};
+    HANDLE dllFind = FindFirstFileW((nativesDir + L"\\*.dll").c_str(), &dllData);
+    if (dllFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(dllData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) ++nativeDllCount;
+        } while (FindNextFileW(dllFind, &dllData));
+        FindClose(dllFind);
+    }
+    if (onDiagnostic) {
+        onDiagnostic(L"[Natives] Native archives processed: " + std::to_wstring(nativeArchiveCount) +
+                     L"; extracted DLLs=" + std::to_wstring(nativeDllCount));
+    }
+    return nativeArchiveCount > 0 && nativeDllCount > 0;
 }
 
 static std::vector<VersionLibInfo> GetStandardFallbackLibraries() {
@@ -440,12 +552,21 @@ static bool HasUsableVersionMetadata(const std::wstring& path) {
     return !GetClientDownloadUrl(json).empty();
 }
 
-static bool DownloadClientJarWithFallback(const std::wstring& primaryUrl, const std::wstring& destination,
-                                          std::function<void(int)> progress) {
-    if (!primaryUrl.empty() && MinecraftLauncher::DownloadHttpFile(primaryUrl, destination, progress) &&
+static std::wstring SanitizeDownloadUrl(const std::wstring& url);
+
+static bool DownloadClientJarWithFallback(
+    const std::wstring& primaryUrl,
+    const std::wstring& destination,
+    std::function<void(int)> progress,
+    std::function<void(const std::wstring&)> onDiagnostic
+) {
+    if (!primaryUrl.empty() && MinecraftLauncher::DownloadHttpFile(primaryUrl, destination, progress, onDiagnostic) &&
         IsZipArchive(destination)) {
+        if (onDiagnostic) onDiagnostic(L"[Prepare] Official client.jar downloaded and passed ZIP validation: " + destination);
         return true;
     }
+    if (onDiagnostic) onDiagnostic(L"[Prepare] Primary client.jar URL failed or returned an invalid ZIP/JAR: " +
+                                   SanitizeDownloadUrl(primaryUrl));
     DeleteFileW(destination.c_str());
 
     // Piston Data is the canonical location. The legacy Mojang launcher endpoint
@@ -455,7 +576,9 @@ static bool DownloadClientJarWithFallback(const std::wstring& primaryUrl, const 
     if (objectPos != std::wstring::npos) {
         const std::wstring objectPath = primaryUrl.substr(objectPos + marker.size());
         const std::wstring fallbackUrl = L"https://launcher.mojang.com/v1/objects/" + objectPath;
-        if (MinecraftLauncher::DownloadHttpFile(fallbackUrl, destination, progress) && IsZipArchive(destination)) {
+        if (onDiagnostic) onDiagnostic(L"[Prepare] Retrying client.jar through legacy Mojang CDN: " + fallbackUrl);
+        if (MinecraftLauncher::DownloadHttpFile(fallbackUrl, destination, progress, onDiagnostic) && IsZipArchive(destination)) {
+            if (onDiagnostic) onDiagnostic(L"[Prepare] Legacy Mojang client.jar passed ZIP validation: " + destination);
             return true;
         }
     }
@@ -476,28 +599,73 @@ int MinecraftLauncher::GetRequiredJavaVersion(const std::wstring& mcVersion) {
     return 8;
 }
 
-JavaInfo MinecraftLauncher::DetectJava(const std::wstring& customPath) {
+JavaInfo MinecraftLauncher::DetectJava(
+    const std::wstring& customPath,
+    int minimumMajor,
+    std::function<void(const std::wstring&)> onDiagnostic
+) {
+    auto diagnostic = [&onDiagnostic](const std::wstring& message) {
+        if (onDiagnostic) onDiagnostic(message);
+    };
     std::vector<std::wstring> candidates;
+    std::wstring explicitCustomCandidatePath;
+    auto addCandidate = [&candidates, &diagnostic, &explicitCustomCandidatePath](const std::wstring& rawPath, const wchar_t* source) {
+        if (rawPath.empty()) return;
+        std::wstring candidate = CleanPath(rawPath);
+        std::wstring lower = candidate;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+        const std::wstring suffix = L"javaw.exe";
+        if (lower.size() >= suffix.size() && lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            std::wstring consoleJava = candidate.substr(0, candidate.size() - suffix.size()) + L"java.exe";
+            if (CheckFileExists(consoleJava)) {
+                diagnostic(L"[Java] Using sibling java.exe instead of javaw.exe to capture runtime diagnostics: " + consoleJava);
+                candidate = std::move(consoleJava);
+            }
+        }
+        if (!CheckFileExists(candidate)) {
+            diagnostic(L"[Java][WARN] Candidate does not exist or is not readable (" + std::wstring(source) + L"): " + candidate);
+            return;
+        }
+        for (const std::wstring& existing : candidates) {
+            if (_wcsicmp(existing.c_str(), candidate.c_str()) == 0) return;
+        }
+        diagnostic(L"[Java] Added runtime candidate (" + std::wstring(source) + L"): " + candidate);
+        if (wcscmp(source, L"custom setting") == 0) explicitCustomCandidatePath = candidate;
+        candidates.push_back(std::move(candidate));
+    };
 
-    if (!customPath.empty() && CheckFileExists(customPath)) {
-        candidates.push_back(CleanPath(customPath));
+    if (!customPath.empty()) {
+        diagnostic(L"[Java] Checking user-selected Java path: " + customPath);
+        addCandidate(customPath, L"custom setting");
     }
 
-    // Check JAVA_HOME
-    WCHAR javaHome[MAX_PATH];
-    if (GetEnvironmentVariableW(L"JAVA_HOME", javaHome, MAX_PATH) > 0) {
-        std::wstring bin = CleanPath(std::wstring(javaHome) + L"\\bin\\java.exe");
-        if (CheckFileExists(bin)) candidates.push_back(bin);
+    auto readEnvironmentVariable = [](const wchar_t* name) {
+        const DWORD required = GetEnvironmentVariableW(name, NULL, 0);
+        if (required == 0 || required > 32768) return std::wstring();
+        std::vector<wchar_t> buffer(required);
+        const DWORD written = GetEnvironmentVariableW(name, buffer.data(), required);
+        if (written == 0 || written >= required) return std::wstring();
+        return std::wstring(buffer.data(), written);
+    };
+
+    const std::wstring javaHome = readEnvironmentVariable(L"JAVA_HOME");
+    if (!javaHome.empty()) {
+        diagnostic(L"[Java] JAVA_HOME=" + javaHome);
+        addCandidate(CleanPath(javaHome + L"\\bin\\java.exe"), L"JAVA_HOME");
+    } else {
+        diagnostic(L"[Java] JAVA_HOME is not set.");
     }
 
-    // Check PATH
-    WCHAR pathBuf[MAX_PATH];
-    if (SearchPathW(NULL, L"java.exe", NULL, MAX_PATH, pathBuf, NULL) > 0) {
-        candidates.push_back(CleanPath(pathBuf));
+    std::vector<wchar_t> pathBuffer(32768, L'\0');
+    const DWORD pathLength = SearchPathW(NULL, L"java.exe", NULL,
+        static_cast<DWORD>(pathBuffer.size()), pathBuffer.data(), NULL);
+    if (pathLength > 0 && pathLength < pathBuffer.size()) {
+        addCandidate(std::wstring(pathBuffer.data(), pathLength), L"PATH");
+    } else {
+        diagnostic(L"[Java] SearchPathW did not find java.exe on PATH.");
     }
 
-    // Common installation folders on Windows
-    std::vector<std::wstring> standardDirs = {
+    const std::vector<std::wstring> standardDirs = {
         L"C:\\Program Files\\Eclipse Adoptium",
         L"C:\\Program Files\\Java",
         L"C:\\Program Files\\BellSoft",
@@ -506,184 +674,369 @@ JavaInfo MinecraftLauncher::DetectJava(const std::wstring& customPath) {
         L"C:\\Program Files\\Zulu",
         L"C:\\Program Files (x86)\\Minecraft Launcher\\runtime"
     };
-
-    for (const auto& base : standardDirs) {
-        WIN32_FIND_DATAW fd;
-        HANDLE hFind = FindFirstFileW((base + L"\\*").c_str(), &fd);
-        if (hFind != INVALID_HANDLE_VALUE) {
-            do {
-                if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                    if (wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0) {
-                        std::wstring sub = CleanPath(base + L"\\" + fd.cFileName + L"\\bin\\java.exe");
-                        if (CheckFileExists(sub)) candidates.push_back(sub);
-                        std::wstring subJre = CleanPath(base + L"\\" + fd.cFileName + L"\\jre\\bin\\java.exe");
-                        if (CheckFileExists(subJre)) candidates.push_back(subJre);
-                    }
-                }
-            } while (FindNextFileW(hFind, &fd));
-            FindClose(hFind);
-        }
+    for (const std::wstring& base : standardDirs) {
+        WIN32_FIND_DATAW findData = {};
+        const std::wstring pattern = base + L"\\*";
+        HANDLE find = FindFirstFileW(pattern.c_str(), &findData);
+        if (find == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+                wcscmp(findData.cFileName, L".") == 0 || wcscmp(findData.cFileName, L"..") == 0) continue;
+            addCandidate(CleanPath(base + L"\\" + findData.cFileName + L"\\bin\\java.exe"), L"standard install directory");
+            addCandidate(CleanPath(base + L"\\" + findData.cFileName + L"\\jre\\bin\\java.exe"), L"standard JRE directory");
+        } while (FindNextFileW(find, &findData));
+        FindClose(find);
     }
 
-    // Inspect first working candidate
-    for (const auto& rawCand : candidates) {
-        std::wstring cand = CleanPath(rawCand);
-        SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-        HANDLE hRead, hWrite;
-        if (CreatePipe(&hRead, &hWrite, &sa, 0)) {
-            SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+    auto parseMajorVersion = [](const std::string& output) {
+        const size_t marker = output.find("version \"");
+        if (marker == std::string::npos) return 0;
+        size_t position = marker + 9;
+        if (output.compare(position, 2, "1.") == 0) position += 2;
+        if (position >= output.size() || output[position] < '0' || output[position] > '9') return 0;
+        int major = 0;
+        while (position < output.size() && output[position] >= '0' && output[position] <= '9') {
+            major = major * 10 + (output[position] - '0');
+            ++position;
+        }
+        return major;
+    };
 
-            STARTUPINFOW si = { sizeof(STARTUPINFOW) };
-            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            si.hStdError = hWrite;
-            si.hStdOutput = hWrite;
+    JavaInfo best;
+    best.vendor = L"Not found";
+    int bestMajor = 0;
+    for (size_t candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
+        const std::wstring& candidate = candidates[candidateIndex];
+        const bool explicitCustom = !explicitCustomCandidatePath.empty() &&
+            _wcsicmp(candidate.c_str(), explicitCustomCandidatePath.c_str()) == 0;
+        diagnostic(L"[Java] Probing runtime: " + candidate);
 
-            PROCESS_INFORMATION pi;
-            WCHAR cmd[MAX_PATH + 32];
-            swprintf(cmd, MAX_PATH + 32, L"\"%ls\" -version", cand.c_str());
+        SECURITY_ATTRIBUTES security = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+        HANDLE readPipe = NULL;
+        HANDLE writePipe = NULL;
+        if (!CreatePipe(&readPipe, &writePipe, &security, 0)) {
+            const DWORD error = GetLastError();
+            diagnostic(L"[Java][ERROR] Could not create version-probe pipe (Win32 " +
+                       std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+            continue;
+        }
+        if (!SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0)) {
+            const DWORD error = GetLastError();
+            diagnostic(L"[Java][ERROR] Could not protect version-probe read handle (Win32 " +
+                       std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+            CloseHandle(readPipe);
+            CloseHandle(writePipe);
+            continue;
+        }
 
-            if (CreateProcessW(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-                CloseHandle(hWrite);
-                WaitForSingleObject(pi.hProcess, 3000);
+        HANDLE inputHandle = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (inputHandle == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
+            diagnostic(L"[Java][ERROR] Could not open NUL for the version probe (Win32 " +
+                       std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+            CloseHandle(readPipe);
+            CloseHandle(writePipe);
+            continue;
+        }
 
-                char buffer[2048] = { 0 };
-                DWORD bytesRead = 0;
-                std::string versionOutput = "";
-                while (ReadFile(hRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-                    buffer[bytesRead] = 0;
-                    versionOutput += buffer;
-                }
+        STARTUPINFOW startup = { sizeof(STARTUPINFOW) };
+        startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.wShowWindow = SW_HIDE;
+        startup.hStdInput = inputHandle;
+        startup.hStdOutput = writePipe;
+        startup.hStdError = writePipe;
+        PROCESS_INFORMATION process = {};
+        const std::wstring command = L"\"" + candidate + L"\" -version";
+        std::vector<wchar_t> mutableCommand(command.begin(), command.end());
+        mutableCommand.push_back(L'\0');
+        if (!CreateProcessW(candidate.c_str(), mutableCommand.data(), NULL, NULL, TRUE,
+                            CREATE_NO_WINDOW, NULL, NULL, &startup, &process)) {
+            const DWORD error = GetLastError();
+            diagnostic(L"[Java][ERROR] Java version probe could not start (Win32 " +
+                       std::to_wstring(error) + L": " + FormatWin32Error(error) +
+                       L"); executable=" + candidate);
+            CloseHandle(readPipe);
+            CloseHandle(writePipe);
+            CloseHandle(inputHandle);
+            continue;
+        }
+        CloseHandle(writePipe);
+        CloseHandle(inputHandle);
 
-                CloseHandle(hRead);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
+        DWORD waitResult = WaitForSingleObject(process.hProcess, 5000);
+        bool timedOut = waitResult == WAIT_TIMEOUT;
+        if (timedOut) {
+            diagnostic(L"[Java][ERROR] Java -version timed out after 5000 ms; terminating probe: " + candidate);
+            TerminateProcess(process.hProcess, ERROR_TIMEOUT);
+            WaitForSingleObject(process.hProcess, 1000);
+        } else if (waitResult == WAIT_FAILED) {
+            const DWORD error = GetLastError();
+            diagnostic(L"[Java][ERROR] Waiting for Java version probe failed (Win32 " +
+                       std::to_wstring(error) + L": " + FormatWin32Error(error) + L").");
+            TerminateProcess(process.hProcess, ERROR_PROCESS_ABORTED);
+            WaitForSingleObject(process.hProcess, 1000);
+        }
 
-                JavaInfo info;
-                info.path = cand;
-                info.vendor = L"Java Runtime";
-                info.is64Bit = (versionOutput.find("64-Bit") != std::string::npos);
+        DWORD exitCode = 1;
+        const bool gotExitCode = GetExitCodeProcess(process.hProcess, &exitCode) != FALSE;
+        std::string versionOutput;
+        char buffer[2048];
+        DWORD bytesRead = 0;
+        while (ReadFile(readPipe, buffer, sizeof(buffer), &bytesRead, NULL) && bytesRead > 0) {
+            const size_t remaining = versionOutput.size() < 16384 ? 16384 - versionOutput.size() : 0;
+            if (remaining > 0) versionOutput.append(buffer, std::min<size_t>(bytesRead, remaining));
+        }
+        CloseHandle(readPipe);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
 
-                size_t vpos = versionOutput.find("version \"");
-                if (vpos != std::string::npos) {
-                    vpos += 9;
-                    int major = 0;
-                    if (versionOutput.compare(vpos, 2, "1.") == 0) {
-                        major = versionOutput[vpos + 2] - '0';
-                    } else {
-                        major = atoi(versionOutput.c_str() + vpos);
-                    }
-                    info.majorVersion = major;
-                }
+        const int major = parseMajorVersion(versionOutput);
+        if (!versionOutput.empty()) {
+            std::wstring output = DecodeProcessOutput(versionOutput);
+            if (output.size() > 2000) output.resize(2000);
+            diagnostic(L"[Java] -version output: " + output);
+        }
+        if (timedOut || !gotExitCode || exitCode != 0 || major <= 0) {
+            diagnostic(L"[Java][ERROR] Runtime probe failed; wait=" + std::to_wstring(waitResult) +
+                       L"; exitCode=" + std::to_wstring(exitCode) +
+                       L"; parsed major=" + std::to_wstring(major) + L"; executable=" + candidate);
+            continue;
+        }
 
-                if (versionOutput.find("Temurin") != std::string::npos) info.vendor = L"Eclipse Temurin";
-                else if (versionOutput.find("HotSpot") != std::string::npos) info.vendor = L"OpenJDK HotSpot";
-                else if (versionOutput.find("Corretto") != std::string::npos) info.vendor = L"Amazon Corretto";
-                else if (versionOutput.find("Zulu") != std::string::npos) info.vendor = L"Azul Zulu";
-
-                return info;
-            } else {
-                CloseHandle(hRead);
-                CloseHandle(hWrite);
+        JavaInfo info;
+        info.path = candidate;
+        info.majorVersion = major;
+        info.vendor = L"Java Runtime";
+        info.is64Bit = true;
+        info.architectureKnown = false;
+        DWORD binaryType = 0;
+        if (GetBinaryTypeW(candidate.c_str(), &binaryType)) {
+            if (binaryType == SCS_32BIT_BINARY) {
+                info.is64Bit = false;
+                info.architectureKnown = true;
+            } else if (binaryType == SCS_64BIT_BINARY) {
+                info.is64Bit = true;
+                info.architectureKnown = true;
             }
         }
+        if (!info.architectureKnown && versionOutput.find("64-Bit") != std::string::npos) {
+            info.is64Bit = true;
+            info.architectureKnown = true;
+        }
+        if (versionOutput.find("Temurin") != std::string::npos) info.vendor = L"Eclipse Temurin";
+        else if (versionOutput.find("HotSpot") != std::string::npos) info.vendor = L"OpenJDK HotSpot";
+        else if (versionOutput.find("Corretto") != std::string::npos) info.vendor = L"Amazon Corretto";
+        else if (versionOutput.find("Zulu") != std::string::npos) info.vendor = L"Azul Zulu";
+
+        diagnostic(L"[Java] Probe succeeded: Java " + std::to_wstring(info.majorVersion) +
+                   L"; vendor=" + info.vendor + L"; architecture=" +
+                   (info.architectureKnown ? (info.is64Bit ? L"x64" : L"x86") : L"unknown") +
+                   L"; path=" + info.path);
+        if (explicitCustom || minimumMajor <= 0 || info.majorVersion >= minimumMajor) return info;
+        if (info.majorVersion > bestMajor) {
+            best = info;
+            bestMajor = info.majorVersion;
+        }
     }
 
-    JavaInfo fallback;
-    fallback.path = L"java.exe";
-    fallback.majorVersion = 17;
-    fallback.vendor = L"System Java";
-    return fallback;
+    if (!best.path.empty()) {
+        diagnostic(L"[Java][WARN] No automatic Java candidate met required version " +
+                   std::to_wstring(minimumMajor) + L"; highest detected was " +
+                   std::to_wstring(best.majorVersion) + L" at " + best.path);
+        return best;
+    }
+    diagnostic(L"[Java][ERROR] No runnable Java installation was detected. Set JAVA_HOME, add java.exe to PATH, or select java.exe in Settings.");
+    return best;
+}
+
+struct DownloadAttemptDetails {
+    DWORD httpStatus = 0;
+    DWORD win32Error = ERROR_SUCCESS;
+    ULONGLONG bytesReceived = 0;
+    ULONGLONG expectedBytes = 0;
+    std::wstring stage;
+};
+
+static std::wstring FormatWin32Error(DWORD error) {
+    if (error == ERROR_SUCCESS) return L"";
+    WCHAR message[512] = {};
+    const DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL, error, 0, message, (DWORD)(sizeof(message) / sizeof(message[0])), NULL);
+    std::wstring result = length ? std::wstring(message, length) : L"unknown Windows error";
+    while (!result.empty() && (result.back() == L'\r' || result.back() == L'\n' || result.back() == L' ')) {
+        result.pop_back();
+    }
+    return result;
+}
+
+static std::wstring DecodeProcessOutput(const std::string& bytes) {
+    if (bytes.empty()) return L"";
+    int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+                                    static_cast<int>(bytes.size()), NULL, 0);
+    UINT codePage = CP_UTF8;
+    DWORD flags = MB_ERR_INVALID_CHARS;
+    if (count <= 0) {
+        codePage = CP_ACP;
+        flags = 0;
+        count = MultiByteToWideChar(codePage, flags, bytes.data(),
+                                    static_cast<int>(bytes.size()), NULL, 0);
+    }
+    if (count <= 0) return std::wstring(bytes.begin(), bytes.end());
+    std::wstring result(static_cast<size_t>(count), L'\0');
+    MultiByteToWideChar(codePage, flags, bytes.data(), static_cast<int>(bytes.size()),
+                        result.data(), count);
+    return result;
+}
+
+static void ReportCapturedProcessOutput(
+    const std::function<void(const std::wstring&)>& onDiagnostic,
+    const std::wstring& prefix,
+    const std::string& output
+) {
+    if (!onDiagnostic || output.empty()) return;
+    const std::wstring decoded = DecodeProcessOutput(output);
+    size_t start = 0;
+    while (start < decoded.size()) {
+        const size_t end = decoded.find_first_of(L"\r\n", start);
+        const size_t length = (end == std::wstring::npos ? decoded.size() : end) - start;
+        if (length > 0) onDiagnostic(prefix + decoded.substr(start, length));
+        if (end == std::wstring::npos) break;
+        start = end + 1;
+        if (decoded[end] == L'\r' && start < decoded.size() && decoded[start] == L'\n') ++start;
+    }
 }
 
 static bool DownloadHttpFileViaWinInet(
     const std::wstring& url,
     const std::wstring& destPath,
-    std::function<void(int percent)> progress
+    std::function<void(int percent)> progress,
+    DownloadAttemptDetails* details = nullptr
 ) {
+    if (details) *details = DownloadAttemptDetails{};
+    auto fail = [details](const wchar_t* stage, DWORD error) {
+        if (details) {
+            details->stage = stage;
+            details->win32Error = error;
+        }
+        return false;
+    };
+
     HINTERNET hInternet = InternetOpenW(L"Sqikpeek-Aether/1.0.38 (admin@sqikpeek.com)", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-    if (!hInternet) return false;
+    if (!hInternet) return fail(L"InternetOpenW", GetLastError());
 
     const wchar_t* customHeaders = L"User-Agent: Sqikpeek-Aether/1.0.38 (admin@sqikpeek.com)\r\nAccept: */*\r\n";
     const DWORD requestFlags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE |
         (url.rfind(L"https://", 0) == 0 ? INTERNET_FLAG_SECURE : 0);
     HINTERNET hUrl = InternetOpenUrlW(
-        hInternet,
-        url.c_str(),
-        customHeaders,
-        (DWORD)wcslen(customHeaders),
-        requestFlags,
-        0
-    );
-
+        hInternet, url.c_str(), customHeaders, (DWORD)wcslen(customHeaders), requestFlags, 0);
     if (!hUrl) {
+        const DWORD error = GetLastError();
         InternetCloseHandle(hInternet);
-        return false;
+        return fail(L"InternetOpenUrlW", error);
     }
 
     DWORD statusCode = 0;
     DWORD statusSize = sizeof(statusCode);
     DWORD statusIndex = 0;
     if (!HttpQueryInfoW(hUrl, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                        &statusCode, &statusSize, &statusIndex) ||
-        statusCode < 200 || statusCode >= 300) {
+                        &statusCode, &statusSize, &statusIndex)) {
+        const DWORD error = GetLastError();
         InternetCloseHandle(hUrl);
         InternetCloseHandle(hInternet);
-        return false;
+        return fail(L"HttpQueryInfoW(status)", error);
+    }
+    if (details) details->httpStatus = statusCode;
+    if (statusCode < 200 || statusCode >= 300) {
+        InternetCloseHandle(hUrl);
+        InternetCloseHandle(hInternet);
+        return fail(L"HTTP response", ERROR_SUCCESS);
     }
 
     DWORD contentLength = 0;
     DWORD sizeOfLen = sizeof(contentLength);
     DWORD index = 0;
-    HttpQueryInfoW(hUrl, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &contentLength, &sizeOfLen, &index);
+    const bool hasContentLength = HttpQueryInfoW(hUrl,
+        HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &contentLength, &sizeOfLen, &index) != FALSE;
+    if (details && hasContentLength) details->expectedBytes = contentLength;
 
     EnsureParentDirectory(destPath);
     const std::wstring partialPath = destPath + L".download";
     DeleteFileW(partialPath.c_str());
-    HANDLE hFile = CreateFileW(partialPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFileW(partialPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
         InternetCloseHandle(hUrl);
         InternetCloseHandle(hInternet);
-        return false;
+        return fail(L"CreateFileW(partial)", error);
     }
 
     BYTE buffer[16384];
     DWORD bytesRead = 0;
-    DWORD totalDownloaded = 0;
+    ULONGLONG totalDownloaded = 0;
     bool transferOk = true;
+    DWORD failureCode = ERROR_SUCCESS;
+    const wchar_t* failureStage = L"";
     while (true) {
         if (!InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead)) {
             transferOk = false;
+            failureCode = GetLastError();
+            failureStage = L"InternetReadFile";
             break;
         }
         if (bytesRead == 0) break;
 
         DWORD written = 0;
-        if (!WriteFile(hFile, buffer, bytesRead, &written, NULL) || written != bytesRead) {
+        if (!WriteFile(hFile, buffer, bytesRead, &written, NULL)) {
             transferOk = false;
+            failureCode = GetLastError();
+            failureStage = L"WriteFile(partial)";
+            break;
+        }
+        if (written != bytesRead) {
+            transferOk = false;
+            failureCode = ERROR_WRITE_FAULT;
+            failureStage = L"WriteFile(partial) returned a short write";
             break;
         }
         totalDownloaded += bytesRead;
+        if (details) details->bytesReceived = totalDownloaded;
 
         if (contentLength > 0 && progress) {
             const int pct = (int)((totalDownloaded * 100ULL) / contentLength);
             progress(pct > 100 ? 100 : pct);
         }
     }
-    if (contentLength > 0 && totalDownloaded != contentLength) transferOk = false;
-    if (transferOk) transferOk = FlushFileBuffers(hFile) != FALSE;
+    if (transferOk && contentLength > 0 && totalDownloaded != contentLength) {
+        transferOk = false;
+        failureCode = ERROR_HANDLE_EOF;
+        failureStage = L"Content-Length mismatch";
+    }
+    if (transferOk && !FlushFileBuffers(hFile)) {
+        transferOk = false;
+        failureCode = GetLastError();
+        failureStage = L"FlushFileBuffers";
+    }
 
     CloseHandle(hFile);
     InternetCloseHandle(hUrl);
     InternetCloseHandle(hInternet);
+    if (details) {
+        details->bytesReceived = totalDownloaded;
+        if (hasContentLength) details->expectedBytes = contentLength;
+    }
     if (!transferOk || totalDownloaded == 0) {
         DeleteFileW(partialPath.c_str());
-        return false;
+        return fail(failureStage[0] ? failureStage : L"empty response",
+                    failureStage[0] ? failureCode : ERROR_INVALID_DATA);
     }
     if (!MoveFileExW(partialPath.c_str(), destPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        const DWORD error = GetLastError();
         DeleteFileW(partialPath.c_str());
-        return false;
+        return fail(L"MoveFileExW(finalize)", error);
     }
+    if (details) details->stage = L"completed";
     return true;
 }
 
@@ -695,8 +1048,18 @@ static bool DownloadHttpFileViaWinHttp(
     const std::wstring& url,
     const std::wstring& destPath,
     std::function<void(int percent)> progress,
-    DWORD accessType = AETHER_WINHTTP_ACCESS_DEFAULT_PROXY
+    DWORD accessType = AETHER_WINHTTP_ACCESS_DEFAULT_PROXY,
+    DownloadAttemptDetails* details = nullptr
 ) {
+    if (details) *details = DownloadAttemptDetails{};
+    auto fail = [details](const wchar_t* stage, DWORD error) {
+        if (details) {
+            details->stage = stage;
+            details->win32Error = error;
+        }
+        return false;
+    };
+
     URL_COMPONENTSW parts = {};
     parts.dwStructSize = sizeof(parts);
     WCHAR host[512] = {};
@@ -708,16 +1071,20 @@ static bool DownloadHttpFileViaWinHttp(
     parts.dwUrlPathLength = (DWORD)(sizeof(path) / sizeof(path[0]));
     parts.lpszExtraInfo = extra;
     parts.dwExtraInfoLength = (DWORD)(sizeof(extra) / sizeof(extra[0]));
-    if (!InternetCrackUrlW(url.c_str(), 0, 0, &parts)) return false;
+    if (!InternetCrackUrlW(url.c_str(), 0, 0, &parts)) return fail(L"InternetCrackUrlW", GetLastError());
 
-    HINTERNET session = WinHttpOpen(L"AetherLauncher/1.0.38", accessType,
-                                    NULL, NULL, 0);
-    if (!session) return false;
-    WinHttpSetTimeouts(session, 8000, 8000, 15000, 30000);
+    HINTERNET session = WinHttpOpen(L"AetherLauncher/1.0.38", accessType, NULL, NULL, 0);
+    if (!session) return fail(L"WinHttpOpen", GetLastError());
+    if (!WinHttpSetTimeouts(session, 8000, 8000, 15000, 30000)) {
+        const DWORD error = GetLastError();
+        WinHttpCloseHandle(session);
+        return fail(L"WinHttpSetTimeouts", error);
+    }
     HINTERNET connection = WinHttpConnect(session, host, parts.nPort, 0);
     if (!connection) {
+        const DWORD error = GetLastError();
         WinHttpCloseHandle(session);
-        return false;
+        return fail(L"WinHttpConnect", error);
     }
     std::wstring resource = path;
     resource += extra;
@@ -725,67 +1092,139 @@ static bool DownloadHttpFileViaWinHttp(
     HINTERNET request = WinHttpOpenRequest(connection, L"GET", resource.c_str(), NULL,
                                             NULL, NULL, flags);
     if (!request) {
+        const DWORD error = GetLastError();
         WinHttpCloseHandle(connection);
         WinHttpCloseHandle(session);
-        return false;
+        return fail(L"WinHttpOpenRequest", error);
     }
     const wchar_t* headers = L"Accept: */*\r\n";
-    bool success = WinHttpSendRequest(request, headers, (DWORD)-1, NULL, 0, 0, 0) &&
-                   WinHttpReceiveResponse(request, NULL);
+    if (!WinHttpSendRequest(request, headers, (DWORD)-1, NULL, 0, 0, 0)) {
+        const DWORD error = GetLastError();
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return fail(L"WinHttpSendRequest", error);
+    }
+    if (!WinHttpReceiveResponse(request, NULL)) {
+        const DWORD error = GetLastError();
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return fail(L"WinHttpReceiveResponse", error);
+    }
+
     DWORD status = 0;
     DWORD statusSize = sizeof(status);
-    if (success) {
-        success = WinHttpQueryHeaders(request, AETHER_WINHTTP_QUERY_STATUS_CODE | AETHER_WINHTTP_QUERY_FLAG_NUMBER,
-                                      NULL, &status, &statusSize,
-                                      NULL) && status >= 200 && status < 300;
+    if (!WinHttpQueryHeaders(request, AETHER_WINHTTP_QUERY_STATUS_CODE | AETHER_WINHTTP_QUERY_FLAG_NUMBER,
+                             NULL, &status, &statusSize, NULL)) {
+        const DWORD error = GetLastError();
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return fail(L"WinHttpQueryHeaders(status)", error);
+    }
+    if (details) details->httpStatus = status;
+    if (status < 200 || status >= 300) {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return fail(L"HTTP response", ERROR_SUCCESS);
     }
 
     std::wstring partial = destPath + L".download";
-    HANDLE file = INVALID_HANDLE_VALUE;
-    if (success) {
-        EnsureParentDirectory(destPath);
-        DeleteFileW(partial.c_str());
-        file = CreateFileW(partial.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-        success = file != INVALID_HANDLE_VALUE;
+    EnsureParentDirectory(destPath);
+    DeleteFileW(partial.c_str());
+    HANDLE file = CreateFileW(partial.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return fail(L"CreateFileW(partial)", error);
     }
 
     DWORD contentLength = 0;
     DWORD contentLengthSize = sizeof(contentLength);
-    if (success) {
-        WinHttpQueryHeaders(request, AETHER_WINHTTP_QUERY_CONTENT_LENGTH | AETHER_WINHTTP_QUERY_FLAG_NUMBER,
-                            NULL, &contentLength, &contentLengthSize,
-                            NULL);
-    }
+    const bool hasContentLength = WinHttpQueryHeaders(request,
+        AETHER_WINHTTP_QUERY_CONTENT_LENGTH | AETHER_WINHTTP_QUERY_FLAG_NUMBER,
+        NULL, &contentLength, &contentLengthSize, NULL) != FALSE;
+    if (details && hasContentLength) details->expectedBytes = contentLength;
     ULONGLONG total = 0;
+    bool success = true;
+    DWORD failureCode = ERROR_SUCCESS;
+    const wchar_t* failureStage = L"";
     while (success) {
         DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request, &available)) { success = false; break; }
+        if (!WinHttpQueryDataAvailable(request, &available)) {
+            success = false;
+            failureCode = GetLastError();
+            failureStage = L"WinHttpQueryDataAvailable";
+            break;
+        }
         if (available == 0) break;
         std::vector<BYTE> buffer(available);
         DWORD read = 0;
-        if (!WinHttpReadData(request, buffer.data(), available, &read) || read == 0) { success = false; break; }
+        if (!WinHttpReadData(request, buffer.data(), available, &read)) {
+            success = false;
+            failureCode = GetLastError();
+            failureStage = L"WinHttpReadData";
+            break;
+        }
+        if (read == 0) {
+            success = false;
+            failureCode = ERROR_HANDLE_EOF;
+            failureStage = L"WinHttpReadData returned zero bytes";
+            break;
+        }
         DWORD written = 0;
-        if (!WriteFile(file, buffer.data(), read, &written, NULL) || written != read) { success = false; break; }
+        if (!WriteFile(file, buffer.data(), read, &written, NULL)) {
+            success = false;
+            failureCode = GetLastError();
+            failureStage = L"WriteFile(partial)";
+            break;
+        }
+        if (written != read) {
+            success = false;
+            failureCode = ERROR_WRITE_FAULT;
+            failureStage = L"WriteFile(partial) returned a short write";
+            break;
+        }
         total += read;
+        if (details) details->bytesReceived = total;
         if (contentLength > 0 && progress) {
             progress((int)std::min<ULONGLONG>(100, (total * 100ULL) / contentLength));
         }
     }
-    if (contentLength > 0 && total != contentLength) success = false;
-    if (file != INVALID_HANDLE_VALUE && success) success = FlushFileBuffers(file) != FALSE;
-    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    if (success && contentLength > 0 && total != contentLength) {
+        success = false;
+        failureCode = ERROR_HANDLE_EOF;
+        failureStage = L"Content-Length mismatch";
+    }
+    if (success && !FlushFileBuffers(file)) {
+        success = false;
+        failureCode = GetLastError();
+        failureStage = L"FlushFileBuffers";
+    }
+    CloseHandle(file);
     WinHttpCloseHandle(request);
     WinHttpCloseHandle(connection);
     WinHttpCloseHandle(session);
+    if (details) {
+        details->bytesReceived = total;
+        if (hasContentLength) details->expectedBytes = contentLength;
+    }
     if (!success || total == 0) {
         DeleteFileW(partial.c_str());
-        return false;
+        return fail(failureStage[0] ? failureStage : L"empty response",
+                    failureStage[0] ? failureCode : ERROR_INVALID_DATA);
     }
-    DeleteFileW(destPath.c_str());
     if (!MoveFileExW(partial.c_str(), destPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        const DWORD error = GetLastError();
         DeleteFileW(partial.c_str());
-        return false;
+        return fail(L"MoveFileExW(finalize)", error);
     }
+    if (details) details->stage = L"completed";
     return true;
 }
 
@@ -824,25 +1263,61 @@ static std::vector<std::wstring> GetDownloadUrlCandidates(const std::wstring& ur
     return urls;
 }
 
+static std::wstring SanitizeDownloadUrl(const std::wstring& url) {
+    const size_t query = url.find_first_of(L"?#");
+    return query == std::wstring::npos ? url : url.substr(0, query) + L"?[redacted]";
+}
+
+static std::wstring DescribeDownloadAttempt(const std::wstring& transport,
+                                            const std::wstring& url,
+                                            bool success,
+                                            const DownloadAttemptDetails& details) {
+    std::wstring message = L"[Download] " + transport + (success ? L" succeeded" : L" failed") +
+        L"; URL=" + SanitizeDownloadUrl(url);
+    if (!details.stage.empty()) message += L"; stage=" + details.stage;
+    if (details.httpStatus) message += L"; HTTP=" + std::to_wstring(details.httpStatus);
+    if (details.win32Error) {
+        message += L"; Win32=" + std::to_wstring(details.win32Error);
+        const std::wstring errorText = FormatWin32Error(details.win32Error);
+        if (!errorText.empty()) message += L" (" + errorText + L")";
+    }
+    message += L"; bytes=" + std::to_wstring(details.bytesReceived);
+    if (details.expectedBytes) message += L"/" + std::to_wstring(details.expectedBytes);
+    return message;
+}
+
 bool MinecraftLauncher::DownloadHttpFile(
     const std::wstring& url,
     const std::wstring& destPath,
-    std::function<void(int percent)> progress
+    std::function<void(int percent)> progress,
+    std::function<void(const std::wstring& diagnostic)> onDiagnostic
 ) {
     const std::vector<std::wstring> candidates = GetDownloadUrlCandidates(url);
     for (const std::wstring& candidate : candidates) {
+        DownloadAttemptDetails details;
         DeleteFileW(destPath.c_str());
-        if (DownloadHttpFileViaWinInet(candidate, destPath, progress)) return true;
+        const bool wininetOk = DownloadHttpFileViaWinInet(candidate, destPath, progress, &details);
+        if (onDiagnostic) onDiagnostic(DescribeDownloadAttempt(L"WinINet", candidate, wininetOk, details));
+        if (wininetOk) return true;
         DeleteFileW(destPath.c_str());
+
         // A second HTTP implementation avoids a broken user-level WinINet
         // proxy while preserving normal enterprise/Windows proxy behaviour.
-        if (DownloadHttpFileViaWinHttp(candidate, destPath, progress)) return true;
+        const bool winhttpOk = DownloadHttpFileViaWinHttp(candidate, destPath, progress,
+            AETHER_WINHTTP_ACCESS_DEFAULT_PROXY, &details);
+        if (onDiagnostic) onDiagnostic(DescribeDownloadAttempt(L"WinHTTP(default proxy)", candidate, winhttpOk, details));
+        if (winhttpOk) return true;
         DeleteFileW(destPath.c_str());
+
         // Last resort: bypass a stale/manual Windows proxy entirely. This is
         // especially useful when Modrinth is reachable but Maven hosts are not.
-        if (DownloadHttpFileViaWinHttp(candidate, destPath, progress, AETHER_WINHTTP_ACCESS_NO_PROXY)) return true;
+        const bool directOk = DownloadHttpFileViaWinHttp(candidate, destPath, progress,
+            AETHER_WINHTTP_ACCESS_NO_PROXY, &details);
+        if (onDiagnostic) onDiagnostic(DescribeDownloadAttempt(L"WinHTTP(no proxy)", candidate, directOk, details));
+        if (directOk) return true;
         DeleteFileW(destPath.c_str());
     }
+    if (onDiagnostic) onDiagnostic(L"[Download] All configured URLs and HTTP transports failed for " + SanitizeDownloadUrl(url));
     return false;
 }
 
@@ -947,15 +1422,32 @@ static bool FileMatchesSha1(const std::wstring& path, const std::wstring& expect
     return valid;
 }
 
-static bool IsValidLibraryArtifact(const VersionLibInfo& library, const std::wstring& path) {
-    if (!CheckFileExists(path) || !IsZipArchive(path)) return false;
-    return library.sha1.empty() || FileMatchesSha1(path, library.sha1);
+static bool IsValidLibraryArtifact(const VersionLibInfo& library, const std::wstring& path,
+                                   std::wstring* failureReason = nullptr) {
+    if (!CheckFileExists(path)) {
+        if (failureReason) *failureReason = L"missing or empty file";
+        return false;
+    }
+    if (!IsZipArchive(path)) {
+        if (failureReason) *failureReason = L"invalid ZIP/JAR signature";
+        return false;
+    }
+    if (!library.sha1.empty() && !FileMatchesSha1(path, library.sha1)) {
+        if (failureReason) *failureReason = L"SHA-1 mismatch; expected " + library.sha1;
+        return false;
+    }
+    if (failureReason) failureReason->clear();
+    return true;
 }
 
 // A few networks expose Modrinth but block Fabric's Maven CDN. These three
 // Fabric 0.16.10 files are immutable and independently SHA-1 verified against
 // Fabric's public profile before they are accepted from a GitHub/jsDelivr mirror.
-static bool DownloadVerifiedFabricMirror(const VersionLibInfo& library, const std::wstring& targetPath) {
+static bool DownloadVerifiedFabricMirror(
+    const VersionLibInfo& library,
+    const std::wstring& targetPath,
+    std::function<void(const std::wstring&)> onDiagnostic
+) {
     if (library.sha1.empty()) return false;
     std::wstring relative = library.path;
     for (wchar_t& c : relative) if (c == L'\\') c = L'/';
@@ -972,10 +1464,13 @@ static bool DownloadVerifiedFabricMirror(const VersionLibInfo& library, const st
     };
     for (const std::wstring& base : bases) {
         DeleteFileW(targetPath.c_str());
-        if (MinecraftLauncher::DownloadHttpFile(base + relative, targetPath, nullptr) &&
+        if (onDiagnostic) onDiagnostic(L"[Download] Trying preverified Fabric mirror: " + base + relative);
+        if (MinecraftLauncher::DownloadHttpFile(base + relative, targetPath, nullptr, onDiagnostic) &&
             FileMatchesSha1(targetPath, library.sha1)) {
+            if (onDiagnostic) onDiagnostic(L"[Download] Fabric mirror SHA-1 matched for " + relative);
             return true;
         }
+        if (onDiagnostic) onDiagnostic(L"[Download] Fabric mirror failed or SHA-1 did not match for " + relative);
         DeleteFileW(targetPath.c_str());
     }
     return false;
@@ -985,7 +1480,8 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     const std::wstring& storageDir,
     const std::wstring& mcVersion,
     const std::wstring& loader,
-    std::function<void(const std::wstring& status, int percent)> progress
+    std::function<void(const std::wstring& status, int percent)> progress,
+    std::function<void(const std::wstring& diagnostic)> onDiagnostic
 ) {
     std::wstring versionDir = storageDir + L"\\versions\\" + mcVersion;
     std::wstring versionJar = versionDir + L"\\" + mcVersion + L".jar";
@@ -995,9 +1491,16 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     std::wstring libDir = storageDir + L"\\libraries";
     EnsureDirTree(libDir);
 
-    // Keep the UI log actionable: preparation used to fail with one generic
-    // message regardless of whether metadata, client.jar or a library failed.
-    auto reportPreparationFailure = [&progress](const std::wstring& stage) {
+    auto logDiagnostic = [&onDiagnostic](const std::wstring& message) {
+        if (onDiagnostic) onDiagnostic(L"[Prepare] " + message);
+    };
+    logDiagnostic(L"Begin: Minecraft=" + mcVersion + L"; loader=" + loader +
+                  L"; storage=" + storageDir + L"; version metadata=" + versionJson);
+
+    // Keep the UI log actionable and emit a durable, stage-specific message
+    // before returning so a failed preparation can be diagnosed after restart.
+    auto reportPreparationFailure = [&progress, &logDiagnostic](const std::wstring& stage) {
+        logDiagnostic(L"[ERROR] Preparation stopped: " + stage);
         if (progress) progress(L"Ошибка подготовки: " + stage, 0);
         return false;
     };
@@ -1014,14 +1517,26 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     // This avoids a hard network dependency when the user already owns the game.
     const std::wstring appVersionDir = mojangGameDir.empty() ? L"" :
         mojangGameDir + L"\\versions\\" + mcVersion;
-    if (!HasUsableVersionMetadata(versionJson)) {
+    if (HasUsableVersionMetadata(versionJson)) {
+        logDiagnostic(L"Using existing version metadata: " + versionJson);
+    } else {
+        logDiagnostic(L"Local version metadata missing or invalid; checking official launcher cache.");
         DeleteFileW(versionJson.c_str());
         if (!appVersionDir.empty()) {
             const std::wstring sourceJson = appVersionDir + L"\\" + mcVersion + L".json";
             if (HasUsableVersionMetadata(sourceJson)) {
                 EnsureParentDirectory(versionJson);
-                CopyFileW(sourceJson.c_str(), versionJson.c_str(), FALSE);
+                if (CopyFileW(sourceJson.c_str(), versionJson.c_str(), FALSE)) {
+                    logDiagnostic(L"Copied valid version metadata from: " + sourceJson);
+                } else {
+                    logDiagnostic(L"Could not copy cached version metadata (Win32 " +
+                                  std::to_wstring(GetLastError()) + L"): " + sourceJson);
+                }
+            } else {
+                logDiagnostic(L"Official launcher metadata not found or unusable: " + sourceJson);
             }
+        } else {
+            logDiagnostic(L"APPDATA is unavailable; no official .minecraft cache path can be checked.");
         }
     }
 
@@ -1043,9 +1558,15 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 fclose(file);
             }
         }
+        if (manifestJson.empty()) {
+            logDiagnostic(L"Version manifest cache missing/unreadable; fetching official manifest.");
+        } else {
+            logDiagnostic(L"Read cached version manifest (" + std::to_wstring(manifestJson.size()) + L" bytes).");
+        }
         if (GetVersionMetadataUrl(manifestJson, mcVersion).empty()) {
+            logDiagnostic(L"Cached manifest did not contain Minecraft " + mcVersion + L"; fetching " + manifestUrl);
             DeleteFileW(manifestFile.c_str());
-            if (MinecraftLauncher::DownloadHttpFile(manifestUrl, manifestFile, nullptr)) {
+            if (MinecraftLauncher::DownloadHttpFile(manifestUrl, manifestFile, nullptr, onDiagnostic)) {
                 if (FILE* file = _wfopen(manifestFile.c_str(), L"rb")) {
                     fseek(file, 0, SEEK_END);
                     const long size = ftell(file);
@@ -1060,11 +1581,19 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
             }
         }
         const std::wstring metadataUrl = GetVersionMetadataUrl(manifestJson, mcVersion);
-        if (metadataUrl.empty() || !MinecraftLauncher::DownloadHttpFile(metadataUrl, versionJson, nullptr) ||
-            !HasUsableVersionMetadata(versionJson)) {
-            DeleteFileW(versionJson.c_str());
-            return reportPreparationFailure(L"не удалось получить метаданные версии Minecraft");
+        if (metadataUrl.empty()) {
+            return reportPreparationFailure(L"manifest contains no metadata URL for Minecraft " + mcVersion);
         }
+        logDiagnostic(L"Downloading version metadata from: " + SanitizeDownloadUrl(metadataUrl));
+        if (!MinecraftLauncher::DownloadHttpFile(metadataUrl, versionJson, nullptr, onDiagnostic)) {
+            DeleteFileW(versionJson.c_str());
+            return reportPreparationFailure(L"failed to download version metadata from " + SanitizeDownloadUrl(metadataUrl));
+        }
+        if (!HasUsableVersionMetadata(versionJson)) {
+            DeleteFileW(versionJson.c_str());
+            return reportPreparationFailure(L"downloaded version metadata is empty or has no client download URL: " + versionJson);
+        }
+        logDiagnostic(L"Version metadata downloaded and validated: " + versionJson);
     }
 
     std::string versionJsonContent;
@@ -1079,6 +1608,7 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         }
         fclose(file);
     }
+    logDiagnostic(L"Version metadata read: " + std::to_wstring(versionJsonContent.size()) + L" bytes.");
     const std::wstring clientJarUrl = GetClientDownloadUrl(versionJsonContent);
     if (clientJarUrl.empty()) {
         // A non-empty file is not enough: cached HTML/partial metadata must not
@@ -1087,15 +1617,28 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         return reportPreparationFailure(L"метаданные версии не содержат URL client.jar");
     }
 
+    logDiagnostic(L"Client download URL: " + SanitizeDownloadUrl(clientJarUrl));
+
     // Step 2: Reuse or fetch an actual ZIP/JAR client. A failed CDN response is
     // not retained as a fake client.jar and the official launcher mirror is tried.
-    if (!IsZipArchive(versionJar) && !appVersionDir.empty()) {
+    if (IsZipArchive(versionJar)) {
+        logDiagnostic(L"Using existing client JAR with ZIP signature: " + versionJar);
+    } else if (!appVersionDir.empty()) {
         const std::wstring sourceJar = appVersionDir + L"\\" + mcVersion + L".jar";
         if (IsZipArchive(sourceJar)) {
             DeleteFileW(versionJar.c_str());
             EnsureParentDirectory(versionJar);
-            CopyFileW(sourceJar.c_str(), versionJar.c_str(), FALSE);
+            if (CopyFileW(sourceJar.c_str(), versionJar.c_str(), FALSE)) {
+                logDiagnostic(L"Reused client JAR from official launcher cache: " + sourceJar);
+            } else {
+                logDiagnostic(L"Could not copy official launcher client JAR (Win32 " +
+                              std::to_wstring(GetLastError()) + L"): " + sourceJar);
+            }
+        } else {
+            logDiagnostic(L"Official launcher client JAR missing or invalid: " + sourceJar);
         }
+    } else {
+        logDiagnostic(L"No APPDATA .minecraft directory; official launcher client cache unavailable.");
     }
     if (!IsZipArchive(versionJar)) {
         DeleteFileW(versionJar.c_str());
@@ -1107,7 +1650,7 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 swprintf(statusBuf, 128, L"Загрузка client.jar (%d%%)...", pct);
                 progress(statusBuf, overall);
             }
-        });
+        }, onDiagnostic);
         if (!downloaded || !IsZipArchive(versionJar)) {
             return reportPreparationFailure(L"не удалось загрузить корректный официальный client.jar");
         }
@@ -1156,20 +1699,29 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     EnsureDirTree(assetIndexesDir);
     std::wstring localIndexFile = assetIndexesDir + L"\\" + assetIndexId + L".json";
 
-    if (!CheckFileExists(localIndexFile)) {
+    if (CheckFileExists(localIndexFile)) {
+        logDiagnostic(L"Using existing asset index: " + localIndexFile);
+    } else {
         bool foundInAppData = false;
         if (!mojangLibsDir.empty()) {
             WCHAR appDataAssets[MAX_PATH] = { 0 };
             if (GetEnvironmentVariableW(L"APPDATA", appDataAssets, MAX_PATH) > 0) {
                 std::wstring appDataIndex = std::wstring(appDataAssets) + L"\\.minecraft\\assets\\indexes\\" + assetIndexId + L".json";
                 if (CheckFileExists(appDataIndex)) {
-                    CopyFileW(appDataIndex.c_str(), localIndexFile.c_str(), FALSE);
-                    foundInAppData = true;
+                    foundInAppData = CopyFileW(appDataIndex.c_str(), localIndexFile.c_str(), FALSE) != FALSE;
+                    logDiagnostic(foundInAppData ? L"Copied asset index from official launcher cache: " + appDataIndex
+                                                  : L"Could not copy asset index (Win32 " + std::to_wstring(GetLastError()) + L"): " + appDataIndex);
                 }
             }
         }
         if (!foundInAppData && !assetIndexUrl.empty()) {
-            DownloadHttpFile(assetIndexUrl, localIndexFile, nullptr);
+            logDiagnostic(L"Asset index is missing; downloading from: " + SanitizeDownloadUrl(assetIndexUrl));
+            foundInAppData = DownloadHttpFile(assetIndexUrl, localIndexFile, nullptr, onDiagnostic) &&
+                             CheckFileExists(localIndexFile);
+        }
+        if (!foundInAppData) {
+            logDiagnostic(L"[WARN] Asset index unavailable at " + localIndexFile +
+                          L"; asset URL=" + SanitizeDownloadUrl(assetIndexUrl));
         }
     }
 
@@ -1200,31 +1752,57 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         };
 
         for (const auto& flib : fabricLibs) {
-            std::wstring targetPath = libDir + L"\\" + flib.path;
-            if (!IsValidLibraryArtifact(flib, targetPath)) {
-                DeleteFileW(targetPath.c_str());
-                bool found = false;
-                if (!mojangLibsDir.empty()) {
-                    std::wstring appDataLib = mojangLibsDir + L"\\" + flib.path;
-                    if (IsValidLibraryArtifact(flib, appDataLib)) {
-                        EnsureParentDirectory(targetPath);
-                        found = CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE) != FALSE &&
-                                IsValidLibraryArtifact(flib, targetPath);
+            const std::wstring targetPath = libDir + L"\\" + flib.path;
+            std::wstring invalidReason;
+            if (IsValidLibraryArtifact(flib, targetPath, &invalidReason)) {
+                logDiagnostic(L"Fabric dependency already verified: " + targetPath);
+                continue;
+            }
+            logDiagnostic(L"Fabric dependency needs repair: " + targetPath + L" (" + invalidReason + L")");
+            DeleteFileW(targetPath.c_str());
+            bool found = false;
+
+            if (!mojangLibsDir.empty()) {
+                const std::wstring appDataLib = mojangLibsDir + L"\\" + flib.path;
+                std::wstring sourceReason;
+                if (IsValidLibraryArtifact(flib, appDataLib, &sourceReason)) {
+                    EnsureParentDirectory(targetPath);
+                    if (CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE) &&
+                        IsValidLibraryArtifact(flib, targetPath, &invalidReason)) {
+                        found = true;
+                        logDiagnostic(L"Copied verified Fabric dependency from official cache: " + appDataLib);
+                    } else {
+                        logDiagnostic(L"Could not copy cached Fabric dependency (Win32 " +
+                                      std::to_wstring(GetLastError()) + L"): " + appDataLib);
                     }
+                } else if (CheckFileExists(appDataLib)) {
+                    logDiagnostic(L"Official cache Fabric dependency rejected: " + appDataLib +
+                                  L" (" + sourceReason + L")");
                 }
-                if (!found && !flib.url.empty()) {
-                    found = DownloadHttpFile(flib.url, targetPath, nullptr) &&
-                            IsValidLibraryArtifact(flib, targetPath);
+            }
+
+            if (!found && !flib.url.empty()) {
+                logDiagnostic(L"Requesting Fabric dependency from its canonical Maven URL: " + SanitizeDownloadUrl(flib.url));
+                const bool downloaded = DownloadHttpFile(flib.url, targetPath, nullptr, onDiagnostic);
+                if (downloaded && IsValidLibraryArtifact(flib, targetPath, &invalidReason)) {
+                    found = true;
+                    logDiagnostic(L"Downloaded and verified Fabric dependency: " + targetPath);
+                } else if (downloaded) {
+                    logDiagnostic(L"Fabric dependency downloaded but rejected: " + targetPath +
+                                  L" (" + invalidReason + L")");
                 }
-                if (!found) {
-                    DeleteFileW(targetPath.c_str());
-                    found = DownloadVerifiedFabricMirror(flib, targetPath) &&
-                            IsValidLibraryArtifact(flib, targetPath);
-                }
-                if (!found) {
-                    DeleteFileW(targetPath.c_str());
-                    return reportPreparationFailure(L"не удалось получить или проверить библиотеку Fabric: " + flib.path);
-                }
+            }
+            if (!found) {
+                DeleteFileW(targetPath.c_str());
+                found = DownloadVerifiedFabricMirror(flib, targetPath, onDiagnostic) &&
+                        IsValidLibraryArtifact(flib, targetPath, &invalidReason);
+                if (found) logDiagnostic(L"Recovered Fabric dependency through verified mirror: " + targetPath);
+                else logDiagnostic(L"No verified Fabric mirror artifact available for " + flib.path);
+            }
+            if (!found) {
+                DeleteFileW(targetPath.c_str());
+                return reportPreparationFailure(L"failed to download or validate Fabric library " +
+                                                flib.path + L"; last validation: " + invalidReason);
             }
         }
     }
@@ -1235,46 +1813,74 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         libsToEnsure = ParseLibrariesFromJson(versionJsonContent);
     }
     if (libsToEnsure.empty()) {
+        logDiagnostic(L"Could not parse library entries from version JSON; using built-in fallback list.");
         libsToEnsure = GetStandardFallbackLibraries();
     }
+    logDiagnostic(L"Checking " + std::to_wstring(libsToEnsure.size()) + L" Minecraft library artifacts.");
 
     if (progress) progress(L"Проверка и синхронизация библиотек...", 60);
 
     int totalLibs = (int)libsToEnsure.size();
     for (int i = 0; i < totalLibs; ++i) {
         const auto& lib = libsToEnsure[i];
-        std::wstring targetPath = libDir + L"\\" + lib.path;
+        const std::wstring targetPath = libDir + L"\\" + lib.path;
+        std::wstring invalidReason;
 
-        if (!IsValidLibraryArtifact(lib, targetPath)) {
+        if (IsValidLibraryArtifact(lib, targetPath, &invalidReason)) {
+            logDiagnostic(L"Minecraft library verified: " + targetPath);
+        } else {
+            logDiagnostic(L"Minecraft library missing/corrupt: " + targetPath + L" (" + invalidReason + L")");
             DeleteFileW(targetPath.c_str());
             bool foundLibrary = false;
+
             if (!mojangLibsDir.empty()) {
-                std::wstring appDataLibPath = mojangLibsDir + L"\\" + lib.path;
-                if (IsValidLibraryArtifact(lib, appDataLibPath)) {
+                const std::wstring appDataLibPath = mojangLibsDir + L"\\" + lib.path;
+                std::wstring sourceReason;
+                if (IsValidLibraryArtifact(lib, appDataLibPath, &sourceReason)) {
                     EnsureParentDirectory(targetPath);
-                    foundLibrary = CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE) != FALSE &&
-                                   IsValidLibraryArtifact(lib, targetPath);
+                    if (CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE) &&
+                        IsValidLibraryArtifact(lib, targetPath, &invalidReason)) {
+                        foundLibrary = true;
+                        logDiagnostic(L"Copied verified Minecraft library from official cache: " + appDataLibPath);
+                    } else {
+                        logDiagnostic(L"Could not copy cached Minecraft library (Win32 " +
+                                      std::to_wstring(GetLastError()) + L"): " + appDataLibPath);
+                    }
+                } else if (CheckFileExists(appDataLibPath)) {
+                    logDiagnostic(L"Official cache Minecraft library rejected: " + appDataLibPath +
+                                  L" (" + sourceReason + L")");
                 }
             }
 
             if (!foundLibrary && !lib.url.empty()) {
-                foundLibrary = DownloadHttpFile(lib.url, targetPath, nullptr) &&
-                               IsValidLibraryArtifact(lib, targetPath);
+                logDiagnostic(L"Requesting Minecraft library from metadata URL: " + SanitizeDownloadUrl(lib.url));
+                const bool downloaded = DownloadHttpFile(lib.url, targetPath, nullptr, onDiagnostic);
+                if (downloaded && IsValidLibraryArtifact(lib, targetPath, &invalidReason)) {
+                    foundLibrary = true;
+                    logDiagnostic(L"Downloaded and verified Minecraft library: " + targetPath);
+                } else if (downloaded) {
+                    logDiagnostic(L"Downloaded Minecraft library failed artifact validation: " + targetPath +
+                                  L" (" + invalidReason + L")");
+                }
             }
             if (!foundLibrary && !lib.sha1.empty()) {
-                // Piston Data is Mojang's immutable object CDN. The downloaded
-                // archive must still match Mojang's SHA-1 before entering classpath.
                 const size_t slash = lib.path.find_last_of(L"\\/");
                 const std::wstring name = slash == std::wstring::npos ? lib.path : lib.path.substr(slash + 1);
                 const std::wstring pistonUrl = L"https://piston-data.mojang.com/v1/objects/" + lib.sha1 + L"/" + name;
-                foundLibrary = DownloadHttpFile(pistonUrl, targetPath, nullptr) &&
-                               IsValidLibraryArtifact(lib, targetPath);
+                logDiagnostic(L"Retrying library from Mojang Piston Data: " + SanitizeDownloadUrl(pistonUrl));
+                const bool downloaded = DownloadHttpFile(pistonUrl, targetPath, nullptr, onDiagnostic);
+                if (downloaded && IsValidLibraryArtifact(lib, targetPath, &invalidReason)) {
+                    foundLibrary = true;
+                    logDiagnostic(L"Piston Data library verified: " + targetPath);
+                } else if (downloaded) {
+                    logDiagnostic(L"Piston Data copy failed artifact validation: " + targetPath +
+                                  L" (" + invalidReason + L")");
+                }
             }
-            // Do not launch with a partial classpath. This converts a later
-            // NoClassDefFoundError into a clear preparation failure.
             if (!foundLibrary) {
                 DeleteFileW(targetPath.c_str());
-                return reportPreparationFailure(L"не удалось получить или проверить библиотеку Minecraft: " + lib.path);
+                return reportPreparationFailure(L"failed to download or validate Minecraft library " +
+                                                lib.path + L"; last validation: " + invalidReason);
             }
         }
 
@@ -1303,32 +1909,89 @@ bool MinecraftLauncher::LaunchMinecraft(
     HANDLE* outProcessHandle,
     const std::wstring& instanceDirOverride
 ) {
-    if (callbacks.onProgress) callbacks.onProgress(L"Проверка среды Java...", 5);
-    if (callbacks.onLog) callbacks.onLog(L"[Aether Launcher] Инициализация запуска Minecraft " + mcVersion, false);
-
-    // 1. Detect Java
-    JavaInfo java = DetectJava(customJava);
-    if (callbacks.onLog) {
-        WCHAR jBuf[512];
-        swprintf(jBuf, 512, L"[Aether Launcher] Найдена Java %d (%ls) по пути: %ls", java.majorVersion, java.vendor.c_str(), java.path.c_str());
-        callbacks.onLog(jBuf, false);
-    }
-
-    int requiredJava = GetRequiredJavaVersion(mcVersion);
-    if (java.majorVersion > 0 && java.majorVersion < requiredJava) {
-        WCHAR warnBuf[512];
-        swprintf(warnBuf, 512, L"[Aether Launcher] ВНИМАНИЕ: Для Minecraft %ls рекомендуется Java %d+, а текущая — Java %d!",
-            mcVersion.c_str(), requiredJava, java.majorVersion);
-        if (callbacks.onLog) callbacks.onLog(warnBuf, true);
-    }
-
-    // 2. Prepare Game Files (client.jar, Mojang libraries, Fabric loader)
-    if (callbacks.onProgress) callbacks.onProgress(L"Подготовка файлов игры и библиотек...", 15);
-    bool filesOk = PrepareMinecraftFiles(storageDir, mcVersion, loader, callbacks.onProgress);
-    if (!filesOk) {
-        if (callbacks.onLog) callbacks.onLog(L"[Aether Launcher] Ошибка: Не удалось подготовить файлы для версии " + mcVersion, true);
-        if (callbacks.onProgress) callbacks.onProgress(L"Ошибка загрузки файлов", 0);
+    auto logDiagnostic = [&callbacks](const std::wstring& message) {
+        if (!callbacks.onLog) return;
+        const bool isError = message.find(L"[ERROR]") != std::wstring::npos ||
+                             message.find(L"[FATAL]") != std::wstring::npos;
+        callbacks.onLog(message, isError);
+    };
+    auto reportLaunchFailure = [&callbacks](const std::wstring& reason, const std::wstring& status) {
+        if (callbacks.onLog) callbacks.onLog(L"[Launch][ERROR] " + reason, true);
+        if (callbacks.onProgress) callbacks.onProgress(status, 0);
         return false;
+    };
+
+    logDiagnostic(L"[Launch] Begin: Minecraft=" + mcVersion + L"; loader=" + loader +
+                  L"; storage=" + storageDir + L"; memory=" + std::to_wstring(memoryMb) + L" MiB" +
+                  L"; account=" + (account.isMicrosoft ? L"Microsoft" : L"offline") +
+                  L"; Java override=" + (customJava.empty() ? L"(auto-detect)" : customJava));
+    if (callbacks.onProgress) callbacks.onProgress(L"Проверка среды Java...", 5);
+    logDiagnostic(L"[Launch] Resolving and validating Java before preparing game files.");
+
+    const int requiredJava = GetRequiredJavaVersion(mcVersion);
+    logDiagnostic(L"[Java] Minecraft " + mcVersion + L" requires Java " + std::to_wstring(requiredJava) + L"+.");
+    JavaInfo java = DetectJava(customJava, requiredJava,
+        [&callbacks](const std::wstring& message) {
+            if (!callbacks.onLog) return;
+            const bool isError = message.find(L"[ERROR]") != std::wstring::npos;
+            callbacks.onLog(message, isError);
+        });
+    if (java.path.empty() || java.majorVersion <= 0) {
+        return reportLaunchFailure(L"No runnable Java installation was detected. Set JAVA_HOME, add java.exe to PATH, or choose java.exe in Settings.",
+                                   L"Java not found");
+    }
+    logDiagnostic(L"[Java] Selected runtime: Java " + std::to_wstring(java.majorVersion) +
+                  L"; vendor=" + java.vendor + L"; architecture=" +
+                  (java.architectureKnown ? (java.is64Bit ? L"x64" : L"x86") : L"unknown") +
+                  L"; path=" + java.path);
+    if (java.majorVersion < requiredJava) {
+        return reportLaunchFailure(L"Minecraft " + mcVersion + L" requires Java " +
+            std::to_wstring(requiredJava) + L" or newer, but Java " + std::to_wstring(java.majorVersion) +
+            L" was selected at " + java.path + L".", L"Incompatible Java version");
+    }
+    if (java.architectureKnown && !java.is64Bit) {
+        return reportLaunchFailure(L"The selected Java runtime is 32-bit; this x64 launcher requires a 64-bit Java runtime: " +
+                                   java.path, L"Incompatible Java architecture");
+    }
+    if (account.isMicrosoft && (account.username.empty() || account.uuid.empty() || account.accessToken.empty())) {
+        return reportLaunchFailure(L"Microsoft session is incomplete (missing profile name, UUID, or Minecraft access token); token values are intentionally not written to logs.",
+                                   L"Microsoft sign-in required");
+    }
+    logDiagnostic(L"[Account] Session profile=" + (account.username.empty() ? L"(empty)" : account.username) +
+                  L"; mode=" + (account.isMicrosoft ? L"Microsoft" : L"offline") +
+                  L"; UUID=" + (account.uuid.empty() ? L"(offline default)" : account.uuid) +
+                  L"; access token present=" + (account.accessToken.empty() ? L"no" : L"yes; value redacted"));
+
+    MEMORYSTATUSEX memoryStatus = {};
+    memoryStatus.dwLength = sizeof(memoryStatus);
+    if (GlobalMemoryStatusEx(&memoryStatus)) {
+        const ULONGLONG availableMiB = memoryStatus.ullAvailPhys / (1024ULL * 1024ULL);
+        const ULONGLONG totalMiB = memoryStatus.ullTotalPhys / (1024ULL * 1024ULL);
+        logDiagnostic(L"[Memory] Available physical RAM=" + std::to_wstring(availableMiB) +
+                      L" MiB; total=" + std::to_wstring(totalMiB) + L" MiB; configured Xmx=" +
+                      std::to_wstring(memoryMb) + L" MiB.");
+        if (memoryMb > 0 && static_cast<ULONGLONG>(memoryMb) > availableMiB) {
+            logDiagnostic(L"[Memory][WARN] Configured heap exceeds currently available physical RAM; JVM startup may fail or paging may be severe.");
+        }
+    } else {
+        logDiagnostic(L"[Memory][WARN] GlobalMemoryStatusEx failed (Win32 " +
+                      std::to_wstring(GetLastError()) + L").");
+    }
+
+    // 1. Prepare game files once. All downloader and validation diagnostics are
+    // forwarded to the durable launcher log before a failure is returned.
+    if (callbacks.onProgress) callbacks.onProgress(L"Подготовка файлов игры и библиотек...", 15);
+    const bool filesOk = PrepareMinecraftFiles(storageDir, mcVersion, loader, callbacks.onProgress,
+        [&callbacks](const std::wstring& message) {
+            if (callbacks.onLog) {
+                const bool isError = message.find(L"[ERROR]") != std::wstring::npos;
+                callbacks.onLog(message, isError);
+            }
+        });
+    if (!filesOk) {
+        return reportLaunchFailure(L"Game-file preparation failed for Minecraft " + mcVersion +
+                                   L"; review the preceding [Prepare] and [Download] diagnostics.",
+                                   L"Game file preparation failed");
     }
 
     // 3. Assemble directories and paths (Container isolation)
@@ -1345,6 +2008,8 @@ bool MinecraftLauncher::LaunchMinecraft(
     EnsureDirTree(instanceDir + L"\\config");
     EnsureDirTree(assetsDir);
     EnsureDirTree(nativesDir);
+    logDiagnostic(L"[Paths] Client JAR=" + clientJar + L"; instance=" + instanceDir +
+                  L"; assets=" + assetsDir + L"; natives=" + nativesDir);
 
     // Native LWJGL archives are not classpath jars. Extract the Windows DLLs
     // before starting Java, otherwise -Djava.library.path points at an empty
@@ -1364,9 +2029,20 @@ bool MinecraftLauncher::LaunchMinecraft(
     }
     const std::vector<VersionLibInfo> metadataLibraries = ParseLibrariesFromJson(versionMetadata);
     const std::wstring localLibrariesDir = storageDir + L"\\libraries";
-    if (metadataLibraries.empty() || !ExtractWindowsNatives(metadataLibraries, localLibrariesDir, nativesDir)) {
-        if (callbacks.onLog) callbacks.onLog(
-            L"[Aether Launcher] Не удалось подготовить Windows native-библиотеки LWJGL.", true);
+    logDiagnostic(L"[Metadata] Version JSON bytes=" + std::to_wstring(versionMetadata.size()) +
+                  L"; parsed libraries=" + std::to_wstring(metadataLibraries.size()) + L".");
+    if (metadataLibraries.empty()) {
+        logDiagnostic(L"[Natives][ERROR] Version metadata has no parseable library entries.");
+        if (callbacks.onProgress) callbacks.onProgress(L"Ошибка подготовки LWJGL natives", 0);
+        return false;
+    }
+    const bool nativesReady = ExtractWindowsNatives(metadataLibraries, localLibrariesDir, nativesDir,
+        [&callbacks](const std::wstring& message) {
+            if (callbacks.onLog) callbacks.onLog(message,
+                message.find(L"[ERROR]") != std::wstring::npos);
+        });
+    if (!nativesReady) {
+        logDiagnostic(L"[Natives][ERROR] Native extraction failed; Java will not be started.");
         if (callbacks.onProgress) callbacks.onProgress(L"Ошибка подготовки LWJGL natives", 0);
         return false;
     }
@@ -1380,6 +2056,7 @@ bool MinecraftLauncher::LaunchMinecraft(
             effectiveAssetsDir = mojangAssets;
         }
     }
+    logDiagnostic(L"[Assets] Effective asset directory=" + effectiveAssetsDir);
 
     // 4. Build Complete Classpath Recursively (Resolving joptsimple, guava, lwjgl, etc.)
     std::vector<std::wstring> allJars;
@@ -1387,6 +2064,8 @@ bool MinecraftLauncher::LaunchMinecraft(
     // Scan storageDir/libraries recursively
     std::wstring libDir = storageDir + L"\\libraries";
     CollectJarsRecursively(libDir, allJars);
+    logDiagnostic(L"[Classpath] Found " + std::to_wstring(allJars.size()) +
+                  L" candidate JAR files under " + libDir);
 
     // Preparation copied/downloaded the exact metadata paths into our storage.
     // Do not mix a second AppData classpath with potentially older artifacts.
@@ -1414,19 +2093,19 @@ bool MinecraftLauncher::LaunchMinecraft(
         // Classifier archives contain DLLs, not Java classes. Including one
         // first can make artifact de-duplication discard lwjgl-*.jar and cause
         // NoClassDefFoundError: org/lwjgl/system/MemoryUtil.
-        if (lowerName.find(L"-natives-") != std::wstring::npos) continue;
+        if (lowerName.find(L"-natives-") != std::wstring::npos) {
+            logDiagnostic(L"[Classpath] Excluding native-only archive: " + jarPath);
+            continue;
+        }
         if ((loader == L"fabric" || loader == L"quilt") &&
             lowerName.find(L"fabric-loader-") == 0 && lowerName != L"fabric-loader-0.16.10.jar") {
-            // A previous launcher run may have left an obsolete loader in the
-            // shared library tree. Never let directory enumeration select it.
+            logDiagnostic(L"[Classpath] Excluding obsolete Fabric loader: " + jarPath);
             continue;
         }
         if ((loader == L"fabric" || loader == L"quilt") &&
             lowerName.find(L"sponge-mixin-") == 0 &&
             lowerName != L"sponge-mixin-0.15.4+mixin.0.8.7.jar") {
-            // The earlier manual dependency set used 0.15.3. Its classes must
-            // not win classpath de-duplication ahead of the actual 0.16.10
-            // Fabric profile's 0.15.4 Mixin runtime.
+            logDiagnostic(L"[Classpath] Excluding obsolete Mixin runtime: " + jarPath);
             continue;
         }
 
@@ -1438,7 +2117,12 @@ bool MinecraftLauncher::LaunchMinecraft(
             seenJarNames.insert(lowerName);
             if (!artKey.empty()) seenArtifacts.insert(artKey);
             classpath += L";\"" + jarPath + L"\"";
-            addedCount++;
+            ++addedCount;
+            logDiagnostic(L"[Classpath] Added JAR: " + jarPath +
+                          (artKey.empty() ? L"" : L"; artifact=" + artKey));
+        } else {
+            logDiagnostic(L"[Classpath] Skipped duplicate JAR: " + jarPath +
+                          (artKey.empty() ? L"" : L"; artifact=" + artKey));
         }
     }
 
@@ -1501,9 +2185,18 @@ bool MinecraftLauncher::LaunchMinecraft(
         }
         fclose(vfp);
     }
+    logDiagnostic(L"[Launch] Resolved main class=" + mainClass + L"; asset index=" + assetIndexId +
+                  L"; classpath length=" + std::to_wstring(classpath.size()) +
+                  L"; Java library path=" + nativesDir);
 
-    // 5. Build JVM and Game arguments
-    std::wstring memArg = L"-Xmx" + std::to_wstring(memoryMb > 1024 ? memoryMb : 4096) + L"M -Xms1024M";
+    // 5. Build JVM and game arguments. Honor low custom RAM values instead of
+    // silently forcing a 4 GiB heap, and never let Xms exceed Xmx.
+    const int effectiveMemoryMb = std::max(512, memoryMb);
+    const int initialMemoryMb = std::min(1024, effectiveMemoryMb);
+    const std::wstring memArg = L"-Xmx" + std::to_wstring(effectiveMemoryMb) + L"M -Xms" +
+                                std::to_wstring(initialMemoryMb) + L"M";
+    logDiagnostic(L"[Memory] Effective JVM heap: Xmx=" + std::to_wstring(effectiveMemoryMb) +
+                  L" MiB; Xms=" + std::to_wstring(initialMemoryMb) + L" MiB.");
     std::wstring aikarFlags = L"-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200 -XX:+UnlockExperimentalVMOptions -XX:+DisableExplicitGC -XX:+AlwaysPreTouch";
 
     std::wstring selectedPresetFlags = aikarFlags;
@@ -1546,123 +2239,219 @@ bool MinecraftLauncher::LaunchMinecraft(
         L"--userType " + userType + L" " +
         L"--versionType " + versionType;
 
-    if (callbacks.onLog) {
-        callbacks.onLog(L"[Aether Launcher] JVM Аргументы: " + (flagsToUse.empty() ? L"(по умолчанию)" : flagsToUse), false);
-        callbacks.onLog(L"[Aether Launcher] Главный класс клиента: " + mainClass, false);
-        callbacks.onLog(L"[Aether Launcher] Индекс аудиоресурсов: " + assetIndexId, false);
-        callbacks.onLog(L"[Aether Launcher] Папка экземпляра игры: " + instanceDir, false);
+    std::wstring commandLineForLog = cmdLine;
+    const std::wstring tokenMarker = L"--accessToken \"";
+    const size_t tokenMarkerPos = commandLineForLog.find(tokenMarker);
+    if (tokenMarkerPos != std::wstring::npos) {
+        const size_t tokenStart = tokenMarkerPos + tokenMarker.size();
+        const size_t tokenEnd = commandLineForLog.find(L'"', tokenStart);
+        if (tokenEnd != std::wstring::npos) {
+            commandLineForLog.replace(tokenStart, tokenEnd - tokenStart, L"[REDACTED]");
+        }
     }
+    logDiagnostic(L"[Process] Application=" + java.path + L"; working directory=" + instanceDir +
+                  L"; command-line characters=" + std::to_wstring(cmdLine.size()) +
+                  L"; classpath JARs=" + std::to_wstring(addedCount) +
+                  L"; main class=" + mainClass + L"; access token value is redacted.");
+    if (commandLineForLog.size() > 12000) {
+        commandLineForLog.resize(12000);
+        commandLineForLog += L" …[command line truncated; original length=" +
+                             std::to_wstring(cmdLine.size()) + L"]";
+    }
+    logDiagnostic(L"[Process] Redacted Java command line: " + commandLineForLog);
+
+    if (cmdLine.size() >= 32767) {
+        return reportLaunchFailure(L"Java command line exceeds the Windows CreateProcessW limit (32766 characters). Reduce the classpath or shorten the storage path.",
+                                   L"Java command line is too long");
+    }
+    if (!CheckFileExists(java.path)) {
+        return reportLaunchFailure(L"Selected Java executable disappeared or cannot be read: " + java.path,
+                                   L"Java executable unavailable");
+    }
+    if (!CheckFileExists(clientJar)) {
+        return reportLaunchFailure(L"Prepared Minecraft client JAR is missing or empty: " + clientJar,
+                                   L"Client JAR missing");
+    }
+    const DWORD instanceAttributes = GetFileAttributesW(instanceDir.c_str());
+    if (instanceAttributes == INVALID_FILE_ATTRIBUTES || !(instanceAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        const DWORD error = GetLastError();
+        return reportLaunchFailure(L"Instance working directory does not exist: " + instanceDir +
+            L" (Win32 " + std::to_wstring(error) + L": " + FormatWin32Error(error) + L").",
+            L"Instance directory unavailable");
+    }
+
     if (callbacks.onProgress) callbacks.onProgress(L"Запуск процесса игры...", 90);
 
-    // 6. Spawn process with stdout/stderr redirection
-    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    HANDLE hStdOutRead = NULL, hStdOutWrite = NULL;
-    if (!CreatePipe(&hStdOutRead, &hStdOutWrite, &sa, 0)) {
-        if (callbacks.onLog) callbacks.onLog(L"[Aether Launcher] Ошибка создания pipe", true);
-        return false;
+    // 6. Spawn Java with stdout/stderr redirected into one captured UTF-8/ACP
+    // stream. The access token is never written to diagnostics.
+    SECURITY_ATTRIBUTES security = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+    HANDLE hStdOutRead = NULL;
+    HANDLE hStdOutWrite = NULL;
+    if (!CreatePipe(&hStdOutRead, &hStdOutWrite, &security, 0)) {
+        const DWORD error = GetLastError();
+        return reportLaunchFailure(L"CreatePipe for Minecraft output failed (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").", L"Could not capture game output");
     }
-    SetHandleInformation(hStdOutRead, HANDLE_FLAG_INHERIT, 0);
+    if (!SetHandleInformation(hStdOutRead, HANDLE_FLAG_INHERIT, 0)) {
+        const DWORD error = GetLastError();
+        CloseHandle(hStdOutRead);
+        CloseHandle(hStdOutWrite);
+        return reportLaunchFailure(L"SetHandleInformation for Minecraft output pipe failed (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").", L"Could not capture game output");
+    }
 
-    STARTUPINFOW si = { sizeof(STARTUPINFOW) };
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdOutput = hStdOutWrite;
-    si.hStdError = hStdOutWrite;
+    HANDLE hStdIn = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hStdIn == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        CloseHandle(hStdOutRead);
+        CloseHandle(hStdOutWrite);
+        return reportLaunchFailure(L"Could not open NUL as Java stdin (Win32 " +
+            std::to_wstring(error) + L": " + FormatWin32Error(error) + L").", L"Could not prepare Java process");
+    }
 
-    PROCESS_INFORMATION pi;
-    ZeroMemory(&pi, sizeof(pi));
+    STARTUPINFOW startup = { sizeof(STARTUPINFOW) };
+    startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    startup.hStdInput = hStdIn;
+    startup.hStdOutput = hStdOutWrite;
+    startup.hStdError = hStdOutWrite;
 
-    std::vector<WCHAR> cmdLineBuf(cmdLine.begin(), cmdLine.end());
-    cmdLineBuf.push_back(0);
+    PROCESS_INFORMATION process = {};
+    std::vector<wchar_t> mutableCommandLine(cmdLine.begin(), cmdLine.end());
+    mutableCommandLine.push_back(L'\0');
+    if (outProcessHandle) *outProcessHandle = NULL;
 
-    BOOL procCreated = CreateProcessW(
-        NULL,
-        cmdLineBuf.data(),
+    logDiagnostic(L"[Process] Calling CreateProcessW with explicit executable and instance working directory.");
+    const BOOL processCreated = CreateProcessW(
+        java.path.c_str(),
+        mutableCommandLine.data(),
         NULL,
         NULL,
         TRUE,
         CREATE_NO_WINDOW,
         NULL,
         instanceDir.c_str(),
-        &si,
-        &pi
+        &startup,
+        &process
     );
-
+    const DWORD createError = processCreated ? ERROR_SUCCESS : GetLastError();
     CloseHandle(hStdOutWrite);
+    CloseHandle(hStdIn);
 
-    if (!procCreated) {
-        DWORD err = GetLastError();
-        WCHAR errBuf[256];
-        swprintf(errBuf, 256, L"[Aether Launcher] Не удалось запустить java.exe! Код ошибки Windows: %lu", err);
-        if (callbacks.onLog) callbacks.onLog(errBuf, true);
-        if (callbacks.onProgress) callbacks.onProgress(L"Ошибка запуска", 0);
+    if (!processCreated) {
         CloseHandle(hStdOutRead);
-        return false;
+        return reportLaunchFailure(L"CreateProcessW could not start Java (Win32 " +
+            std::to_wstring(createError) + L": " + FormatWin32Error(createError) +
+            L"); application=" + java.path + L"; working directory=" + instanceDir +
+            L"; command-line characters=" + std::to_wstring(cmdLine.size()) + L".",
+            L"Java process failed to start");
     }
 
-    if (outProcessHandle) {
-        *outProcessHandle = pi.hProcess;
-    }
-
+    if (outProcessHandle) *outProcessHandle = process.hProcess;
+    logDiagnostic(L"[Process] Java process created; PID=" + std::to_wstring(process.dwProcessId) +
+                  L"; TID=" + std::to_wstring(process.dwThreadId) + L".");
     if (callbacks.onProgress) callbacks.onProgress(L"Игра запущена!", 100);
-    if (callbacks.onLog) {
-        WCHAR pBuf[128];
-        swprintf(pBuf, 128, L"[Aether Launcher] Процесс Minecraft запущен (PID: %lu)", pi.dwProcessId);
-        callbacks.onLog(pBuf, false);
-    }
 
-    // Background thread to monitor stdout and game lifecycle without consuming CPU
-    std::thread([hStdOutRead, pi, callbacks]() {
-        char buffer[1024];
+    // Drain the merged output pipe without dropping the last unterminated line.
+    // The returned process handle belongs to the caller when outProcessHandle
+    // is supplied; otherwise this monitor closes it after collecting the exit.
+    const bool processHandleTransferred = outProcessHandle != nullptr;
+    std::thread([hStdOutRead, process, callbacks, processHandleTransferred]() {
+        auto emitLine = [&callbacks](const std::string& rawLine) {
+            if (rawLine.empty() || !callbacks.onLog) return;
+            const std::wstring line = DecodeProcessOutput(rawLine);
+            std::wstring uppercase = line;
+            std::transform(uppercase.begin(), uppercase.end(), uppercase.begin(), ::towupper);
+            const bool isError = uppercase.find(L"ERROR") != std::wstring::npos ||
+                                 uppercase.find(L"FATAL") != std::wstring::npos ||
+                                 uppercase.find(L"EXCEPTION") != std::wstring::npos ||
+                                 uppercase.find(L"OUTOFMEMORY") != std::wstring::npos;
+            callbacks.onLog(L"[Minecraft] " + line, isError);
+        };
+
+        std::string accumulated;
+        ULONGLONG totalOutputBytes = 0;
+        DWORD outputReadError = ERROR_SUCCESS;
+        char buffer[4096];
         DWORD bytesRead = 0;
-        std::string accumulated = "";
+        while (true) {
+            if (!ReadFile(hStdOutRead, buffer, sizeof(buffer), &bytesRead, NULL)) {
+                outputReadError = GetLastError();
+                break;
+            }
+            if (bytesRead == 0) break;
+            totalOutputBytes += bytesRead;
+            accumulated.append(buffer, bytesRead);
 
-        while (ReadFile(hStdOutRead, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-            buffer[bytesRead] = 0;
-            accumulated += buffer;
-
-            size_t newlinePos;
-            while ((newlinePos = accumulated.find('\n')) != std::string::npos) {
-                std::string line = accumulated.substr(0, newlinePos);
-                accumulated.erase(0, newlinePos + 1);
-
-                if (!line.empty() && line.back() == '\r') line.pop_back();
-                if (line.empty()) continue;
-
-                std::wstring wideLine(line.begin(), line.end());
-                bool isErr = (line.find("FATAL") != std::string::npos || line.find("ERROR") != std::string::npos || line.find("Exception") != std::string::npos);
-
-                if (callbacks.onLog) callbacks.onLog(wideLine, isErr);
+            size_t newlinePosition = std::string::npos;
+            while ((newlinePosition = accumulated.find_first_of("\r\n")) != std::string::npos) {
+                const std::string line = accumulated.substr(0, newlinePosition);
+                size_t consumed = newlinePosition + 1;
+                if (accumulated[newlinePosition] == '\r' && consumed < accumulated.size() &&
+                    accumulated[consumed] == '\n') ++consumed;
+                accumulated.erase(0, consumed);
+                emitLine(line);
+            }
+            while (accumulated.size() > 24000) {
+                emitLine(accumulated.substr(0, 12000));
+                accumulated.erase(0, 12000);
             }
         }
-
+        if (!accumulated.empty()) emitLine(accumulated);
         CloseHandle(hStdOutRead);
 
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        DWORD exitCode = 0;
-        GetExitCodeProcess(pi.hProcess, &exitCode);
-
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-
+        if (outputReadError != ERROR_SUCCESS && outputReadError != ERROR_BROKEN_PIPE && callbacks.onLog) {
+            callbacks.onLog(L"[Process][ERROR] Reading Java output failed (Win32 " +
+                std::to_wstring(outputReadError) + L": " + FormatWin32Error(outputReadError) + L").", true);
+        }
         if (callbacks.onLog) {
-            WCHAR exBuf[128];
-            swprintf(exBuf, 128, L"[Aether Launcher] Игра завершена с кодом: %lu", exitCode);
-            callbacks.onLog(exBuf, exitCode != 0);
+            callbacks.onLog(L"[Process] Java output stream closed; captured " +
+                std::to_wstring(totalOutputBytes) + L" bytes" +
+                (outputReadError == ERROR_BROKEN_PIPE ? L" (broken pipe at child exit)." : L"."), false);
         }
 
-        if (callbacks.onGameExited) {
-            callbacks.onGameExited((int)exitCode);
+        const DWORD waitResult = WaitForSingleObject(process.hProcess, INFINITE);
+        const DWORD waitError = waitResult == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+        DWORD exitCode = STILL_ACTIVE;
+        const BOOL exitCodeRead = GetExitCodeProcess(process.hProcess, &exitCode);
+        if (waitResult != WAIT_OBJECT_0 && callbacks.onLog) {
+            callbacks.onLog(L"[Process][ERROR] Waiting for Java process failed (wait=" +
+                std::to_wstring(waitResult) + L"; Win32=" + std::to_wstring(waitError) +
+                L": " + FormatWin32Error(waitError) + L").", true);
         }
+        if (!exitCodeRead && callbacks.onLog) {
+            const DWORD error = GetLastError();
+            callbacks.onLog(L"[Process][ERROR] GetExitCodeProcess failed (Win32 " +
+                std::to_wstring(error) + L": " + FormatWin32Error(error) + L").", true);
+        }
+        if (callbacks.onLog) {
+            callbacks.onLog(L"[Process] Java process completed; PID=" + std::to_wstring(process.dwProcessId) +
+                L"; exit code=" + std::to_wstring(exitCode) +
+                (exitCodeRead && exitCode == 0 ? L" (success)." : L" (failure/unknown)."),
+                !exitCodeRead || exitCode != 0);
+        }
+
+        CloseHandle(process.hThread);
+        if (callbacks.onGameExited) callbacks.onGameExited(static_cast<int>(exitCode));
+        if (!processHandleTransferred) CloseHandle(process.hProcess);
     }).detach();
 
     return true;
 }
 
-void MinecraftLauncher::TerminateRunningGame(HANDLE hProcess) {
-    if (hProcess && hProcess != INVALID_HANDLE_VALUE) {
-        TerminateProcess(hProcess, 0);
+bool MinecraftLauncher::TerminateRunningGame(HANDLE hProcess, DWORD* errorCode) {
+    if (errorCode) *errorCode = ERROR_SUCCESS;
+    if (!hProcess || hProcess == INVALID_HANDLE_VALUE) {
+        if (errorCode) *errorCode = ERROR_INVALID_HANDLE;
+        return false;
     }
+    if (!TerminateProcess(hProcess, 0)) {
+        const DWORD error = GetLastError();
+        if (errorCode) *errorCode = error;
+        return false;
+    }
+    return true;
 }
 
 std::wstring MinecraftLauncher::AnalyzeCrashLog(const std::wstring& logText) {

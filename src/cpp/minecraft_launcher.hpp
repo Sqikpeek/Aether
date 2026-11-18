@@ -12,6 +12,7 @@ struct JavaInfo {
     int majorVersion = 0;
     std::wstring vendor;
     bool is64Bit = true;
+    bool architectureKnown = false;
 };
 
 struct MinecraftAccount {
@@ -33,19 +34,25 @@ struct LaunchProgressCallback {
 class MinecraftLauncher {
 public:
     static std::wstring CleanPath(const std::wstring& path);
-    static JavaInfo DetectJava(const std::wstring& customPath = L"");
+    static JavaInfo DetectJava(
+        const std::wstring& customPath = L"",
+        int minimumMajor = 0,
+        std::function<void(const std::wstring& diagnostic)> onDiagnostic = nullptr
+    );
     static int GetRequiredJavaVersion(const std::wstring& mcVersion);
     static std::vector<std::wstring> GetAvailableMinecraftVersions(const std::wstring& storageDir);
     static bool DownloadHttpFile(
         const std::wstring& url,
         const std::wstring& destPath,
-        std::function<void(int percent)> progress = nullptr
+        std::function<void(int percent)> progress = nullptr,
+        std::function<void(const std::wstring& diagnostic)> onDiagnostic = nullptr
     );
     static bool PrepareMinecraftFiles(
         const std::wstring& storageDir,
         const std::wstring& mcVersion,
         const std::wstring& loader,
-        std::function<void(const std::wstring& status, int percent)> progress
+        std::function<void(const std::wstring& status, int percent)> progress,
+        std::function<void(const std::wstring& diagnostic)> onDiagnostic = nullptr
     );
     static bool PrepareMinecraftFiles(
         const std::wstring& storageDir,
@@ -67,6 +74,6 @@ public:
         HANDLE* outProcessHandle = nullptr,
         const std::wstring& instanceDirOverride = L""
     );
-    static void TerminateRunningGame(HANDLE hProcess);
+    static bool TerminateRunningGame(HANDLE hProcess, DWORD* errorCode = nullptr);
     static std::wstring AnalyzeCrashLog(const std::wstring& logText);
 };
