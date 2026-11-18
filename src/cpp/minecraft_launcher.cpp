@@ -4,6 +4,31 @@
 #include <stdio.h>
 #include <algorithm>
 #include <unordered_set>
+#include <set>
+
+// Zig's Windows SDK ships mutually incompatible WinINet and WinHTTP headers.
+// Declare the small WinHTTP surface used for downloader fallback directly so
+// the native launcher still links against the real system winhttp.dll.
+extern "C" {
+BOOL WINAPI WinHttpCloseHandle(HINTERNET);
+HINTERNET WINAPI WinHttpConnect(HINTERNET, LPCWSTR, INTERNET_PORT, DWORD);
+HINTERNET WINAPI WinHttpOpen(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD);
+HINTERNET WINAPI WinHttpOpenRequest(HINTERNET, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR*, DWORD);
+BOOL WINAPI WinHttpQueryDataAvailable(HINTERNET, LPDWORD);
+BOOL WINAPI WinHttpQueryHeaders(HINTERNET, DWORD, LPCWSTR, LPVOID, LPDWORD, LPDWORD);
+BOOL WINAPI WinHttpReadData(HINTERNET, LPVOID, DWORD, LPDWORD);
+BOOL WINAPI WinHttpReceiveResponse(HINTERNET, LPVOID);
+BOOL WINAPI WinHttpSendRequest(HINTERNET, LPCWSTR, DWORD, LPVOID, DWORD, DWORD, DWORD_PTR);
+BOOL WINAPI WinHttpSetTimeouts(HINTERNET, int, int, int, int);
+}
+static constexpr DWORD AETHER_WINHTTP_ACCESS_DEFAULT_PROXY = 0;
+static constexpr DWORD AETHER_WINHTTP_ACCESS_NO_PROXY = 1;
+static constexpr DWORD AETHER_WINHTTP_FLAG_SECURE = 0x00800000;
+static constexpr DWORD AETHER_WINHTTP_QUERY_CONTENT_LENGTH = 5;
+static constexpr DWORD AETHER_WINHTTP_QUERY_STATUS_CODE = 19;
+static constexpr DWORD AETHER_WINHTTP_QUERY_FLAG_NUMBER = 0x20000000;
+
+#pragma comment(lib, "winhttp.lib")
 
 std::wstring MinecraftLauncher::CleanPath(const std::wstring& path) {
     if (path.empty()) return path;
@@ -119,6 +144,9 @@ static void CollectJarsRecursively(const std::wstring& dir, std::vector<std::wst
 struct VersionLibInfo {
     std::wstring path;
     std::wstring url;
+    // Mojang metadata gives immutable library hashes. They allow a Piston Data
+    // retry when a regional CDN/proxy cannot reach libraries.minecraft.net.
+    std::wstring sha1;
     bool isNativeArchive = false;
 };
 
@@ -207,6 +235,7 @@ static void AddLibraryDownload(std::vector<VersionLibInfo>& result, std::unorder
                                const std::string& object, bool isNativeArchive) {
     const std::string path = JsonStringField(object, "path");
     const std::string url = JsonStringField(object, "url");
+    const std::string sha1 = JsonStringField(object, "sha1");
     if (path.empty() || url.empty()) return;
     std::wstring widePath(path.begin(), path.end());
     for (wchar_t& c : widePath) if (c == L'/') c = L'\\';
@@ -216,6 +245,7 @@ static void AddLibraryDownload(std::vector<VersionLibInfo>& result, std::unorder
     VersionLibInfo info;
     info.path = widePath;
     info.url.assign(url.begin(), url.end());
+    info.sha1.assign(sha1.begin(), sha1.end());
     info.isNativeArchive = isNativeArchive;
     result.push_back(std::move(info));
 }
@@ -564,7 +594,7 @@ JavaInfo MinecraftLauncher::DetectJava(const std::wstring& customPath) {
     return fallback;
 }
 
-bool MinecraftLauncher::DownloadHttpFile(
+static bool DownloadHttpFileViaWinInet(
     const std::wstring& url,
     const std::wstring& destPath,
     std::function<void(int percent)> progress
@@ -644,6 +674,157 @@ bool MinecraftLauncher::DownloadHttpFile(
         return false;
     }
     return true;
+}
+
+// WinINet follows the interactive user's IE proxy settings. That is normally
+// useful, but it can leave game libraries unreachable when an old or blocked
+// proxy is configured. Retry the exact same HTTPS transfer through WinHTTP's
+// Windows service proxy stack before rejecting a dependency.
+static bool DownloadHttpFileViaWinHttp(
+    const std::wstring& url,
+    const std::wstring& destPath,
+    std::function<void(int percent)> progress,
+    DWORD accessType = AETHER_WINHTTP_ACCESS_DEFAULT_PROXY
+) {
+    URL_COMPONENTSW parts = {};
+    parts.dwStructSize = sizeof(parts);
+    WCHAR host[512] = {};
+    WCHAR path[4096] = {};
+    WCHAR extra[4096] = {};
+    parts.lpszHostName = host;
+    parts.dwHostNameLength = (DWORD)(sizeof(host) / sizeof(host[0]));
+    parts.lpszUrlPath = path;
+    parts.dwUrlPathLength = (DWORD)(sizeof(path) / sizeof(path[0]));
+    parts.lpszExtraInfo = extra;
+    parts.dwExtraInfoLength = (DWORD)(sizeof(extra) / sizeof(extra[0]));
+    if (!InternetCrackUrlW(url.c_str(), 0, 0, &parts)) return false;
+
+    HINTERNET session = WinHttpOpen(L"AetherLauncher/1.0.38", accessType,
+                                    NULL, NULL, 0);
+    if (!session) return false;
+    WinHttpSetTimeouts(session, 8000, 8000, 15000, 30000);
+    HINTERNET connection = WinHttpConnect(session, host, parts.nPort, 0);
+    if (!connection) {
+        WinHttpCloseHandle(session);
+        return false;
+    }
+    std::wstring resource = path;
+    resource += extra;
+    const DWORD flags = parts.nScheme == INTERNET_SCHEME_HTTPS ? AETHER_WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = WinHttpOpenRequest(connection, L"GET", resource.c_str(), NULL,
+                                            NULL, NULL, flags);
+    if (!request) {
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+    const wchar_t* headers = L"Accept: */*\r\n";
+    bool success = WinHttpSendRequest(request, headers, (DWORD)-1, NULL, 0, 0, 0) &&
+                   WinHttpReceiveResponse(request, NULL);
+    DWORD status = 0;
+    DWORD statusSize = sizeof(status);
+    if (success) {
+        success = WinHttpQueryHeaders(request, AETHER_WINHTTP_QUERY_STATUS_CODE | AETHER_WINHTTP_QUERY_FLAG_NUMBER,
+                                      NULL, &status, &statusSize,
+                                      NULL) && status >= 200 && status < 300;
+    }
+
+    std::wstring partial = destPath + L".download";
+    HANDLE file = INVALID_HANDLE_VALUE;
+    if (success) {
+        EnsureParentDirectory(destPath);
+        DeleteFileW(partial.c_str());
+        file = CreateFileW(partial.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        success = file != INVALID_HANDLE_VALUE;
+    }
+
+    DWORD contentLength = 0;
+    DWORD contentLengthSize = sizeof(contentLength);
+    if (success) {
+        WinHttpQueryHeaders(request, AETHER_WINHTTP_QUERY_CONTENT_LENGTH | AETHER_WINHTTP_QUERY_FLAG_NUMBER,
+                            NULL, &contentLength, &contentLengthSize,
+                            NULL);
+    }
+    DWORD total = 0;
+    while (success) {
+        DWORD available = 0;
+        if (!WinHttpQueryDataAvailable(request, &available)) { success = false; break; }
+        if (available == 0) break;
+        std::vector<BYTE> buffer(available);
+        DWORD read = 0;
+        if (!WinHttpReadData(request, buffer.data(), available, &read) || read == 0) { success = false; break; }
+        DWORD written = 0;
+        if (!WriteFile(file, buffer.data(), read, &written, NULL) || written != read) { success = false; break; }
+        total += read;
+        if (contentLength > 0 && progress) {
+            progress((int)std::min<DWORD>(100, (DWORD)((total * 100ULL) / contentLength)));
+        }
+    }
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    if (!success || total == 0) {
+        DeleteFileW(partial.c_str());
+        return false;
+    }
+    DeleteFileW(destPath.c_str());
+    if (!MoveFileExW(partial.c_str(), destPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(partial.c_str());
+        return false;
+    }
+    return true;
+}
+
+static void AddUniqueDownloadUrl(std::vector<std::wstring>& urls, const std::wstring& candidate) {
+    if (candidate.empty()) return;
+    for (const std::wstring& existing : urls) {
+        if (_wcsicmp(existing.c_str(), candidate.c_str()) == 0) return;
+    }
+    urls.push_back(candidate);
+}
+
+static std::vector<std::wstring> GetDownloadUrlCandidates(const std::wstring& url) {
+    std::vector<std::wstring> urls;
+    AddUniqueDownloadUrl(urls, url);
+    const std::wstring librariesPrefix = L"https://libraries.minecraft.net/";
+    const std::wstring fabricPrefix = L"https://maven.fabricmc.net/";
+    std::wstring suffix;
+    if (url.rfind(librariesPrefix, 0) == 0) {
+        suffix = url.substr(librariesPrefix.size());
+    } else if (url.rfind(fabricPrefix, 0) == 0) {
+        // Fabric publishes several dependencies to Maven Central as well. The
+        // canonical Fabric repository remains first, then public Maven mirrors
+        // are attempted when it is unavailable on the player's network.
+        suffix = url.substr(fabricPrefix.size());
+    }
+    if (!suffix.empty()) {
+        AddUniqueDownloadUrl(urls, L"https://repo.maven.apache.org/maven2/" + suffix);
+        AddUniqueDownloadUrl(urls, L"https://repo1.maven.org/maven2/" + suffix);
+    }
+    return urls;
+}
+
+bool MinecraftLauncher::DownloadHttpFile(
+    const std::wstring& url,
+    const std::wstring& destPath,
+    std::function<void(int percent)> progress
+) {
+    const std::vector<std::wstring> candidates = GetDownloadUrlCandidates(url);
+    for (const std::wstring& candidate : candidates) {
+        DeleteFileW(destPath.c_str());
+        if (DownloadHttpFileViaWinInet(candidate, destPath, progress)) return true;
+        DeleteFileW(destPath.c_str());
+        // A second HTTP implementation avoids a broken user-level WinINet
+        // proxy while preserving normal enterprise/Windows proxy behaviour.
+        if (DownloadHttpFileViaWinHttp(candidate, destPath, progress)) return true;
+        DeleteFileW(destPath.c_str());
+        // Last resort: bypass a stale/manual Windows proxy entirely. This is
+        // especially useful when Modrinth is reachable but Maven hosts are not.
+        if (DownloadHttpFileViaWinHttp(candidate, destPath, progress, AETHER_WINHTTP_ACCESS_NO_PROXY)) return true;
+        DeleteFileW(destPath.c_str());
+    }
+    return false;
 }
 
 bool MinecraftLauncher::PrepareMinecraftFiles(
@@ -917,6 +1098,14 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
 
             if (!foundInAppData && !lib.url.empty()) {
                 foundInAppData = DownloadHttpFile(lib.url, targetPath, nullptr);
+            }
+            if (!foundInAppData && !lib.sha1.empty()) {
+                // Piston Data is Mojang's immutable object CDN. Metadata SHA-1
+                // verifies that this retry names exactly the same official file.
+                const size_t slash = lib.path.find_last_of(L"\\/");
+                const std::wstring name = slash == std::wstring::npos ? lib.path : lib.path.substr(slash + 1);
+                const std::wstring pistonUrl = L"https://piston-data.mojang.com/v1/objects/" + lib.sha1 + L"/" + name;
+                foundInAppData = DownloadHttpFile(pistonUrl, targetPath, nullptr);
             }
             // Do not launch with a partial classpath. This converts a later
             // NoClassDefFoundError into a clear preparation failure.

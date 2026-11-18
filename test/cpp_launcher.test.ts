@@ -151,6 +151,9 @@ test('Native launcher uses valid Mojang metadata, a verified client JAR, and dis
     'The real client URL and a launcher-CDN fallback must be used');
   assert.ok(mcLauncher.includes('appVersionDir') && mcLauncher.includes('IsZipArchive'),
     'A valid official client installation must be reusable and downloaded JARs must be verified');
+  assert.ok(mcLauncher.includes('DownloadHttpFileViaWinInet') && mcLauncher.includes('DownloadHttpFileViaWinHttp') &&
+            mcLauncher.includes('repo.maven.apache.org') && mcLauncher.includes('piston-data.mojang.com'),
+    'Game libraries must retry through independent Windows HTTP stacks and official/public mirrors');
   assert.ok(launcherMain.includes('TriggerInstalledModFileRemove') && launcherMain.includes('Удалить'),
     'The installed-mods view must remove the exact disk file from the active container');
   assert.ok(launcherMain.includes('resolutionWidthX') && launcherMain.includes('resolutionHeightX'),
