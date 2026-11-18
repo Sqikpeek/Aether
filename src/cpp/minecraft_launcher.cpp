@@ -1,6 +1,7 @@
 #include "minecraft_launcher.hpp"
 #include <shlwapi.h>
 #include <shlobj.h>
+#include <wincrypt.h>
 #include <stdio.h>
 #include <algorithm>
 #include <unordered_set>
@@ -29,6 +30,7 @@ static constexpr DWORD AETHER_WINHTTP_QUERY_STATUS_CODE = 19;
 static constexpr DWORD AETHER_WINHTTP_QUERY_FLAG_NUMBER = 0x20000000;
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "crypt32.lib")
 
 std::wstring MinecraftLauncher::CleanPath(const std::wstring& path) {
     if (path.empty()) return path;
@@ -827,6 +829,72 @@ bool MinecraftLauncher::DownloadHttpFile(
     return false;
 }
 
+static bool FileMatchesSha1(const std::wstring& path, const std::wstring& expectedHex) {
+    if (expectedHex.size() != 40 || !CheckFileExists(path)) return false;
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    HANDLE file = INVALID_HANDLE_VALUE;
+    bool valid = false;
+    BYTE buffer[32768] = {};
+    DWORD read = 0;
+    bool readSucceeded = true;
+    if (!CryptAcquireContextW(&provider, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) return false;
+    if (!CryptCreateHash(provider, CALG_SHA1, 0, 0, &hash)) goto done;
+    file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) goto done;
+    while (true) {
+        read = 0;
+        if (!ReadFile(file, buffer, sizeof(buffer), &read, NULL)) {
+            readSucceeded = false;
+            break;
+        }
+        if (read == 0) break;
+        if (!CryptHashData(hash, buffer, read, 0)) goto done;
+    }
+    if (!readSucceeded) goto done;
+    {
+        BYTE digest[20] = {};
+        DWORD digestLength = sizeof(digest);
+        if (!CryptGetHashParam(hash, HP_HASHVAL, digest, &digestLength, 0) || digestLength != sizeof(digest)) goto done;
+        wchar_t actual[41] = {};
+        for (DWORD i = 0; i < digestLength; ++i) swprintf(actual + i * 2, 3, L"%02x", digest[i]);
+        valid = _wcsicmp(actual, expectedHex.c_str()) == 0;
+    }
+ done:
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    if (hash) CryptDestroyHash(hash);
+    if (provider) CryptReleaseContext(provider, 0);
+    return valid;
+}
+
+// A few networks expose Modrinth but block Fabric's Maven CDN. These three
+// Fabric 0.16.10 files are immutable and independently SHA-1 verified against
+// Fabric's public profile before they are accepted from a GitHub/jsDelivr mirror.
+static bool DownloadVerifiedFabricMirror(const VersionLibInfo& library, const std::wstring& targetPath) {
+    if (library.sha1.empty()) return false;
+    std::wstring relative = library.path;
+    for (wchar_t& c : relative) if (c == L'\\') c = L'/';
+    const bool supported =
+        relative == L"net/fabricmc/intermediary/1.20.1/intermediary-1.20.1.jar" ||
+        relative == L"net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar" ||
+        relative == L"net/fabricmc/sponge-mixin/0.15.4+mixin.0.8.7/sponge-mixin-0.15.4+mixin.0.8.7.jar";
+    if (!supported) return false;
+
+    const std::vector<std::wstring> bases = {
+        L"https://media.githubusercontent.com/media/NoaKajou/Distrib-launcher/main/repo/lib/",
+        L"https://cdn.jsdelivr.net/gh/NoaKajou/Distrib-launcher@main/repo/lib/"
+    };
+    for (const std::wstring& base : bases) {
+        DeleteFileW(targetPath.c_str());
+        if (MinecraftLauncher::DownloadHttpFile(base + relative, targetPath, nullptr) &&
+            FileMatchesSha1(targetPath, library.sha1)) {
+            return true;
+        }
+        DeleteFileW(targetPath.c_str());
+    }
+    return false;
+}
+
 bool MinecraftLauncher::PrepareMinecraftFiles(
     const std::wstring& storageDir,
     const std::wstring& mcVersion,
@@ -1022,31 +1090,27 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     // Step 2.6: If Fabric loader is selected, ensure Fabric libraries are present!
     if (loader == L"fabric") {
         if (progress) progress(L"Подготовка библиотек Fabric...", 50);
+        // Exact Fabric 0.16.10 profile dependencies. The former hand-written
+        // set used an obsolete sponge-mixin version and extra libraries, making
+        // a successful Fabric Maven download still vulnerable to classpath drift.
         std::vector<VersionLibInfo> fabricLibs = {
-            { L"net\\fabricmc\\fabric-loader\\0.16.10\\fabric-loader-0.16.10.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar" },
             { L"net\\fabricmc\\intermediary\\" + mcVersion + L"\\intermediary-" + mcVersion + L".jar",
-              L"https://maven.fabricmc.net/net/fabricmc/intermediary/" + mcVersion + L"/intermediary-" + mcVersion + L".jar" },
-            { L"net\\fabricmc\\sponge-mixin\\0.15.3+mixin.0.8.7\\sponge-mixin-0.15.3+mixin.0.8.7.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.15.3+mixin.0.8.7/sponge-mixin-0.15.3+mixin.0.8.7.jar" },
-            { L"net\\fabricmc\\tiny-mappings-parser\\0.3.0+build.17\\tiny-mappings-parser-0.3.0+build.17.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/tiny-mappings-parser/0.3.0+build.17/tiny-mappings-parser-0.3.0+build.17.jar" },
-            { L"net\\fabricmc\\tiny-remapper\\0.10.4\\tiny-remapper-0.10.4.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/tiny-remapper/0.10.4/tiny-remapper-0.10.4.jar" },
-            { L"net\\fabricmc\\access-widener\\2.1.0\\access-widener-2.1.0.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/access-widener/2.1.0/access-widener-2.1.0.jar" },
-            { L"net\\fabricmc\\mapping-io\\0.6.1\\mapping-io-0.6.1.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/mapping-io/0.6.1/mapping-io-0.6.1.jar" },
+              L"https://maven.fabricmc.net/net/fabricmc/intermediary/" + mcVersion + L"/intermediary-" + mcVersion + L".jar",
+              mcVersion == L"1.20.1" ? L"97d0bff94981e37bd7a4362deee53c9a84e3fb21" : L"" },
             { L"org\\ow2\\asm\\asm\\9.7.1\\asm-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar" },
+              L"https://maven.fabricmc.net/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar", L"f0ed132a49244b042cd0e15702ab9f2ce3cc8436" },
             { L"org\\ow2\\asm\\asm-analysis\\9.7.1\\asm-analysis-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar" },
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar", L"f97a3b319f0ed6a8cd944dc79060d3912a28985f" },
             { L"org\\ow2\\asm\\asm-commons\\9.7.1\\asm-commons-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar" },
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar", L"406c6a2225cfe1819f102a161e54cc16a5c24f75" },
             { L"org\\ow2\\asm\\asm-tree\\9.7.1\\asm-tree-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar" },
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar", L"3a53139787663b139de76b627fca0084ab60d32c" },
             { L"org\\ow2\\asm\\asm-util\\9.7.1\\asm-util-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar" }
+              L"https://maven.fabricmc.net/org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar", L"9e23359b598ec6b74b23e53110dd5c577adf2243" },
+            { L"net\\fabricmc\\sponge-mixin\\0.15.4+mixin.0.8.7\\sponge-mixin-0.15.4+mixin.0.8.7.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.15.4+mixin.0.8.7/sponge-mixin-0.15.4+mixin.0.8.7.jar", L"6a12aacc794f1078458433116e9ed42c1cc98096" },
+            { L"net\\fabricmc\\fabric-loader\\0.16.10\\fabric-loader-0.16.10.jar",
+              L"https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar", L"dbd932c2a3641d2c41cf9abfe47e140a5753fa86" }
         };
 
         for (const auto& flib : fabricLibs) {
@@ -1062,6 +1126,9 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 }
                 if (!found && !flib.url.empty()) {
                     found = DownloadHttpFile(flib.url, targetPath, nullptr);
+                }
+                if ((!found || !CheckFileExists(targetPath)) && DownloadVerifiedFabricMirror(flib, targetPath)) {
+                    found = true;
                 }
                 if (!found || !CheckFileExists(targetPath)) {
                     return reportPreparationFailure(L"не удалось получить библиотеку Fabric: " + flib.path);
@@ -1255,6 +1322,14 @@ bool MinecraftLauncher::LaunchMinecraft(
             lowerName.find(L"fabric-loader-") == 0 && lowerName != L"fabric-loader-0.16.10.jar") {
             // A previous launcher run may have left an obsolete loader in the
             // shared library tree. Never let directory enumeration select it.
+            continue;
+        }
+        if ((loader == L"fabric" || loader == L"quilt") &&
+            lowerName.find(L"sponge-mixin-") == 0 &&
+            lowerName != L"sponge-mixin-0.15.4+mixin.0.8.7.jar") {
+            // The earlier manual dependency set used 0.15.3. Its classes must
+            // not win classpath de-duplication ahead of the actual 0.16.10
+            // Fabric profile's 0.15.4 Mixin runtime.
             continue;
         }
 

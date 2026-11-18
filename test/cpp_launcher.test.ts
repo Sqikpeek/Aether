@@ -133,6 +133,12 @@ test('Native launcher keeps catalog state on the UI thread and prepares a comple
 
   assert.ok(mcLauncher.includes('fabric-loader-0.16.10.jar'),
     'Fabric runtime must meet the Fabric API minimum loader requirement');
+  assert.ok(mcLauncher.includes('sponge-mixin-0.15.4+mixin.0.8.7.jar') &&
+            !mcLauncher.includes('sponge-mixin-0.15.3+mixin.0.8.7.jar'),
+    'Fabric 0.16.10 must use its exact current profile dependency, not an obsolete Mixin JAR');
+  assert.ok(mcLauncher.includes('DownloadVerifiedFabricMirror') && mcLauncher.includes('FileMatchesSha1') &&
+            mcLauncher.includes('97d0bff94981e37bd7a4362deee53c9a84e3fb21'),
+    'Blocked Fabric Maven downloads must use a SHA-1-verified mirror for 1.20.1 intermediary');
   assert.ok(!mcLauncher.includes('fabric-loader-0.16.9.jar'),
     'Obsolete Fabric Loader 0.16.9 must not be selected for launch');
   assert.ok(mcLauncher.includes('ExtractWindowsNatives') && mcLauncher.includes('ExtractNativeArchive'),
