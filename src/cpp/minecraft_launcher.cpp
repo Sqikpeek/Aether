@@ -605,12 +605,14 @@ static bool DownloadHttpFileViaWinInet(
     if (!hInternet) return false;
 
     const wchar_t* customHeaders = L"User-Agent: Sqikpeek-Aether/1.0.38 (admin@sqikpeek.com)\r\nAccept: */*\r\n";
+    const DWORD requestFlags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE |
+        (url.rfind(L"https://", 0) == 0 ? INTERNET_FLAG_SECURE : 0);
     HINTERNET hUrl = InternetOpenUrlW(
         hInternet,
         url.c_str(),
         customHeaders,
         (DWORD)wcslen(customHeaders),
-        INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_SECURE,
+        requestFlags,
         0
     );
 
@@ -635,15 +637,10 @@ static bool DownloadHttpFileViaWinInet(
     DWORD index = 0;
     HttpQueryInfoW(hUrl, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &contentLength, &sizeOfLen, &index);
 
-    WCHAR dirBuf[MAX_PATH];
-    wcsncpy(dirBuf, destPath.c_str(), MAX_PATH);
-    WCHAR* lastSlash = wcsrchr(dirBuf, L'\\');
-    if (lastSlash) {
-        *lastSlash = L'\0';
-        EnsureDirTree(dirBuf);
-    }
-
-    HANDLE hFile = CreateFileW(destPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    EnsureParentDirectory(destPath);
+    const std::wstring partialPath = destPath + L".download";
+    DeleteFileW(partialPath.c_str());
+    HANDLE hFile = CreateFileW(partialPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         InternetCloseHandle(hUrl);
         InternetCloseHandle(hInternet);
@@ -654,7 +651,13 @@ static bool DownloadHttpFileViaWinInet(
     DWORD bytesRead = 0;
     DWORD totalDownloaded = 0;
     bool transferOk = true;
-    while (InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
+    while (true) {
+        if (!InternetReadFile(hUrl, buffer, sizeof(buffer), &bytesRead)) {
+            transferOk = false;
+            break;
+        }
+        if (bytesRead == 0) break;
+
         DWORD written = 0;
         if (!WriteFile(hFile, buffer, bytesRead, &written, NULL) || written != bytesRead) {
             transferOk = false;
@@ -663,16 +666,22 @@ static bool DownloadHttpFileViaWinInet(
         totalDownloaded += bytesRead;
 
         if (contentLength > 0 && progress) {
-            int pct = (int)((totalDownloaded * 100ULL) / contentLength);
+            const int pct = (int)((totalDownloaded * 100ULL) / contentLength);
             progress(pct > 100 ? 100 : pct);
         }
     }
+    if (contentLength > 0 && totalDownloaded != contentLength) transferOk = false;
+    if (transferOk) transferOk = FlushFileBuffers(hFile) != FALSE;
 
     CloseHandle(hFile);
     InternetCloseHandle(hUrl);
     InternetCloseHandle(hInternet);
     if (!transferOk || totalDownloaded == 0) {
-        DeleteFileW(destPath.c_str());
+        DeleteFileW(partialPath.c_str());
+        return false;
+    }
+    if (!MoveFileExW(partialPath.c_str(), destPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        DeleteFileW(partialPath.c_str());
         return false;
     }
     return true;
@@ -747,7 +756,7 @@ static bool DownloadHttpFileViaWinHttp(
                             NULL, &contentLength, &contentLengthSize,
                             NULL);
     }
-    DWORD total = 0;
+    ULONGLONG total = 0;
     while (success) {
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request, &available)) { success = false; break; }
@@ -759,9 +768,11 @@ static bool DownloadHttpFileViaWinHttp(
         if (!WriteFile(file, buffer.data(), read, &written, NULL) || written != read) { success = false; break; }
         total += read;
         if (contentLength > 0 && progress) {
-            progress((int)std::min<DWORD>(100, (DWORD)((total * 100ULL) / contentLength)));
+            progress((int)std::min<ULONGLONG>(100, (total * 100ULL) / contentLength));
         }
     }
+    if (contentLength > 0 && total != contentLength) success = false;
+    if (file != INVALID_HANDLE_VALUE && success) success = FlushFileBuffers(file) != FALSE;
     if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
     WinHttpCloseHandle(request);
     WinHttpCloseHandle(connection);
@@ -801,8 +812,14 @@ static std::vector<std::wstring> GetDownloadUrlCandidates(const std::wstring& ur
         suffix = url.substr(fabricPrefix.size());
     }
     if (!suffix.empty()) {
+        // A single Maven Central endpoint is frequently blocked or rate-limited
+        // by regional networks. All mirrors below serve the same path; JARs
+        // are SHA-1 checked against Mojang/Fabric metadata before use.
         AddUniqueDownloadUrl(urls, L"https://repo.maven.apache.org/maven2/" + suffix);
         AddUniqueDownloadUrl(urls, L"https://repo1.maven.org/maven2/" + suffix);
+        AddUniqueDownloadUrl(urls, L"https://maven-central.storage-download.googleapis.com/maven2/" + suffix);
+        AddUniqueDownloadUrl(urls, L"https://maven.aliyun.com/repository/central/" + suffix);
+        AddUniqueDownloadUrl(urls, L"https://repo.huaweicloud.com/repository/maven/" + suffix);
     }
     return urls;
 }
@@ -827,6 +844,69 @@ bool MinecraftLauncher::DownloadHttpFile(
         DeleteFileW(destPath.c_str());
     }
     return false;
+}
+
+static std::vector<std::wstring> ParseReleaseVersionIds(const std::string& manifestJson) {
+    std::vector<std::wstring> versions;
+    std::unordered_set<std::wstring> seen;
+    const std::string versionEntries = JsonArrayField(manifestJson, "versions");
+    size_t cursor = 0;
+    while (!versionEntries.empty() && cursor < versionEntries.size()) {
+        std::string entry;
+        size_t after = 0;
+        if (!ExtractJsonObjectAt(versionEntries, cursor, entry, &after)) break;
+        cursor = after;
+        if (JsonStringField(entry, "type") != "release") continue;
+        const std::string id = JsonStringField(entry, "id");
+        if (id.empty()) continue;
+        const std::wstring wideId(id.begin(), id.end());
+        if (seen.insert(wideId).second) versions.push_back(wideId);
+    }
+    return versions;
+}
+
+std::vector<std::wstring> MinecraftLauncher::GetAvailableMinecraftVersions(const std::wstring& storageDir) {
+    // Keep this cache separate from PrepareMinecraftFiles' launch manifest so
+    // background refreshes can never race a game download or launch.
+    const std::wstring manifestPath = storageDir + L"\\available_versions_manifest.json";
+    const std::wstring refreshPath = manifestPath + L".refresh";
+    auto readUtf8File = [](const std::wstring& filePath) -> std::string {
+        FILE* file = _wfopen(filePath.c_str(), L"rb");
+        if (!file) return "";
+        fseek(file, 0, SEEK_END);
+        const long size = ftell(file);
+        fseek(file, 0, SEEK_SET);
+        std::string contents;
+        if (size > 0 && size < 20000000) {
+            std::vector<char> data((size_t)size + 1, 0);
+            const size_t read = fread(data.data(), 1, (size_t)size, file);
+            contents.assign(data.data(), read);
+        }
+        fclose(file);
+        return contents;
+    };
+
+    std::string manifestJson;
+    const std::vector<std::wstring> manifestUrls = {
+        L"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json",
+        L"https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
+    };
+    for (const std::wstring& url : manifestUrls) {
+        DeleteFileW(refreshPath.c_str());
+        if (!DownloadHttpFile(url, refreshPath, nullptr)) continue;
+        std::string downloaded = readUtf8File(refreshPath);
+        if (ParseReleaseVersionIds(downloaded).empty()) {
+            DeleteFileW(refreshPath.c_str());
+            continue;
+        }
+        MoveFileExW(refreshPath.c_str(), manifestPath.c_str(), MOVEFILE_REPLACE_EXISTING);
+        manifestJson = std::move(downloaded);
+        break;
+    }
+    DeleteFileW(refreshPath.c_str());
+
+    if (manifestJson.empty()) manifestJson = readUtf8File(manifestPath);
+    return ParseReleaseVersionIds(manifestJson);
 }
 
 static bool FileMatchesSha1(const std::wstring& path, const std::wstring& expectedHex) {
@@ -867,6 +947,11 @@ static bool FileMatchesSha1(const std::wstring& path, const std::wstring& expect
     return valid;
 }
 
+static bool IsValidLibraryArtifact(const VersionLibInfo& library, const std::wstring& path) {
+    if (!CheckFileExists(path) || !IsZipArchive(path)) return false;
+    return library.sha1.empty() || FileMatchesSha1(path, library.sha1);
+}
+
 // A few networks expose Modrinth but block Fabric's Maven CDN. These three
 // Fabric 0.16.10 files are immutable and independently SHA-1 verified against
 // Fabric's public profile before they are accepted from a GitHub/jsDelivr mirror.
@@ -882,7 +967,8 @@ static bool DownloadVerifiedFabricMirror(const VersionLibInfo& library, const st
 
     const std::vector<std::wstring> bases = {
         L"https://media.githubusercontent.com/media/NoaKajou/Distrib-launcher/main/repo/lib/",
-        L"https://cdn.jsdelivr.net/gh/NoaKajou/Distrib-launcher@main/repo/lib/"
+        L"https://cdn.jsdelivr.net/gh/NoaKajou/Distrib-launcher@main/repo/lib/",
+        L"https://raw.githubusercontent.com/NoaKajou/Distrib-launcher/main/repo/lib/"
     };
     for (const std::wstring& base : bases) {
         DeleteFileW(targetPath.c_str());
@@ -1115,23 +1201,29 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
 
         for (const auto& flib : fabricLibs) {
             std::wstring targetPath = libDir + L"\\" + flib.path;
-            if (!CheckFileExists(targetPath)) {
+            if (!IsValidLibraryArtifact(flib, targetPath)) {
+                DeleteFileW(targetPath.c_str());
                 bool found = false;
                 if (!mojangLibsDir.empty()) {
                     std::wstring appDataLib = mojangLibsDir + L"\\" + flib.path;
-                    if (CheckFileExists(appDataLib)) {
+                    if (IsValidLibraryArtifact(flib, appDataLib)) {
                         EnsureParentDirectory(targetPath);
-                        found = CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE) != FALSE;
+                        found = CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE) != FALSE &&
+                                IsValidLibraryArtifact(flib, targetPath);
                     }
                 }
                 if (!found && !flib.url.empty()) {
-                    found = DownloadHttpFile(flib.url, targetPath, nullptr);
+                    found = DownloadHttpFile(flib.url, targetPath, nullptr) &&
+                            IsValidLibraryArtifact(flib, targetPath);
                 }
-                if ((!found || !CheckFileExists(targetPath)) && DownloadVerifiedFabricMirror(flib, targetPath)) {
-                    found = true;
+                if (!found) {
+                    DeleteFileW(targetPath.c_str());
+                    found = DownloadVerifiedFabricMirror(flib, targetPath) &&
+                            IsValidLibraryArtifact(flib, targetPath);
                 }
-                if (!found || !CheckFileExists(targetPath)) {
-                    return reportPreparationFailure(L"не удалось получить библиотеку Fabric: " + flib.path);
+                if (!found) {
+                    DeleteFileW(targetPath.c_str());
+                    return reportPreparationFailure(L"не удалось получить или проверить библиотеку Fabric: " + flib.path);
                 }
             }
         }
@@ -1153,31 +1245,36 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         const auto& lib = libsToEnsure[i];
         std::wstring targetPath = libDir + L"\\" + lib.path;
 
-        if (!CheckFileExists(targetPath)) {
-            bool foundInAppData = false;
+        if (!IsValidLibraryArtifact(lib, targetPath)) {
+            DeleteFileW(targetPath.c_str());
+            bool foundLibrary = false;
             if (!mojangLibsDir.empty()) {
                 std::wstring appDataLibPath = mojangLibsDir + L"\\" + lib.path;
-                if (CheckFileExists(appDataLibPath)) {
+                if (IsValidLibraryArtifact(lib, appDataLibPath)) {
                     EnsureParentDirectory(targetPath);
-                    foundInAppData = CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE) != FALSE;
+                    foundLibrary = CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE) != FALSE &&
+                                   IsValidLibraryArtifact(lib, targetPath);
                 }
             }
 
-            if (!foundInAppData && !lib.url.empty()) {
-                foundInAppData = DownloadHttpFile(lib.url, targetPath, nullptr);
+            if (!foundLibrary && !lib.url.empty()) {
+                foundLibrary = DownloadHttpFile(lib.url, targetPath, nullptr) &&
+                               IsValidLibraryArtifact(lib, targetPath);
             }
-            if (!foundInAppData && !lib.sha1.empty()) {
-                // Piston Data is Mojang's immutable object CDN. Metadata SHA-1
-                // verifies that this retry names exactly the same official file.
+            if (!foundLibrary && !lib.sha1.empty()) {
+                // Piston Data is Mojang's immutable object CDN. The downloaded
+                // archive must still match Mojang's SHA-1 before entering classpath.
                 const size_t slash = lib.path.find_last_of(L"\\/");
                 const std::wstring name = slash == std::wstring::npos ? lib.path : lib.path.substr(slash + 1);
                 const std::wstring pistonUrl = L"https://piston-data.mojang.com/v1/objects/" + lib.sha1 + L"/" + name;
-                foundInAppData = DownloadHttpFile(pistonUrl, targetPath, nullptr);
+                foundLibrary = DownloadHttpFile(pistonUrl, targetPath, nullptr) &&
+                               IsValidLibraryArtifact(lib, targetPath);
             }
             // Do not launch with a partial classpath. This converts a later
             // NoClassDefFoundError into a clear preparation failure.
-            if (!foundInAppData || !CheckFileExists(targetPath)) {
-                return reportPreparationFailure(L"не удалось получить библиотеку Minecraft: " + lib.path);
+            if (!foundLibrary) {
+                DeleteFileW(targetPath.c_str());
+                return reportPreparationFailure(L"не удалось получить или проверить библиотеку Minecraft: " + lib.path);
             }
         }
 

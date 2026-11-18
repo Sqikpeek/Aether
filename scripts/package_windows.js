@@ -13,7 +13,7 @@ if (!fs.existsSync(releaseDir)) {
 // Step 1: Compile Native C++ Windows Executables
 console.log('[Package] Compiling native C++ Windows PE binaries...');
 try {
-  execSync('zig c++ -target x86_64-windows -Wl,--subsystem,windows -Os src/cpp/launcher_main.cpp src/cpp/minecraft_launcher.cpp -lgdiplus -lgdi32 -lcomctl32 -lcomdlg32 -lwininet -lws2_32 -lshlwapi -lshell32 -ldwmapi -o Aether.exe', { stdio: 'inherit' });
+  execSync('zig c++ -target x86_64-windows -Wl,--subsystem,windows -Os src/cpp/launcher_main.cpp src/cpp/minecraft_launcher.cpp -lgdiplus -lgdi32 -lcomctl32 -lcomdlg32 -lwininet -lws2_32 -lshlwapi -lshell32 -ldwmapi -lcrypt32 -lwinhttp -o Aether.exe', { stdio: 'inherit' });
   execSync('zig c++ -target x86_64-windows -Wl,--subsystem,windows -Os src/cpp/installer_main.cpp -lshell32 -o "Aether Installer.exe"', { stdio: 'inherit' });
   fs.copyFileSync('Aether Installer.exe', 'release/Aether Installer.exe');
   console.log('[Package] Successfully compiled native C++ Aether.exe and Aether Installer.exe');
