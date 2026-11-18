@@ -15,11 +15,14 @@
 
 - 🚀 **Blazing-Fast Engine & 0% Background CPU**: rewritten from scratch using an event-driven asynchronous architecture. Starts in under 50 ms, eliminates heavy `tasklist` polling loops, and enters power-saving mode when idle.
 - 📦 **Isolated Containers**: create independent profiles for different Minecraft versions, mod loaders, and custom modpacks.
+- 📜 **Mojang Release Catalog**: refreshes the official release list, while keeping a local fallback for offline use; version and loader are separate choices.
+- 🔐 **Microsoft Account Linking**: browser-based sign-in verifies Xbox Live and Minecraft ownership before enabling the licensed account mode.
 - ⚡ **All Major Mod Loaders Supported**: Vanilla, Fabric, Quilt, Forge, and NeoForge.
 - 🧩 **Modrinth v2 Integration**: search, browse, and install mods, datapacks, resource packs, and plugins in 1 click, automatically filtered by your container's version and loader.
 - 🔄 **Instant Mod Toggle**: toggle installed mods ON and OFF (`.jar` <-> `.jar.disabled`) without deleting or re-downloading files.
 - 💾 **Shared Saves**: share worlds between containers without data duplication (uses Directory Junctions on Windows and symbolic links on POSIX).
 - ☕ **Smart Java Auto-Detection**: automatically detects installed Java runtimes (Adoptium, Oracle, Corretto, Zulu, Microsoft OpenJDK), checks bitness, and validates compatibility with Minecraft versions (Java 8 for 1.16.5, Java 17 for 1.18–1.20.4, Java 21+ for 1.20.5+).
+- 🎮 **Resilient Game Downloads**: Mojang libraries are retried through alternate endpoints and validated as ZIP/JAR files against published SHA-1 checksums before launch.
 - 🛠️ **Smart Crash Diagnostics**: automated log and crash report analyzer identifying Java version mismatches, Out of Memory errors, missing mod dependencies, and conflicts with clear step-by-step solutions.
 - 📡 **Server Monitor & Ping**: check online status, latency (ms), player count, version, and formatted MOTD before launching the game.
 - 📸 **World & Config Snapshots**: 1-click backups of saves and configuration files before updating or testing new mods.

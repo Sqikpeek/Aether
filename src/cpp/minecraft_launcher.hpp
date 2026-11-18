@@ -35,6 +35,7 @@ public:
     static std::wstring CleanPath(const std::wstring& path);
     static JavaInfo DetectJava(const std::wstring& customPath = L"");
     static int GetRequiredJavaVersion(const std::wstring& mcVersion);
+    static std::vector<std::wstring> GetAvailableMinecraftVersions(const std::wstring& storageDir);
     static bool DownloadHttpFile(
         const std::wstring& url,
         const std::wstring& destPath,

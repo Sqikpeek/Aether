@@ -120,6 +120,26 @@ test('Native C++ source files are present and contain core Minecraft launch logi
   assert.ok(launcherMain.includes('WM_SYSCOMMAND') && launcherMain.includes('SC_CLOSE'), 'Closing a rename prompt must re-enable the launcher instead of hanging it');
 });
 
+test('Native create, rename, and Microsoft sign-in dialogs are actionable modal forms', () => {
+  const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
+
+  assert.ok(launcherMain.includes('PromptNewContainer') && launcherMain.includes('context.versions = g_versions'),
+    'The create-container dialog must offer every version supported by the launcher');
+  assert.ok(launcherMain.includes('context.loaders = g_loaders') &&
+            launcherMain.includes('IDC_MODAL_CONTAINER_VERSION') &&
+            launcherMain.includes('IDC_MODAL_CONTAINER_LOADER'),
+    'Minecraft version and loader must be separate controls, including Vanilla');
+  assert.ok(launcherMain.includes('ModalWindowProc') && launcherMain.includes('case WM_COMMAND') &&
+            launcherMain.includes('if (controlId == IDOK)') && launcherMain.includes('if (controlId == IDCANCEL)'),
+    'OK and Cancel must be handled by the modal window procedure rather than left to DefWindowProc');
+  assert.ok(launcherMain.includes('WM_SYSCOMMAND') && launcherMain.includes('SC_CLOSE') &&
+            launcherMain.includes('RunModalMessageLoop') && launcherMain.includes('EnableWindow(parent, TRUE)'),
+    'The close button, Escape, and Cancel must all release the modal parent window');
+  assert.ok(launcherMain.includes('g_microsoftLoginAttempted.store(true)') &&
+            launcherMain.includes('ownership have both been verified successfully'),
+    'Selecting Microsoft sign-in must not discard offline mode before account verification succeeds');
+});
+
 test('Native launcher keeps catalog state on the UI thread and prepares a complete Fabric/LWJGL runtime', () => {
   const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
   const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
@@ -160,6 +180,10 @@ test('Native launcher uses valid Mojang metadata, a verified client JAR, and dis
   assert.ok(mcLauncher.includes('DownloadHttpFileViaWinInet') && mcLauncher.includes('DownloadHttpFileViaWinHttp') &&
             mcLauncher.includes('repo.maven.apache.org') && mcLauncher.includes('piston-data.mojang.com'),
     'Game libraries must retry through independent Windows HTTP stacks and official/public mirrors');
+  assert.ok(mcLauncher.includes('GetAvailableMinecraftVersions') &&
+            mcLauncher.includes('available_versions_manifest.json') &&
+            mcLauncher.includes('ParseReleaseVersionIds'),
+    'The creation form must be able to use the independently cached Mojang release list');
   assert.ok(launcherMain.includes('TriggerInstalledModFileRemove') && launcherMain.includes('Удалить'),
     'The installed-mods view must remove the exact disk file from the active container');
   assert.ok(launcherMain.includes('resolutionWidthX') && launcherMain.includes('resolutionHeightX'),
@@ -176,8 +200,9 @@ test('Native launcher supports validated offline sessions and licensed Microsoft
   assert.ok(launcherMain.includes('nickname.size() >= 3') && launcherMain.includes("ch == L'_'"),
     'Offline launch must validate a Minecraft-safe local nickname');
   assert.ok(launcherMain.includes('oauth20_authorize.srf') && launcherMain.includes('oauth20_token.srf') &&
-            launcherMain.includes('ExtractMicrosoftAuthorizationCode'),
-    'Microsoft sign-in must use the supported Live desktop authorization-code flow');
+            launcherMain.includes('ExtractMicrosoftAuthorizationCode') &&
+            launcherMain.includes('XboxLive.signin offline_access'),
+    'Microsoft sign-in must use the supported Live authorization-code flow and request Xbox/offline scopes');
   assert.ok(!launcherMain.includes('/devicecode'),
     'The unsupported Azure device-code endpoint must not block Minecraft Java sign-in');
   assert.ok(launcherMain.includes('Selecting the licensed mode') && launcherMain.includes('PromptTextInput'),
@@ -198,6 +223,12 @@ test('Native launcher supports validated offline sessions and licensed Microsoft
   assert.ok(mcLauncher.includes('finalUuid') && mcLauncher.includes('finalAccessToken') &&
             launcherMain.includes('accessTokenExpiresAt'),
     'Java launch arguments must receive real UUID/access token fields and refresh expired service sessions');
+  const launchAccountBlock = launcherMain.slice(
+    launcherMain.indexOf('static bool GetLaunchAccount'),
+    launcherMain.indexOf('static bool IsMicrosoftAccountMode'));
+  assert.ok(launchAccountBlock.includes('g_microsoftLoginAttempted.store(true)') &&
+            launchAccountBlock.includes('SetAccountStatus(error)'),
+    'A failed token refresh must remain visible in Settings and prompt the user to sign in again');
   assert.ok(!mcLauncher.includes('--userType mojang'),
     'The launcher must not hard-code the old offline mojang user type for every session');
 });

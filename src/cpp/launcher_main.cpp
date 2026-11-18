@@ -202,6 +202,7 @@ static int g_activeContainerIndex = 0;
 // ----------------------------------------------------------------------------
 static HINSTANCE g_hInstance = NULL;
 static HWND g_hMainWindow = NULL;
+static HWND g_hActiveModalDialog = NULL;
 static HWND g_hEditNick = NULL;
 static HWND g_hEditModSearch = NULL;
 static HWND g_hEditRam = NULL;
@@ -253,6 +254,7 @@ static std::mutex g_accountMutex;
 static MinecraftAccount g_microsoftAccount;
 static std::wstring g_accountStatus = L"Офлайн-режим";
 static std::atomic<bool> g_microsoftLoginInProgress(false);
+static std::atomic<bool> g_microsoftLoginAttempted(false);
 
 // Logs
 static std::vector<std::wstring> g_logs;
@@ -264,6 +266,7 @@ static int g_logScrollOffset = -1; // -1 = auto-scroll to bottom
 
 // Forward declarations
 bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring& prompt, const std::wstring& initialVal, std::wstring& outVal);
+static bool PromptNewContainer(HWND hParent, std::wstring& name, std::wstring& version, std::wstring& loader);
 static std::vector<std::wstring> GetInstalledModFiles(const std::wstring& storageDir, const std::wstring& containerId);
 static void SyncInstalledModsWithDisk(const std::wstring& storageDir, const std::wstring& containerId);
 void SaveLogsToFile(HWND hwnd);
@@ -2191,7 +2194,11 @@ static bool GetLaunchAccount(MinecraftAccount& account, std::wstring& error) {
         }
     }
     MinecraftAccount refreshed;
-    if (!RefreshMicrosoftMinecraftAccount(refreshed, error)) return false;
+    if (!RefreshMicrosoftMinecraftAccount(refreshed, error)) {
+        g_microsoftLoginAttempted.store(true);
+        SetAccountStatus(error);
+        return false;
+    }
     {
         std::lock_guard<std::mutex> lock(g_accountMutex);
         g_microsoftAccount = refreshed;
@@ -2227,6 +2234,7 @@ static void LogoutMicrosoftAccount() {
                               L"Offline mode: your local nickname is used.");
     }
     g_config.accountMode = L"offline";
+    g_microsoftLoginAttempted.store(false);
     g_config.microsoftRefreshTokenProtected.clear();
     g_config.microsoftPlayerName.clear();
     g_config.microsoftPlayerUuid.clear();
@@ -2238,6 +2246,7 @@ static void LogoutMicrosoftAccount() {
 
 void BeginMicrosoftDeviceLogin(HWND hwnd) {
     if (g_microsoftLoginInProgress.exchange(true)) return;
+    g_microsoftLoginAttempted.store(true);
 
     // Minecraft Java's public Microsoft client is compatible with the Live
     // desktop redirect, not reliably with the Azure v2 device-code endpoint.
@@ -2294,7 +2303,8 @@ void BeginMicrosoftDeviceLogin(HWND hwnd) {
     std::thread([hwnd, authorizationCode]() {
         const std::wstring form = L"client_id=" + std::wstring(MICROSOFT_DEVICE_CLIENT_ID) +
             L"&code=" + UrlEncodeQuery(authorizationCode) +
-            L"&grant_type=authorization_code&redirect_uri=" + UrlEncodeQuery(MICROSOFT_DESKTOP_REDIRECT);
+            L"&grant_type=authorization_code&redirect_uri=" + UrlEncodeQuery(MICROSOFT_DESKTOP_REDIRECT) +
+            L"&scope=" + UrlEncodeQuery(L"XboxLive.signin offline_access");
         NativeHttpResponse token = SendHttpRequest(L"POST", L"https://login.live.com/oauth20_token.srf",
             L"Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n", Utf8FromWide(form));
         const std::string microsoftAccess = GetJsonStringField(token.body, "access_token");
@@ -2802,40 +2812,30 @@ void SetActiveContainer(int index) {
     }
 }
 
+static std::wstring GenerateUniqueContainerId() {
+    for (unsigned long long suffix = 1; ; ++suffix) {
+        const std::wstring candidate = L"c-" + std::to_wstring(suffix);
+        const bool alreadyUsed = std::any_of(g_containers.begin(), g_containers.end(),
+            [&candidate](const ContainerProfile& container) { return container.id == candidate; });
+        const std::wstring folder = GetContainerDir(g_config.storagePath, candidate);
+        const DWORD attributes = GetFileAttributesW(folder.c_str());
+        if (!alreadyUsed && attributes == INVALID_FILE_ATTRIBUTES) return candidate;
+    }
+}
+
 void CreateNewContainerDialog() {
-    HMENU hVerMenu = CreatePopupMenu();
-    AppendMenuW(hVerMenu, MF_STRING, 4001, L"Minecraft 1.21.1 (Vanilla)");
-    AppendMenuW(hVerMenu, MF_STRING, 4002, L"Minecraft 1.21.1 (Fabric)");
-    AppendMenuW(hVerMenu, MF_STRING, 4003, L"Minecraft 1.20.4 (Fabric)");
-    AppendMenuW(hVerMenu, MF_STRING, 4004, L"Minecraft 1.20.1 (Forge)");
-    AppendMenuW(hVerMenu, MF_STRING, 4005, L"Minecraft 1.20.1 (Fabric)");
-    AppendMenuW(hVerMenu, MF_STRING, 4006, L"Minecraft 1.16.5 (Forge)");
-    AppendMenuW(hVerMenu, MF_STRING, 4007, L"Minecraft 1.12.2 (Forge)");
+    std::wstring newName;
+    std::wstring newVersion;
+    std::wstring newLoader;
+    if (!PromptNewContainer(g_hMainWindow, newName, newVersion, newLoader)) return;
 
-    POINT pt = { 220 + 24 + 200, 54 + 20 + 34 };
-    ClientToScreen(g_hMainWindow, &pt);
-    int cmd = TrackPopupMenuEx(hVerMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, pt.x, pt.y, g_hMainWindow, NULL);
-    DestroyMenu(hVerMenu);
-
-    std::wstring newVer = L"1.21.1";
-    std::wstring newLdr = L"vanilla";
-    std::wstring newName = L"Minecraft 1.21.1 Vanilla";
-
-    if (cmd == 4001) { newVer = L"1.21.1"; newLdr = L"vanilla"; newName = L"Minecraft 1.21.1 Vanilla"; }
-    else if (cmd == 4002) { newVer = L"1.21.1"; newLdr = L"fabric"; newName = L"Fabric 1.21.1 Performance"; }
-    else if (cmd == 4003) { newVer = L"1.20.4"; newLdr = L"fabric"; newName = L"Fabric 1.20.4 Shaders"; }
-    else if (cmd == 4004) { newVer = L"1.20.1"; newLdr = L"forge"; newName = L"Forge 1.20.1 Tech & Magic"; }
-    else if (cmd == 4005) { newVer = L"1.20.1"; newLdr = L"fabric"; newName = L"Fabric 1.20.1 Modded"; }
-    else if (cmd == 4006) { newVer = L"1.16.5"; newLdr = L"forge"; newName = L"Forge 1.16.5 Classic"; }
-    else if (cmd == 4007) { newVer = L"1.12.2"; newLdr = L"forge"; newName = L"Forge 1.12.2 Golden Era"; }
-    else return;
-
-    std::wstring newId = L"c-" + std::to_wstring(g_containers.size() + 1);
-    EnsureContainerStructure(g_config.storagePath, newId);
-    g_containers.push_back({ newId, newName, newVer, newLdr, g_config.memoryMb });
+    const std::wstring newId = GenerateUniqueContainerId();
+    g_containers.push_back({ newId, newName, newVersion, newLoader, g_config.memoryMb });
     SetActiveContainer((int)g_containers.size() - 1);
     SaveContainerProfiles();
-    AppendLog(Tr(L"[Aether] Создан новый контейнер: " + newName, L"[Aether] Created new container: " + newName));
+    AppendLog(Tr(L"[Aether] Создан новый контейнер: " + newName + L" (Minecraft " + newVersion + L", " + newLoader + L")",
+                 L"[Aether] Created new container: " + newName + L" (Minecraft " + newVersion + L", " + newLoader + L")"));
+    InvalidateRect(g_hMainWindow, NULL, FALSE);
 }
 
 // ----------------------------------------------------------------------------
@@ -2920,146 +2920,582 @@ static void SyncInstalledModsWithDisk(const std::wstring& storageDir, const std:
 }
 
 
-bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring& prompt, const std::wstring& initialVal, std::wstring& outVal) {
-    bool okClicked = false;
-    outVal = initialVal;
+enum class ModalPromptKind { textInput, createContainer };
 
-    static bool classRegistered = false;
-    const wchar_t* dlgClassName = L"AetherInputPromptClass";
-    if (!classRegistered) {
-        WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
-        wc.lpfnWndProc = DefWindowProcW;
-        wc.hInstance = g_hInstance;
-        wc.lpszClassName = dlgClassName;
-        wc.hbrBackground = CreateSolidBrush(RGB(24, 25, 32));
-        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-        RegisterClassExW(&wc);
-        classRegistered = true;
+static constexpr int IDC_MODAL_TEXT_EDIT = 5201;
+static constexpr int IDC_MODAL_CONTAINER_NAME = 5202;
+static constexpr int IDC_MODAL_CONTAINER_VERSION = 5203;
+static constexpr int IDC_MODAL_CONTAINER_LOADER = 5204;
+static constexpr UINT WM_AETHER_VERSIONS_READY = WM_APP + 43;
+static constexpr UINT WM_MODAL_VERSION_LIST_UPDATED = WM_APP + 44;
+static const wchar_t* MODAL_WINDOW_CLASS = L"AetherLauncherModalWindow";
+
+struct ModalPromptContext {
+    ModalPromptKind kind = ModalPromptKind::textInput;
+    HWND textEdit = NULL;
+    HWND nameEdit = NULL;
+    HWND versionCombo = NULL;
+    HWND loaderCombo = NULL;
+    bool accepted = false;
+    bool finished = false;
+    bool nameWasEdited = false;
+    bool updatingSuggestedName = false;
+    std::wstring textResult;
+    std::wstring containerName;
+    std::wstring containerVersion;
+    std::wstring containerLoader;
+    std::wstring suggestedName;
+    std::vector<std::wstring> versions;
+    std::vector<std::pair<std::wstring, std::wstring>> loaders;
+};
+
+static HBRUSH GetModalBackgroundBrush() {
+    static HBRUSH brush = CreateSolidBrush(RGB(17, 20, 29));
+    return brush;
+}
+
+static HBRUSH GetModalInputBrush() {
+    static HBRUSH brush = CreateSolidBrush(RGB(29, 33, 46));
+    return brush;
+}
+
+static std::wstring TrimModalText(std::wstring value) {
+    while (!value.empty() && std::iswspace(value.front())) value.erase(value.begin());
+    while (!value.empty() && std::iswspace(value.back())) value.pop_back();
+    return value;
+}
+
+static std::wstring ReadModalControlText(HWND control) {
+    if (!control) return L"";
+    const int length = GetWindowTextLengthW(control);
+    std::wstring value((size_t)std::max(0, length) + 1, L'\0');
+    const int actual = GetWindowTextW(control, value.data(), (int)value.size());
+    value.resize((size_t)std::max(0, actual));
+    return value;
+}
+
+static int FindContainerVersionIndex(const std::vector<std::wstring>& versions, const std::wstring& version) {
+    for (size_t i = 0; i < versions.size(); ++i) {
+        if (versions[i] == version) return (int)i;
+    }
+    return -1;
+}
+
+static int FindContainerLoaderIndex(
+    const std::vector<std::pair<std::wstring, std::wstring>>& loaders,
+    const std::wstring& loader
+) {
+    for (size_t i = 0; i < loaders.size(); ++i) {
+        if (loaders[i].first == loader) return (int)i;
+    }
+    return -1;
+}
+
+static std::wstring MakeSuggestedContainerName(
+    const std::wstring& version,
+    const std::wstring& loader,
+    const std::vector<std::pair<std::wstring, std::wstring>>& loaders
+) {
+    std::wstring loaderName = L"Vanilla";
+    for (const auto& option : loaders) {
+        if (option.first == loader) {
+            loaderName = option.second;
+            break;
+        }
+    }
+    return L"Minecraft " + version + L" " + loaderName;
+}
+
+static void RefreshSuggestedContainerName(ModalPromptContext* context) {
+    if (!context || context->kind != ModalPromptKind::createContainer ||
+        !context->nameEdit || context->nameWasEdited) return;
+
+    const int versionIndex = (int)SendMessageW(context->versionCombo, CB_GETCURSEL, 0, 0);
+    const int loaderIndex = (int)SendMessageW(context->loaderCombo, CB_GETCURSEL, 0, 0);
+    if (versionIndex < 0 || versionIndex >= (int)context->versions.size() ||
+        loaderIndex < 0 || loaderIndex >= (int)context->loaders.size()) return;
+
+    context->suggestedName = MakeSuggestedContainerName(
+        context->versions[versionIndex], context->loaders[loaderIndex].first, context->loaders);
+    context->updatingSuggestedName = true;
+    SetWindowTextW(context->nameEdit, context->suggestedName.c_str());
+    context->updatingSuggestedName = false;
+}
+
+static void ReplaceModalVersionOptions(ModalPromptContext* context, std::vector<std::wstring> versions) {
+    if (!context || context->kind != ModalPromptKind::createContainer || !context->versionCombo || versions.empty()) return;
+    const int selectedIndex = (int)SendMessageW(context->versionCombo, CB_GETCURSEL, 0, 0);
+    std::wstring selectedVersion;
+    if (selectedIndex >= 0 && selectedIndex < (int)context->versions.size()) {
+        selectedVersion = context->versions[selectedIndex];
+    }
+    if (!selectedVersion.empty() && FindContainerVersionIndex(versions, selectedVersion) < 0) {
+        versions.insert(versions.begin(), selectedVersion);
     }
 
-    RECT prc;
-    GetWindowRect(hParent, &prc);
-    int dlgW = 620;
-    int dlgH = 198;
-    int dlgX = prc.left + (prc.right - prc.left - dlgW) / 2;
-    int dlgY = prc.top + (prc.bottom - prc.top - dlgH) / 2;
+    context->versions = std::move(versions);
+    SendMessageW(context->versionCombo, CB_RESETCONTENT, 0, 0);
+    for (const std::wstring& availableVersion : context->versions) {
+        SendMessageW(context->versionCombo, CB_ADDSTRING, 0, (LPARAM)availableVersion.c_str());
+    }
+    int newSelection = FindContainerVersionIndex(context->versions, selectedVersion);
+    if (newSelection < 0) newSelection = 0;
+    SendMessageW(context->versionCombo, CB_SETCURSEL, newSelection, 0);
+    RefreshSuggestedContainerName(context);
+}
 
-    HWND hDlg = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
-        dlgClassName,
+static void DrawModalOwnerButton(const DRAWITEMSTRUCT* item) {
+    if (!item || item->CtlType != ODT_BUTTON) return;
+
+    const bool primary = item->CtlID == IDOK;
+    const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+    COLORREF fill = primary ? RGB(g_currentTheme.accent.GetR(), g_currentTheme.accent.GetG(), g_currentTheme.accent.GetB())
+                            : RGB(34, 39, 53);
+    if (pressed) {
+        fill = RGB(std::max(0, (int)GetRValue(fill) - 18),
+                   std::max(0, (int)GetGValue(fill) - 18),
+                   std::max(0, (int)GetBValue(fill) - 18));
+    }
+    const COLORREF borderColor = primary ? fill : RGB(66, 73, 92);
+    const COLORREF textColor = primary ? RGB(255, 255, 255) : RGB(219, 224, 236);
+
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
+    HGDIOBJ oldBrush = SelectObject(item->hDC, brush);
+    HGDIOBJ oldPen = SelectObject(item->hDC, pen);
+    RoundRect(item->hDC, item->rcItem.left, item->rcItem.top,
+              item->rcItem.right, item->rcItem.bottom, 10, 10);
+    SelectObject(item->hDC, oldBrush);
+    SelectObject(item->hDC, oldPen);
+    DeleteObject(brush);
+    DeleteObject(pen);
+
+    HFONT font = (HFONT)SendMessageW(item->hwndItem, WM_GETFONT, 0, 0);
+    HGDIOBJ oldFont = font ? SelectObject(item->hDC, font) : NULL;
+    SetBkMode(item->hDC, TRANSPARENT);
+    SetTextColor(item->hDC, textColor);
+    WCHAR label[64] = {};
+    GetWindowTextW(item->hwndItem, label, (int)(sizeof(label) / sizeof(label[0])));
+    RECT textRect = item->rcItem;
+    DrawTextW(item->hDC, label, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    if (oldFont) SelectObject(item->hDC, oldFont);
+
+    if (item->itemState & ODS_FOCUS) {
+        RECT focusRect = item->rcItem;
+        InflateRect(&focusRect, -5, -4);
+        DrawFocusRect(item->hDC, &focusRect);
+    }
+}
+
+static LRESULT CALLBACK ModalWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    ModalPromptContext* context = (ModalPromptContext*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (message == WM_NCCREATE) {
+        const CREATESTRUCTW* create = (const CREATESTRUCTW*)lParam;
+        context = (ModalPromptContext*)create->lpCreateParams;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)context);
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    switch (message) {
+    case WM_ERASEBKGND: {
+        RECT client = {};
+        GetClientRect(hwnd, &client);
+        FillRect((HDC)wParam, &client, GetModalBackgroundBrush());
+        return 1;
+    }
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = (HDC)wParam;
+        SetTextColor(dc, RGB(222, 227, 239));
+        SetBkMode(dc, TRANSPARENT);
+        return (LRESULT)GetModalBackgroundBrush();
+    }
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC dc = (HDC)wParam;
+        SetTextColor(dc, RGB(240, 242, 248));
+        SetBkColor(dc, RGB(29, 33, 46));
+        return (LRESULT)GetModalInputBrush();
+    }
+    case WM_DRAWITEM:
+        DrawModalOwnerButton((const DRAWITEMSTRUCT*)lParam);
+        return TRUE;
+    case WM_MODAL_VERSION_LIST_UPDATED: {
+        std::unique_ptr<std::vector<std::wstring>> versions(
+            (std::vector<std::wstring>*)lParam);
+        if (context && versions) ReplaceModalVersionOptions(context, std::move(*versions));
+        return 0;
+    }
+    case WM_COMMAND: {
+        if (!context) break;
+        const int controlId = LOWORD(wParam);
+        const int notification = HIWORD(wParam);
+
+        if (context->kind == ModalPromptKind::createContainer &&
+            controlId == IDC_MODAL_CONTAINER_NAME && notification == EN_CHANGE &&
+            !context->updatingSuggestedName) {
+            context->nameWasEdited = true;
+            return 0;
+        }
+        if (context->kind == ModalPromptKind::createContainer &&
+            (controlId == IDC_MODAL_CONTAINER_VERSION || controlId == IDC_MODAL_CONTAINER_LOADER) &&
+            notification == CBN_SELCHANGE) {
+            RefreshSuggestedContainerName(context);
+            return 0;
+        }
+
+        if (controlId == IDOK) {
+            if (context->kind == ModalPromptKind::textInput) {
+                context->textResult = TrimModalText(ReadModalControlText(context->textEdit));
+                if (context->textResult.empty()) {
+                    MessageBoxW(hwnd,
+                        Tr(L"Введите код авторизации или новое название.", L"Enter the authorization code or a new name."),
+                        Tr(L"Не заполнено", L"Required"), MB_OK | MB_ICONWARNING);
+                    SetFocus(context->textEdit);
+                    return 0;
+                }
+            } else {
+                context->containerName = TrimModalText(ReadModalControlText(context->nameEdit));
+                const int versionIndex = (int)SendMessageW(context->versionCombo, CB_GETCURSEL, 0, 0);
+                const int loaderIndex = (int)SendMessageW(context->loaderCombo, CB_GETCURSEL, 0, 0);
+                if (context->containerName.empty()) {
+                    MessageBoxW(hwnd,
+                        Tr(L"Укажите название контейнера.", L"Enter a container name."),
+                        Tr(L"Не заполнено", L"Required"), MB_OK | MB_ICONWARNING);
+                    SetFocus(context->nameEdit);
+                    return 0;
+                }
+                if (versionIndex < 0 || versionIndex >= (int)context->versions.size()) {
+                    MessageBoxW(hwnd,
+                        Tr(L"Выберите версию Minecraft.", L"Select a Minecraft version."),
+                        Tr(L"Не выбрана версия", L"Version required"), MB_OK | MB_ICONWARNING);
+                    SetFocus(context->versionCombo);
+                    return 0;
+                }
+                if (loaderIndex < 0 || loaderIndex >= (int)context->loaders.size()) {
+                    MessageBoxW(hwnd,
+                        Tr(L"Выберите загрузчик.", L"Select a loader."),
+                        Tr(L"Не выбран загрузчик", L"Loader required"), MB_OK | MB_ICONWARNING);
+                    SetFocus(context->loaderCombo);
+                    return 0;
+                }
+                context->containerVersion = context->versions[versionIndex];
+                context->containerLoader = context->loaders[loaderIndex].first;
+            }
+            context->accepted = true;
+            context->finished = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        if (controlId == IDCANCEL) {
+            context->finished = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_SYSCOMMAND:
+        // Popup close buttons send SC_CLOSE before WM_CLOSE. Handle both paths
+        // explicitly so every modal exit restores the parent window.
+        if ((wParam & 0xFFF0) == SC_CLOSE) {
+            if (context) context->finished = true;
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        if (context) context->finished = true;
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_NCDESTROY:
+        if (context) context->finished = true;
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        break;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+static bool RegisterModalWindowClass() {
+    static bool registered = false;
+    if (registered) return true;
+
+    WNDCLASSEXW existing = {};
+    existing.cbSize = sizeof(existing);
+    if (GetClassInfoExW(g_hInstance, MODAL_WINDOW_CLASS, &existing)) {
+        registered = true;
+        return true;
+    }
+
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ModalWindowProc;
+    wc.hInstance = g_hInstance;
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hIcon = LoadIconW(NULL, IDI_APPLICATION);
+    wc.hbrBackground = GetModalBackgroundBrush();
+    wc.lpszClassName = MODAL_WINDOW_CLASS;
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    registered = true;
+    return true;
+}
+
+static HWND CreateCenteredModalWindow(
+    HWND parent,
+    const std::wstring& title,
+    int width,
+    int height,
+    ModalPromptContext* context
+) {
+    if (!RegisterModalWindowClass()) return NULL;
+
+    RECT anchor = {};
+    if (!parent || !GetWindowRect(parent, &anchor)) {
+        anchor.left = 0;
+        anchor.top = 0;
+        anchor.right = GetSystemMetrics(SM_CXSCREEN);
+        anchor.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+    int x = anchor.left + ((anchor.right - anchor.left) - width) / 2;
+    int y = anchor.top + ((anchor.bottom - anchor.top) - height) / 2;
+    HMONITOR monitor = MonitorFromWindow(parent ? parent : GetDesktopWindow(), MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (GetMonitorInfoW(monitor, &monitorInfo)) {
+        const RECT work = monitorInfo.rcWork;
+        const int workLeft = (int)work.left;
+        const int workTop = (int)work.top;
+        const int workRight = (int)work.right;
+        const int workBottom = (int)work.bottom;
+        x = std::max(workLeft, std::min(x, workRight - width));
+        y = std::max(workTop, std::min(y, workBottom - height));
+    }
+
+    HWND dialog = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE,
+        MODAL_WINDOW_CLASS,
         title.c_str(),
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        dlgX, dlgY, dlgW, dlgH,
-        hParent, NULL, g_hInstance, NULL
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        x, y, width, height,
+        parent, NULL, g_hInstance, context
     );
+    if (dialog) ApplyDwmDarkTitleBar(dialog);
+    return dialog;
+}
 
-    if (!hDlg) return false;
+static HWND CreateModalLabel(HWND parent, const std::wstring& text, int x, int y, int width, int height, HFONT font) {
+    HWND label = CreateWindowExW(0, L"STATIC", text.c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                 x, y, width, height, parent, NULL, g_hInstance, NULL);
+    if (label && font) SendMessageW(label, WM_SETFONT, (WPARAM)font, TRUE);
+    return label;
+}
 
-    ApplyDwmDarkTitleBar(hDlg);
+static HWND CreateModalButton(HWND parent, const wchar_t* text, int controlId,
+                              int x, int y, int width, int height, HFONT font) {
+    HWND button = CreateWindowExW(0, L"BUTTON", text,
+                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+                                  x, y, width, height, parent, (HMENU)(INT_PTR)controlId, g_hInstance, NULL);
+    if (button && font) SendMessageW(button, WM_SETFONT, (WPARAM)font, TRUE);
+    return button;
+}
 
-    HFONT hFont = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+static void RunModalMessageLoop(HWND dialog, HWND parent, ModalPromptContext& context) {
+    const bool parentWasEnabled = parent && IsWindowEnabled(parent);
+    g_hActiveModalDialog = dialog;
+    if (parentWasEnabled) EnableWindow(parent, FALSE);
+    ShowWindow(dialog, SW_SHOW);
+    UpdateWindow(dialog);
+    SetForegroundWindow(dialog);
+
+    HWND initialFocus = context.kind == ModalPromptKind::textInput ? context.textEdit : context.nameEdit;
+    if (initialFocus) SetFocus(initialFocus);
+
+    MSG message = {};
+    bool repostQuit = false;
+    int quitCode = 0;
+    while (IsWindow(dialog)) {
+        const BOOL received = GetMessageW(&message, NULL, 0, 0);
+        if (received <= 0) {
+            if (received == 0) {
+                repostQuit = true;
+                quitCode = (int)message.wParam;
+            }
+            break;
+        }
+
+        const bool belongsToDialog = message.hwnd == dialog ||
+            (message.hwnd && IsChild(dialog, message.hwnd));
+        if (belongsToDialog && message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE) {
+            SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDCANCEL, BN_CLICKED), 0);
+            continue;
+        }
+        if (belongsToDialog && message.message == WM_KEYDOWN && message.wParam == VK_RETURN &&
+            message.hwnd == initialFocus) {
+            SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), 0);
+            continue;
+        }
+        if (belongsToDialog && IsDialogMessageW(dialog, &message)) continue;
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+
+    if (IsWindow(dialog)) DestroyWindow(dialog);
+    if (g_hActiveModalDialog == dialog) g_hActiveModalDialog = NULL;
+    if (parent && IsWindow(parent)) {
+        if (parentWasEnabled) EnableWindow(parent, TRUE);
+        if (IsWindowEnabled(parent)) {
+            SetActiveWindow(parent);
+            SetForegroundWindow(parent);
+            SetFocus(parent);
+        }
+    }
+    if (repostQuit) PostQuitMessage(quitCode);
+}
+
+bool PromptTextInput(HWND hParent, const std::wstring& title, const std::wstring& prompt,
+                     const std::wstring& initialVal, std::wstring& outVal) {
+    outVal = initialVal;
+    ModalPromptContext context;
+    context.kind = ModalPromptKind::textInput;
+    context.textResult = initialVal;
+
+    const int dialogWidth = 620;
+    const int dialogHeight = 224;
+    HWND dialog = CreateCenteredModalWindow(hParent, title, dialogWidth, dialogHeight, &context);
+    if (!dialog) return false;
+
+    HFONT font = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    HFONT hFontBold = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+    HFONT boldFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    CreateModalLabel(dialog, prompt, 22, 16, dialogWidth - 54, 50, font);
+    context.textEdit = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", initialVal.c_str(),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        22, 78, dialogWidth - 54, 30, dialog, (HMENU)(INT_PTR)IDC_MODAL_TEXT_EDIT, g_hInstance, NULL
+    );
+    if (context.textEdit) {
+        SendMessageW(context.textEdit, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessageW(context.textEdit, EM_SETLIMITTEXT, 4095, 0);
+        SendMessageW(context.textEdit, EM_SETSEL, 0, -1);
+    }
+    const wchar_t* okText = Tr(L"ОК", L"OK");
+    const wchar_t* cancelText = Tr(L"Отмена", L"Cancel");
+    HWND okButton = CreateModalButton(dialog, okText, IDOK, dialogWidth - 206, 132, 82, 32, boldFont);
+    HWND cancelButton = CreateModalButton(dialog, cancelText, IDCANCEL, dialogWidth - 112, 132, 86, 32, font);
+    if (!context.textEdit || !okButton || !cancelButton) {
+        DestroyWindow(dialog);
+        if (font) DeleteObject(font);
+        if (boldFont) DeleteObject(boldFont);
+        return false;
+    }
+
+    RunModalMessageLoop(dialog, hParent, context);
+    if (context.accepted) outVal = context.textResult;
+    DeleteObject(font);
+    DeleteObject(boldFont);
+    return context.accepted;
+}
+
+static bool PromptNewContainer(HWND hParent, std::wstring& name, std::wstring& version, std::wstring& loader) {
+    ModalPromptContext context;
+    context.kind = ModalPromptKind::createContainer;
+    context.versions = g_versions;
+    context.loaders = g_loaders;
+    if (context.versions.empty()) context.versions.push_back(g_activeVersion.empty() ? L"1.21.1" : g_activeVersion);
+    if (FindContainerVersionIndex(context.versions, g_activeVersion) < 0) {
+        context.versions.insert(context.versions.begin(), g_activeVersion);
+    }
+    if (context.loaders.empty()) context.loaders.push_back({ L"vanilla", L"Vanilla" });
+
+    const int dialogWidth = 540;
+    const int dialogHeight = 414;
+    const std::wstring title = Tr(L"Создать контейнер", L"Create container");
+    HWND dialog = CreateCenteredModalWindow(hParent, title, dialogWidth, dialogHeight, &context);
+    if (!dialog) return false;
+
+    HFONT font = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT boldFont = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-    HWND hStatic = CreateWindowExW(
-        0, L"STATIC", prompt.c_str(),
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
-        20, 16, dlgW - 40, 46,
-        hDlg, NULL, g_hInstance, NULL
+    CreateModalLabel(dialog,
+        Tr(L"Настройте профиль. Версия Minecraft и загрузчик выбираются отдельно.",
+           L"Set up the profile. Minecraft version and mod loader are selected separately."),
+        22, 16, dialogWidth - 54, 38, font);
+    CreateModalLabel(dialog, Tr(L"Название контейнера", L"Container name"), 22, 62, dialogWidth - 54, 20, boldFont);
+    context.nameEdit = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        22, 84, dialogWidth - 54, 30, dialog, (HMENU)(INT_PTR)IDC_MODAL_CONTAINER_NAME, g_hInstance, NULL
     );
-    SendMessageW(hStatic, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-    HWND hEdit = CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"EDIT", initialVal.c_str(),
-        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-        20, 76, dlgW - 55, 26,
-        hDlg, (HMENU)201, g_hInstance, NULL
-    );
-    SendMessageW(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
-    SendMessageW(hEdit, EM_SETSEL, 0, -1);
-    SetFocus(hEdit);
-
-    HWND hBtnOk = CreateWindowExW(
-        0, L"BUTTON", Tr(L"OK", L"OK"),
-        WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-        dlgW - 205, 122, 80, 28,
-        hDlg, (HMENU)IDOK, g_hInstance, NULL
-    );
-    SendMessageW(hBtnOk, WM_SETFONT, (WPARAM)hFontBold, TRUE);
-
-    HWND hBtnCancel = CreateWindowExW(
-        0, L"BUTTON", Tr(L"Отмена", L"Cancel"),
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        dlgW - 115, 122, 80, 28,
-        hDlg, (HMENU)IDCANCEL, g_hInstance, NULL
-    );
-    SendMessageW(hBtnCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-    EnableWindow(hParent, FALSE);
-
-    MSG msg;
-    bool running = true;
-    while (running && GetMessageW(&msg, NULL, 0, 0) > 0) {
-        // A popup close button arrives as WM_SYSCOMMAND/SC_CLOSE, not as the
-        // WM_CLOSE message this former nested loop waited for. Handle both so
-        // closing a rename prompt can never leave its disabled parent hanging.
-        if (msg.hwnd == hDlg &&
-            ((msg.message == WM_SYSCOMMAND && (msg.wParam & 0xFFF0) == SC_CLOSE) ||
-             msg.message == WM_CLOSE)) {
-            running = false;
-            continue;
-        }
-
-        const bool belongsToPrompt = msg.hwnd == hDlg || IsChild(hDlg, msg.hwnd);
-        if (belongsToPrompt && msg.message == WM_KEYDOWN) {
-            if (msg.wParam == VK_RETURN) {
-                WCHAR buf[4096] = { 0 };
-                GetWindowTextW(hEdit, buf, 4095);
-                outVal = buf;
-                okClicked = true;
-                running = false;
-                continue;
-            }
-            if (msg.wParam == VK_ESCAPE) {
-                running = false;
-                continue;
-            }
-        }
-        if (msg.hwnd == hDlg && msg.message == WM_COMMAND) {
-            const int id = LOWORD(msg.wParam);
-            if (id == IDOK) {
-                WCHAR buf[4096] = { 0 };
-                GetWindowTextW(hEdit, buf, 4095);
-                outVal = buf;
-                okClicked = true;
-                running = false;
-                continue;
-            }
-            if (id == IDCANCEL) {
-                running = false;
-                continue;
-            }
-        }
-
-        if (belongsToPrompt && IsDialogMessageW(hDlg, &msg)) continue;
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-        if (!IsWindow(hDlg)) running = false;
+    if (context.nameEdit) {
+        SendMessageW(context.nameEdit, WM_SETFONT, (WPARAM)font, TRUE);
+        SendMessageW(context.nameEdit, EM_SETLIMITTEXT, 64, 0);
     }
 
-    EnableWindow(hParent, TRUE);
-    SetFocus(hParent);
-    if (IsWindow(hDlg)) DestroyWindow(hDlg);
-    DeleteObject(hFont);
-    DeleteObject(hFontBold);
+    CreateModalLabel(dialog, Tr(L"Версия Minecraft", L"Minecraft version"), 22, 128, dialogWidth - 54, 20, boldFont);
+    context.versionCombo = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        22, 150, dialogWidth - 54, 220, dialog,
+        (HMENU)(INT_PTR)IDC_MODAL_CONTAINER_VERSION, g_hInstance, NULL
+    );
+    if (context.versionCombo) {
+        SendMessageW(context.versionCombo, WM_SETFONT, (WPARAM)font, TRUE);
+        for (const std::wstring& availableVersion : context.versions) {
+            SendMessageW(context.versionCombo, CB_ADDSTRING, 0, (LPARAM)availableVersion.c_str());
+        }
+        const int selectedVersion = FindContainerVersionIndex(context.versions, g_activeVersion);
+        SendMessageW(context.versionCombo, CB_SETCURSEL,
+                     selectedVersion >= 0 ? selectedVersion : 0, 0);
+    }
 
-    while (!outVal.empty() && (outVal.back() == L' ' || outVal.back() == L'\t')) outVal.pop_back();
-    while (!outVal.empty() && (outVal.front() == L' ' || outVal.front() == L'\t')) outVal.erase(outVal.begin());
+    CreateModalLabel(dialog, Tr(L"Загрузчик", L"Mod loader"), 22, 194, dialogWidth - 54, 20, boldFont);
+    context.loaderCombo = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        22, 216, dialogWidth - 54, 150, dialog,
+        (HMENU)(INT_PTR)IDC_MODAL_CONTAINER_LOADER, g_hInstance, NULL
+    );
+    if (context.loaderCombo) {
+        SendMessageW(context.loaderCombo, WM_SETFONT, (WPARAM)font, TRUE);
+        for (const auto& option : context.loaders) {
+            SendMessageW(context.loaderCombo, CB_ADDSTRING, 0, (LPARAM)option.second.c_str());
+        }
+        int selectedLoader = FindContainerLoaderIndex(context.loaders, g_config.loader);
+        SendMessageW(context.loaderCombo, CB_SETCURSEL,
+                     selectedLoader >= 0 ? selectedLoader : 0, 0);
+    }
 
-    return okClicked && !outVal.empty();
+    CreateModalLabel(dialog,
+        Tr(L"Контейнеры хранят моды и настройки раздельно; название можно изменить позже.",
+           L"Containers keep mods and settings separate. You can rename this profile later."),
+        22, 264, dialogWidth - 54, 34, font);
+
+    const wchar_t* okText = Tr(L"Создать", L"Create");
+    const wchar_t* cancelText = Tr(L"Отмена", L"Cancel");
+    HWND okButton = CreateModalButton(dialog, okText, IDOK, dialogWidth - 206, 318, 82, 32, boldFont);
+    HWND cancelButton = CreateModalButton(dialog, cancelText, IDCANCEL, dialogWidth - 112, 318, 86, 32, font);
+    if (!context.nameEdit || !context.versionCombo || !context.loaderCombo || !okButton || !cancelButton) {
+        DestroyWindow(dialog);
+        if (font) DeleteObject(font);
+        if (boldFont) DeleteObject(boldFont);
+        return false;
+    }
+
+    RefreshSuggestedContainerName(&context);
+    RunModalMessageLoop(dialog, hParent, context);
+    if (context.accepted) {
+        name = context.containerName;
+        version = context.containerVersion;
+        loader = context.containerLoader;
+    }
+    DeleteObject(font);
+    DeleteObject(boldFont);
+    return context.accepted;
 }
 
 void SaveLogsToFile(HWND hwnd) {
@@ -3789,10 +4225,10 @@ static void PaintMainUI(HWND hwnd, HDC hdc) {
                      &fontSmallBold, microsoftRc, &sfCenter, &microsoftTxt);
 
         const int accountStatusY = compactAccount ? accountY + 88 : accountY + 80;
-        std::wstring accountState = offlineMode
+        std::wstring accountState = offlineMode && !g_microsoftLoginAttempted.load()
             ? Tr(L"Ник: ", L"Nickname: ") + g_config.nickname
             : GetAccountStatus();
-        if (microsoftMode && accountState.empty()) {
+        if ((microsoftMode || g_microsoftLoginAttempted.load()) && accountState.empty()) {
             accountState = g_config.microsoftPlayerName.empty()
                 ? Tr(L"Войдите, чтобы подтвердить владение Java Edition.", L"Sign in to verify Java Edition ownership.")
                 : Tr(L"Сохранен аккаунт: ", L"Saved account: ") + g_config.microsoftPlayerName;
@@ -5294,6 +5730,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             const int microsoftX = compactAccount ? modeX : modeX + modeW + 8;
             const int microsoftY = compactAccount ? modeY + 30 : modeY;
             if (x >= modeX && x <= modeX + modeW && tabY >= modeY && tabY <= modeY + 26) {
+                g_microsoftLoginAttempted.store(false);
                 if (IsMicrosoftAccountMode()) {
                     g_config.accountMode = L"offline";
                     SaveConfig(g_config);
@@ -5305,18 +5742,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             if (x >= microsoftX && x <= microsoftX + modeW && tabY >= microsoftY && tabY <= microsoftY + 26) {
-                if (!IsMicrosoftAccountMode()) {
-                    g_config.accountMode = L"microsoft";
-                    SaveConfig(g_config);
-                    SetAccountStatus(g_config.microsoftPlayerName.empty()
-                        ? Tr(L"Войдите через Microsoft, чтобы подтвердить лицензию.",
-                             L"Sign in with Microsoft to verify your license.")
-                        : Tr(L"Сохранен аккаунт: ", L"Saved account: ") + g_config.microsoftPlayerName);
-                    SyncNicknameControlForAccountMode();
-                }
-                // Selecting the licensed mode is now sufficient to begin a
-                // visible browser sign-in; users no longer need to discover a
-                // second action below the settings fold.
+                // Selecting the licensed mode starts sign-in, but does not
+                // switch away from offline until Microsoft and Minecraft
+                // ownership have both been verified successfully.
                 BeginMicrosoftDeviceLogin(hwnd);
                 InvalidateRect(hwnd, NULL, FALSE);
                 return 0;
@@ -5363,6 +5791,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_AETHER_MODRINTH_BATCH: {
         ApplyModrinthCatalogBatch(reinterpret_cast<ModrinthCatalogBatch*>(lParam), hwnd);
+        return 0;
+    }
+
+    case WM_AETHER_VERSIONS_READY: {
+        std::unique_ptr<std::vector<std::wstring>> versions(
+            (std::vector<std::wstring>*)lParam);
+        if (!versions || versions->empty()) return 0;
+        for (const ContainerProfile& container : g_containers) {
+            if (FindContainerVersionIndex(*versions, container.version) < 0) {
+                versions->push_back(container.version);
+            }
+        }
+        if (FindContainerVersionIndex(*versions, g_activeVersion) < 0) {
+            versions->push_back(g_activeVersion);
+        }
+        g_versions = std::move(*versions);
+        const int activeVersionIndex = FindContainerVersionIndex(g_versions, g_activeVersion);
+        if (activeVersionIndex >= 0) g_selectedVersionIndex = activeVersionIndex;
+
+        if (g_hActiveModalDialog && IsWindow(g_hActiveModalDialog)) {
+            std::vector<std::wstring>* modalVersions = new std::vector<std::wstring>(g_versions);
+            if (!PostMessageW(g_hActiveModalDialog, WM_MODAL_VERSION_LIST_UPDATED, 0,
+                              (LPARAM)modalVersions)) {
+                delete modalVersions;
+            }
+        }
+        AppendLog(Tr(L"[Minecraft] Загружен полный список релизных версий: ",
+                     L"[Minecraft] Loaded all release versions: ") + std::to_wstring(g_versions.size()));
+        InvalidateRect(hwnd, NULL, FALSE);
         return 0;
     }
 
@@ -5464,6 +5921,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
 
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
+
+    // Populate the version selectors with every official Mojang release without
+    // delaying the first paint. The curated offline list remains available if
+    // the manifest cannot be reached.
+    const std::wstring storagePath = g_config.storagePath;
+    std::thread([hwnd, storagePath]() {
+        std::vector<std::wstring> versions = MinecraftLauncher::GetAvailableMinecraftVersions(storagePath);
+        if (versions.empty()) return;
+        std::vector<std::wstring>* payload = new std::vector<std::wstring>(std::move(versions));
+        if (!PostMessageW(hwnd, WM_AETHER_VERSIONS_READY, 0, (LPARAM)payload)) delete payload;
+    }).detach();
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {
