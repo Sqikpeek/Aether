@@ -250,6 +250,25 @@ test('Mojang metadata parser preserves Windows x64 native classifiers across art
   ], 'A 1.20.1-style metadata fixture must select generic/64-bit Windows natives, including artifact paths, and reject other architectures');
 });
 
+test('Native ZIP extraction uses a compatible overwrite-safe API and rejects ZIP path traversal', () => {
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+  const extractStart = mcLauncher.indexOf('static bool ExtractNativeArchive(');
+  const extractEnd = mcLauncher.indexOf('static bool ExtractWindowsNatives(', extractStart);
+  assert.ok(extractStart >= 0 && extractEnd > extractStart,
+    'The PowerShell ZIP extraction helper must be present');
+  const extractor = mcLauncher.slice(extractStart, extractEnd);
+
+  assert.ok(extractor.includes('[Console]::OutputEncoding=[System.Text.Encoding]::UTF8') &&
+            extractor.includes('[System.IO.Compression.ZipFile]::OpenRead($archivePath)') &&
+            extractor.includes('[System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target)'),
+    'Native JARs must be opened and extracted entry-by-entry using .NET overloads supported by Windows PowerShell');
+  assert.ok(extractor.includes('[System.IO.File]::Delete($target)') &&
+            extractor.includes('$target.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)'),
+    'Existing native entries must be replaced safely and ZIP-slip paths must be rejected');
+  assert.ok(!extractor.includes(']::ExtractToDirectory(') && !extractor.includes("',$true)"),
+    'Do not pass the unsupported overwrite Boolean to ExtractToDirectory');
+});
+
 test('Native launcher uses valid Mojang metadata, a verified client JAR, and disk-backed mod deletion', () => {
   const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
   const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
@@ -350,7 +369,8 @@ test('Native launcher writes persistent stage-by-stage launch diagnostics and ca
   const mcHeader = fs.readFileSync('src/cpp/minecraft_launcher.hpp', 'utf8');
 
   assert.ok(launcherMain.includes('launcher.log') && launcherMain.includes('AppendLog') &&
-            launcherMain.includes('Utf8FromWide(entry)'),
+            launcherMain.includes('Utf8FromWide(entry)') &&
+            launcherMain.includes('native ZIP extraction=entry-wise'),
     'Launcher diagnostics must be timestamped and retained in a durable UTF-8 log');
   assert.ok(mcHeader.includes('onDiagnostic') && mcLauncher.includes('DescribeDownloadAttempt') &&
             mcLauncher.includes('Content-Length mismatch') && mcLauncher.includes('FormatWin32Error'),

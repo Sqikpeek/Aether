@@ -4791,7 +4791,8 @@ static void FlushPersistentLogLocked() {
 
 static void LogStartupDiagnostics() {
     AppendLog(L"[Diagnostics] Launcher version 1.0.38; build " +
-              WideFromUtf8(std::string(__DATE__) + " " + __TIME__));
+              WideFromUtf8(std::string(__DATE__) + " " + __TIME__) +
+              L"; native ZIP extraction=entry-wise");
     if (!g_persistentLogPath.empty()) {
         AppendLog(L"[Diagnostics] Persistent log file: " + g_persistentLogPath);
     }

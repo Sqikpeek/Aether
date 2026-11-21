@@ -500,13 +500,30 @@ static void ClearExtractedNativeDlls(const std::wstring& nativesDir) {
 
 static bool ExtractNativeArchive(const std::wstring& archive, const std::wstring& nativesDir,
                                  std::function<void(const std::wstring&)> onDiagnostic) {
-    // Native classifier JARs are ZIPs. PowerShell's .NET ZipFile API handles
-    // the JAR extension directly and is available on supported Windows builds.
+    // Native classifier JARs are ZIPs. Extract entries individually instead
+    // of using ExtractToDirectory(..., $true): older Windows .NET builds bind
+    // that third argument as an Encoding and reject the Boolean. Explicitly
+    // replace existing entries and reject paths that escape the natives folder.
     const std::wstring script =
         L"Add-Type -AssemblyName System.IO.Compression.FileSystem; "
-        L"[System.IO.Compression.ZipFile]::ExtractToDirectory('" +
-        EscapePowerShellLiteral(archive) + L"','" +
-        EscapePowerShellLiteral(nativesDir) + L"',$true)";
+        L"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
+        L"$ErrorActionPreference='Stop'; "
+        L"$archivePath='" + EscapePowerShellLiteral(archive) + L"'; "
+        L"$destinationPath='" + EscapePowerShellLiteral(nativesDir) + L"'; "
+        L"$zip=[System.IO.Compression.ZipFile]::OpenRead($archivePath); "
+        L"try { "
+        L"$root=[System.IO.Path]::GetFullPath($destinationPath); "
+        L"$separator=[string][System.IO.Path]::DirectorySeparatorChar; $prefix=$root; "
+        L"if(-not $prefix.EndsWith($separator)) { $prefix+=$separator }; "
+        L"foreach($entry in $zip.Entries) { "
+        L"$target=[System.IO.Path]::GetFullPath([System.IO.Path]::Combine($root,$entry.FullName)); "
+        L"if(-not $target.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe ZIP entry path' }; "
+        L"if($entry.FullName.EndsWith('/') -or $entry.FullName.EndsWith('\\')) { [System.IO.Directory]::CreateDirectory($target) | Out-Null; continue }; "
+        L"$parent=[System.IO.Path]::GetDirectoryName($target); "
+        L"if($parent) { [System.IO.Directory]::CreateDirectory($parent) | Out-Null }; "
+        L"if([System.IO.File]::Exists($target)) { [System.IO.File]::Delete($target) }; "
+        L"[System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target); "
+        L"} } finally { $zip.Dispose() }";
     std::wstring command = L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script + L"\"";
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');
