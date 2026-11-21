@@ -515,15 +515,20 @@ static bool ExtractNativeArchive(const std::wstring& archive, const std::wstring
         L"$root=[System.IO.Path]::GetFullPath($destinationPath); "
         L"$separator=[string][System.IO.Path]::DirectorySeparatorChar; $prefix=$root; "
         L"if(-not $prefix.EndsWith($separator)) { $prefix+=$separator }; "
+        L"$entryCount=0; $dllEntryCount=0; "
         L"foreach($entry in $zip.Entries) { "
-        L"$target=[System.IO.Path]::GetFullPath([System.IO.Path]::Combine($root,$entry.FullName)); "
-        L"if(-not $target.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe ZIP entry path' }; "
-        L"if($entry.FullName.EndsWith('/') -or $entry.FullName.EndsWith('\\')) { [System.IO.Directory]::CreateDirectory($target) | Out-Null; continue }; "
+        L"$entryCount++; $entryPath=[System.IO.Path]::GetFullPath([System.IO.Path]::Combine($root,$entry.FullName)); "
+        L"if(-not $entryPath.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe ZIP entry path' }; "
+        L"if($entry.FullName.EndsWith('/') -or $entry.FullName.EndsWith('\\')) { [System.IO.Directory]::CreateDirectory($entryPath) | Out-Null; continue }; "
+        L"if($entry.FullName.EndsWith('.dll',[System.StringComparison]::OrdinalIgnoreCase)) { "
+        L"$target=[System.IO.Path]::Combine($root,[System.IO.Path]::GetFileName($entry.FullName)); $dllEntryCount++; "
+        L"} else { $target=$entryPath }; "
         L"$parent=[System.IO.Path]::GetDirectoryName($target); "
         L"if($parent) { [System.IO.Directory]::CreateDirectory($parent) | Out-Null }; "
         L"if([System.IO.File]::Exists($target)) { [System.IO.File]::Delete($target) }; "
         L"[System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target); "
-        L"} } finally { $zip.Dispose() }";
+        L"}; Write-Output ('ZIP entries=' + $entryCount + '; DLL entries=' + $dllEntryCount); "
+        L"} finally { $zip.Dispose() }";
     std::wstring command = L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"" + script + L"\"";
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');

@@ -263,8 +263,10 @@ test('Native ZIP extraction uses a compatible overwrite-safe API and rejects ZIP
             extractor.includes('[System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target)'),
     'Native JARs must be opened and extracted entry-by-entry using .NET overloads supported by Windows PowerShell');
   assert.ok(extractor.includes('[System.IO.File]::Delete($target)') &&
-            extractor.includes('$target.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)'),
-    'Existing native entries must be replaced safely and ZIP-slip paths must be rejected');
+            extractor.includes('$entryPath.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)') &&
+            extractor.includes('[System.IO.Path]::GetFileName($entry.FullName)') &&
+            extractor.includes('DLL entries='),
+    'Existing entries must be replaced, ZIP-slip paths rejected, DLLs flattened into java.library.path, and archive counts logged');
   assert.ok(!extractor.includes(']::ExtractToDirectory(') && !extractor.includes("',$true)"),
     'Do not pass the unsupported overwrite Boolean to ExtractToDirectory');
 });
