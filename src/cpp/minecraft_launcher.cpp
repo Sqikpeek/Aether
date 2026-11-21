@@ -37,6 +37,10 @@ static void ReportCapturedProcessOutput(
     const std::wstring& prefix,
     const std::string& output
 );
+struct VersionLibInfo;
+static bool IsValidLibraryArtifact(const VersionLibInfo& library, const std::wstring& path,
+                                   std::wstring* failureReason);
+static bool FileMatchesSha1(const std::wstring& path, const std::wstring& expectedHex);
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "crypt32.lib")
@@ -114,18 +118,25 @@ static void EnsureParentDirectory(const std::wstring& path) {
 // download. DeleteFileW alone fails with ERROR_ACCESS_DENIED on READONLY JARs.
 static bool RemoveExistingFileForReplacement(const std::wstring& path,
                                              DWORD* errorCode = nullptr,
-                                             bool* readOnlyCleared = nullptr) {
+                                             bool* readOnlyCleared = nullptr,
+                                             const wchar_t** failureStage = nullptr,
+                                             DWORD* observedAttributes = nullptr) {
     if (errorCode) *errorCode = ERROR_SUCCESS;
     if (readOnlyCleared) *readOnlyCleared = false;
+    if (failureStage) *failureStage = L"";
+    if (observedAttributes) *observedAttributes = INVALID_FILE_ATTRIBUTES;
     const DWORD attributes = GetFileAttributesW(path.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES) {
         const DWORD error = GetLastError();
         if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return true;
         if (errorCode) *errorCode = error;
+        if (failureStage) *failureStage = L"GetFileAttributesW";
         return false;
     }
+    if (observedAttributes) *observedAttributes = attributes;
     if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
         if (errorCode) *errorCode = ERROR_ACCESS_DENIED;
+        if (failureStage) *failureStage = L"destination is a directory";
         return false;
     }
 
@@ -135,6 +146,7 @@ static bool RemoveExistingFileForReplacement(const std::wstring& path,
         if (writableAttributes == 0) writableAttributes = FILE_ATTRIBUTE_NORMAL;
         if (!SetFileAttributesW(path.c_str(), writableAttributes)) {
             if (errorCode) *errorCode = GetLastError();
+            if (failureStage) *failureStage = L"SetFileAttributesW(clear read-only)";
             return false;
         }
     }
@@ -143,10 +155,25 @@ static bool RemoveExistingFileForReplacement(const std::wstring& path,
         if (wasReadOnly) SetFileAttributesW(path.c_str(), attributes);
         if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return true;
         if (errorCode) *errorCode = error;
+        if (failureStage) *failureStage = L"DeleteFileW";
         return false;
     }
     if (readOnlyCleared) *readOnlyCleared = wasReadOnly;
     return true;
+}
+
+static std::wstring GetRecoveredLibraryPath(const std::wstring& libraryDir,
+                                           const std::wstring& mcVersion,
+                                           const std::wstring& loader,
+                                           const std::wstring& relativePath) {
+    // Keep recovery outside the shared libraries directory so a restrictive
+    // ACL on that cache cannot prevent Aether from writing a verified copy.
+    const size_t separator = libraryDir.find_last_of(L"\\/");
+    const std::wstring storageDir = separator == std::wstring::npos
+        ? libraryDir
+        : libraryDir.substr(0, separator);
+    return storageDir + L"\\.aether-recovered\\libraries\\" + mcVersion + L"\\" +
+           loader + L"\\" + relativePath;
 }
 
 static bool MoveDownloadedFileIntoPlace(const std::wstring& partialPath,
@@ -157,13 +184,14 @@ static bool MoveDownloadedFileIntoPlace(const std::wstring& partialPath,
     if (failureStage) *failureStage = L"";
     for (int attempt = 0; attempt < 4; ++attempt) {
         DWORD cleanupError = ERROR_SUCCESS;
-        if (!RemoveExistingFileForReplacement(destinationPath, &cleanupError)) {
+        const wchar_t* cleanupStage = L"";
+        if (!RemoveExistingFileForReplacement(destinationPath, &cleanupError, nullptr, &cleanupStage)) {
             if ((cleanupError == ERROR_ACCESS_DENIED || cleanupError == ERROR_SHARING_VIOLATION) && attempt < 3) {
                 Sleep(75 * (attempt + 1));
                 continue;
             }
             if (errorCode) *errorCode = cleanupError;
-            if (failureStage) *failureStage = L"prepare destination for finalization";
+            if (failureStage) *failureStage = cleanupStage[0] ? cleanupStage : L"prepare destination for finalization";
             return false;
         }
         if (MoveFileExW(partialPath.c_str(), destinationPath.c_str(),
@@ -213,10 +241,14 @@ static void CollectJarsRecursively(const std::wstring& dir, std::vector<std::wst
         if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
         std::wstring fullPath = dir + L"\\" + fd.cFileName;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            CollectJarsRecursively(fullPath, outJars);
+            // Recovery artifacts are selected separately after validating the
+            // matching metadata entry; never sweep this private cache implicitly.
+            if (_wcsicmp(fd.cFileName, L".aether-recovered") != 0) {
+                CollectJarsRecursively(fullPath, outJars);
+            }
         } else {
             size_t len = wcslen(fd.cFileName);
-            if (len > 4 && _wcsicmp(fd.cFileName + len - 4, L".jar") == 0) {
+            if (len > 4 && _wcsicmp(fd.cFileName + len - 4, L".jar") == 0 && IsZipArchive(fullPath)) {
                 outJars.push_back(fullPath);
             }
         }
@@ -232,6 +264,28 @@ struct VersionLibInfo {
     std::wstring sha1;
     bool isNativeArchive = false;
 };
+
+static std::vector<VersionLibInfo> GetFabricLibraryArtifacts(const std::wstring& mcVersion) {
+    return {
+        { L"net\\fabricmc\\intermediary\\" + mcVersion + L"\\intermediary-" + mcVersion + L".jar",
+          L"https://maven.fabricmc.net/net/fabricmc/intermediary/" + mcVersion + L"/intermediary-" + mcVersion + L".jar",
+          mcVersion == L"1.20.1" ? L"97d0bff94981e37bd7a4362deee53c9a84e3fb21" : L"" },
+        { L"org\\ow2\\asm\\asm\\9.7.1\\asm-9.7.1.jar",
+          L"https://maven.fabricmc.net/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar", L"f0ed132a49244b042cd0e15702ab9f2ce3cc8436" },
+        { L"org\\ow2\\asm\\asm-analysis\\9.7.1\\asm-analysis-9.7.1.jar",
+          L"https://maven.fabricmc.net/org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar", L"f97a3b319f0ed6a8cd944dc79060d3912a28985f" },
+        { L"org\\ow2\\asm\\asm-commons\\9.7.1\\asm-commons-9.7.1.jar",
+          L"https://maven.fabricmc.net/org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar", L"406c6a2225cfe1819f102a161e54cc16a5c24f75" },
+        { L"org\\ow2\\asm\\asm-tree\\9.7.1\\asm-tree-9.7.1.jar",
+          L"https://maven.fabricmc.net/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar", L"3a53139787663b139de76b627fca0084ab60d32c" },
+        { L"org\\ow2\\asm\\asm-util\\9.7.1\\asm-util-9.7.1.jar",
+          L"https://maven.fabricmc.net/org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar", L"9e23359b598ec6b74b23e53110dd5c577adf2243" },
+        { L"net\\fabricmc\\sponge-mixin\\0.15.4+mixin.0.8.7\\sponge-mixin-0.15.4+mixin.0.8.7.jar",
+          L"https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.15.4+mixin.0.8.7/sponge-mixin-0.15.4+mixin.0.8.7.jar", L"6a12aacc794f1078458433116e9ed42c1cc98096" },
+        { L"net\\fabricmc\\fabric-loader\\0.16.10\\fabric-loader-0.16.10.jar",
+          L"https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar", L"dbd932c2a3641d2c41cf9abfe47e140a5753fa86" }
+    };
+}
 
 static std::string JsonStringField(const std::string& json, const char* key) {
     const std::string marker = std::string("\"") + key + "\"";
@@ -498,6 +552,8 @@ static bool ExtractNativeArchive(const std::wstring& archive, const std::wstring
 static bool ExtractWindowsNatives(const std::vector<VersionLibInfo>& libraries,
                                   const std::wstring& libDir,
                                   const std::wstring& nativesDir,
+                                  const std::wstring& mcVersion,
+                                  const std::wstring& loader,
                                   std::function<void(const std::wstring&)> onDiagnostic) {
     int nativeArchiveCount = 0;
     ClearExtractedNativeDlls(nativesDir);
@@ -505,10 +561,20 @@ static bool ExtractWindowsNatives(const std::vector<VersionLibInfo>& libraries,
     for (const VersionLibInfo& lib : libraries) {
         if (!lib.isNativeArchive) continue;
         ++nativeArchiveCount;
-        const std::wstring archive = libDir + L"\\" + lib.path;
-        if (!CheckFileExists(archive)) {
-            if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Native archive missing or empty: " + archive);
-            return false;
+        std::wstring archive = libDir + L"\\" + lib.path;
+        std::wstring invalidReason;
+        if (!IsValidLibraryArtifact(lib, archive, &invalidReason)) {
+            const std::wstring recoveredArchive = GetRecoveredLibraryPath(libDir, mcVersion, loader, lib.path);
+            std::wstring recoveredReason;
+            if (IsValidLibraryArtifact(lib, recoveredArchive, &recoveredReason)) {
+                archive = recoveredArchive;
+                if (onDiagnostic) onDiagnostic(L"[Natives] Using verified recovery archive: " + archive);
+            } else {
+                if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Native archive is invalid at canonical path (" +
+                    invalidReason + L") and recovery path (" + recoveredReason + L"): " +
+                    libDir + L"\\" + lib.path + L"; recovery=" + recoveredArchive);
+                return false;
+            }
         }
         if (!ExtractNativeArchive(archive, nativesDir, onDiagnostic)) {
             if (onDiagnostic) onDiagnostic(L"[Natives][ERROR] Failed to extract archive: " + archive);
@@ -1588,6 +1654,85 @@ static bool IsValidLibraryArtifact(const VersionLibInfo& library, const std::wst
     return true;
 }
 
+static bool PrepareLibraryRepairDestination(
+    const std::wstring& libraryDir,
+    const std::wstring& mcVersion,
+    const std::wstring& loader,
+    const VersionLibInfo& library,
+    std::wstring& targetPath,
+    std::function<void(const std::wstring&)> onDiagnostic,
+    bool* recoveredCopyAlreadyValid,
+    std::wstring* failureReason
+) {
+    if (recoveredCopyAlreadyValid) *recoveredCopyAlreadyValid = false;
+    if (failureReason) failureReason->clear();
+    const std::wstring originalPath = targetPath;
+    const std::wstring recoveredPath = GetRecoveredLibraryPath(libraryDir, mcVersion, loader, library.path);
+    std::wstring recoveredInvalidReason;
+    if (IsValidLibraryArtifact(library, recoveredPath, &recoveredInvalidReason)) {
+        targetPath = recoveredPath;
+        if (recoveredCopyAlreadyValid) *recoveredCopyAlreadyValid = true;
+        if (onDiagnostic) {
+            onDiagnostic(L"[Prepare] Reusing verified recovery library instead of the invalid canonical copy: " +
+                originalPath + L" -> " + recoveredPath);
+        }
+        return true;
+    }
+    DWORD originalError = ERROR_SUCCESS;
+    bool originalWasReadOnly = false;
+    const wchar_t* originalStage = L"";
+    DWORD originalAttributes = INVALID_FILE_ATTRIBUTES;
+    bool originalRemoved = false;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        if (RemoveExistingFileForReplacement(targetPath, &originalError, &originalWasReadOnly,
+                                             &originalStage, &originalAttributes)) {
+            originalRemoved = true;
+            break;
+        }
+        if ((originalError != ERROR_ACCESS_DENIED && originalError != ERROR_SHARING_VIOLATION) || attempt == 3 ||
+            wcscmp(originalStage, L"destination is a directory") == 0) break;
+        Sleep(75 * (attempt + 1));
+    }
+    if (originalRemoved) {
+        if (originalWasReadOnly && onDiagnostic) {
+            onDiagnostic(L"[Prepare] Cleared read-only attribute from stale library: " + targetPath);
+        }
+        return true;
+    }
+
+    if (onDiagnostic) {
+        onDiagnostic(L"[Prepare][WARN] Could not replace invalid library at " + originalPath +
+            L" (stage=" + originalStage + L"; Win32 " + std::to_wstring(originalError) + L": " +
+            FormatWin32Error(originalError) + L"; attributes=" + std::to_wstring(originalAttributes) +
+            L"); attempting a separate recovery destination: " + recoveredPath);
+    }
+
+    DWORD recoveredError = ERROR_SUCCESS;
+    const wchar_t* recoveredStage = L"";
+    DWORD recoveredAttributes = INVALID_FILE_ATTRIBUTES;
+    if (!RemoveExistingFileForReplacement(recoveredPath, &recoveredError, nullptr,
+                                          &recoveredStage, &recoveredAttributes)) {
+        if (failureReason) {
+            *failureReason = L"cannot replace library at " + originalPath + L" (stage=" + originalStage +
+                L"; Win32 " + std::to_wstring(originalError) + L": " + FormatWin32Error(originalError) +
+                L"; attributes=" + std::to_wstring(originalAttributes) + L") and recovery cache is unavailable at " +
+                recoveredPath + L" (stage=" + recoveredStage + L"; Win32 " +
+                std::to_wstring(recoveredError) + L": " + FormatWin32Error(recoveredError) +
+                L"; attributes=" + std::to_wstring(recoveredAttributes) + L")";
+        }
+        return false;
+    }
+
+    targetPath = recoveredPath;
+    if (onDiagnostic) {
+        onDiagnostic(L"[Prepare][WARN] Could not replace invalid library at " + originalPath +
+            L" (stage=" + originalStage + L"; Win32 " + std::to_wstring(originalError) +
+            L"; attributes=" + std::to_wstring(originalAttributes) +
+            L"); storing a verified replacement separately at " + recoveredPath);
+    }
+    return true;
+}
+
 // A few networks expose Modrinth but block Fabric's Maven CDN. These three
 // Fabric 0.16.10 files are immutable and independently SHA-1 verified against
 // Fabric's public profile before they are accepted from a GitHub/jsDelivr mirror.
@@ -1877,42 +2022,23 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         // Exact Fabric 0.16.10 profile dependencies. The former hand-written
         // set used an obsolete sponge-mixin version and extra libraries, making
         // a successful Fabric Maven download still vulnerable to classpath drift.
-        std::vector<VersionLibInfo> fabricLibs = {
-            { L"net\\fabricmc\\intermediary\\" + mcVersion + L"\\intermediary-" + mcVersion + L".jar",
-              L"https://maven.fabricmc.net/net/fabricmc/intermediary/" + mcVersion + L"/intermediary-" + mcVersion + L".jar",
-              mcVersion == L"1.20.1" ? L"97d0bff94981e37bd7a4362deee53c9a84e3fb21" : L"" },
-            { L"org\\ow2\\asm\\asm\\9.7.1\\asm-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar", L"f0ed132a49244b042cd0e15702ab9f2ce3cc8436" },
-            { L"org\\ow2\\asm\\asm-analysis\\9.7.1\\asm-analysis-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-analysis/9.7.1/asm-analysis-9.7.1.jar", L"f97a3b319f0ed6a8cd944dc79060d3912a28985f" },
-            { L"org\\ow2\\asm\\asm-commons\\9.7.1\\asm-commons-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-commons/9.7.1/asm-commons-9.7.1.jar", L"406c6a2225cfe1819f102a161e54cc16a5c24f75" },
-            { L"org\\ow2\\asm\\asm-tree\\9.7.1\\asm-tree-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar", L"3a53139787663b139de76b627fca0084ab60d32c" },
-            { L"org\\ow2\\asm\\asm-util\\9.7.1\\asm-util-9.7.1.jar",
-              L"https://maven.fabricmc.net/org/ow2/asm/asm-util/9.7.1/asm-util-9.7.1.jar", L"9e23359b598ec6b74b23e53110dd5c577adf2243" },
-            { L"net\\fabricmc\\sponge-mixin\\0.15.4+mixin.0.8.7\\sponge-mixin-0.15.4+mixin.0.8.7.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/sponge-mixin/0.15.4+mixin.0.8.7/sponge-mixin-0.15.4+mixin.0.8.7.jar", L"6a12aacc794f1078458433116e9ed42c1cc98096" },
-            { L"net\\fabricmc\\fabric-loader\\0.16.10\\fabric-loader-0.16.10.jar",
-              L"https://maven.fabricmc.net/net/fabricmc/fabric-loader/0.16.10/fabric-loader-0.16.10.jar", L"dbd932c2a3641d2c41cf9abfe47e140a5753fa86" }
-        };
+        const std::vector<VersionLibInfo> fabricLibs = GetFabricLibraryArtifacts(mcVersion);
 
         for (const auto& flib : fabricLibs) {
-            const std::wstring targetPath = libDir + L"\\" + flib.path;
+            std::wstring targetPath = libDir + L"\\" + flib.path;
             std::wstring invalidReason;
             if (IsValidLibraryArtifact(flib, targetPath, &invalidReason)) {
                 logDiagnostic(L"Fabric dependency already verified: " + targetPath);
                 continue;
             }
             logDiagnostic(L"Fabric dependency needs repair: " + targetPath + L" (" + invalidReason + L")");
-            DWORD staleFileError = ERROR_SUCCESS;
-            bool staleFileWasReadOnly = false;
-            if (!RemoveExistingFileForReplacement(targetPath, &staleFileError, &staleFileWasReadOnly)) {
-                return reportPreparationFailure(L"cannot remove invalid Fabric library " + targetPath +
-                    L" (Win32 " + std::to_wstring(staleFileError) + L": " +
-                    FormatWin32Error(staleFileError) + L")");
+            bool recoveredCopyAlreadyValid = false;
+            std::wstring destinationError;
+            if (!PrepareLibraryRepairDestination(libDir, mcVersion, loader, flib, targetPath,
+                    onDiagnostic, &recoveredCopyAlreadyValid, &destinationError)) {
+                return reportPreparationFailure(destinationError);
             }
-            if (staleFileWasReadOnly) logDiagnostic(L"Cleared read-only attribute from stale Fabric library: " + targetPath);
+            if (recoveredCopyAlreadyValid) continue;
             bool found = false;
 
             if (!mojangLibsDir.empty()) {
@@ -1984,21 +2110,20 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
     int totalLibs = (int)libsToEnsure.size();
     for (int i = 0; i < totalLibs; ++i) {
         const auto& lib = libsToEnsure[i];
-        const std::wstring targetPath = libDir + L"\\" + lib.path;
+        std::wstring targetPath = libDir + L"\\" + lib.path;
         std::wstring invalidReason;
 
         if (IsValidLibraryArtifact(lib, targetPath, &invalidReason)) {
             logDiagnostic(L"Minecraft library verified: " + targetPath);
         } else {
             logDiagnostic(L"Minecraft library missing/corrupt: " + targetPath + L" (" + invalidReason + L")");
-            DWORD staleFileError = ERROR_SUCCESS;
-            bool staleFileWasReadOnly = false;
-            if (!RemoveExistingFileForReplacement(targetPath, &staleFileError, &staleFileWasReadOnly)) {
-                return reportPreparationFailure(L"cannot remove invalid Minecraft library " + targetPath +
-                    L" (Win32 " + std::to_wstring(staleFileError) + L": " +
-                    FormatWin32Error(staleFileError) + L")");
+            bool recoveredCopyAlreadyValid = false;
+            std::wstring destinationError;
+            if (!PrepareLibraryRepairDestination(libDir, mcVersion, loader, lib, targetPath,
+                    onDiagnostic, &recoveredCopyAlreadyValid, &destinationError)) {
+                return reportPreparationFailure(destinationError);
             }
-            if (staleFileWasReadOnly) logDiagnostic(L"Cleared read-only attribute from stale Minecraft library: " + targetPath);
+            if (recoveredCopyAlreadyValid) continue;
             bool foundLibrary = false;
 
             if (!mojangLibsDir.empty()) {
@@ -2215,7 +2340,7 @@ bool MinecraftLauncher::LaunchMinecraft(
         return false;
     }
     const bool nativesReady = ExtractWindowsNatives(metadataLibraries, localLibrariesDir, nativesDir,
-        [&callbacks](const std::wstring& message) {
+        mcVersion, loader, [&callbacks](const std::wstring& message) {
             if (callbacks.onLog) callbacks.onLog(message,
                 message.find(L"[ERROR]") != std::wstring::npos);
         });
@@ -2236,14 +2361,47 @@ bool MinecraftLauncher::LaunchMinecraft(
     }
     logDiagnostic(L"[Assets] Effective asset directory=" + effectiveAssetsDir);
 
-    // 4. Build Complete Classpath Recursively (Resolving joptsimple, guava, lwjgl, etc.)
+    // 4. Assemble the complete Java classpath from current-version dependencies.
     std::vector<std::wstring> allJars;
+    const std::wstring libDir = storageDir + L"\\libraries";
 
-    // Scan storageDir/libraries recursively
-    std::wstring libDir = storageDir + L"\\libraries";
-    CollectJarsRecursively(libDir, allJars);
-    logDiagnostic(L"[Classpath] Found " + std::to_wstring(allJars.size()) +
-                  L" candidate JAR files under " + libDir);
+    // Prioritize current-version artifacts only after validating them against
+    // Mojang or pinned Fabric hashes. If an inaccessible corrupt file blocks
+    // replacement, its verified per-version recovery copy wins de-duplication.
+    std::vector<VersionLibInfo> launchLibraries = metadataLibraries;
+    if (loader == L"fabric") {
+        const std::vector<VersionLibInfo> fabricLibraries = GetFabricLibraryArtifacts(mcVersion);
+        launchLibraries.insert(launchLibraries.end(), fabricLibraries.begin(), fabricLibraries.end());
+    }
+    for (const VersionLibInfo& library : launchLibraries) {
+        const std::wstring canonicalPath = libDir + L"\\" + library.path;
+        std::wstring invalidReason;
+        if (IsValidLibraryArtifact(library, canonicalPath, &invalidReason)) {
+            allJars.push_back(canonicalPath);
+            continue;
+        }
+        const std::wstring recoveredPath = GetRecoveredLibraryPath(libDir, mcVersion, loader, library.path);
+        if (IsValidLibraryArtifact(library, recoveredPath, &invalidReason)) {
+            allJars.push_back(recoveredPath);
+            logDiagnostic(L"[Classpath] Prioritizing verified recovery library: " + recoveredPath);
+        }
+    }
+
+    // Vanilla and Fabric have complete explicit dependency metadata above;
+    // do not sweep old versions from the shared cache into their classpaths.
+    // Other loaders may have additional libraries without Mojang metadata, so
+    // retain the legacy scan for those profiles only. Recovery JARs are never
+    // recursively trusted; each one must match its current metadata entry.
+    if (loader != L"vanilla" && loader != L"fabric") {
+        std::vector<std::wstring> cachedJars;
+        CollectJarsRecursively(libDir, cachedJars);
+        allJars.insert(allJars.end(), cachedJars.begin(), cachedJars.end());
+    }
+    logDiagnostic(L"[Classpath] Prepared " + std::to_wstring(allJars.size()) +
+                  L" library candidates" +
+                  ((loader == L"vanilla" || loader == L"fabric")
+                      ? L" from current metadata; shared-cache stale artifacts excluded."
+                      : L" including loader-cache candidates under " + libDir + L"."));
 
     // Preparation copied/downloaded the exact metadata paths into our storage.
     // Do not mix a second AppData classpath with potentially older artifacts.

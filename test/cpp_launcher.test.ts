@@ -233,6 +233,34 @@ test('Native launcher supports validated offline sessions and licensed Microsoft
     'The launcher must not hard-code the old offline mojang user type for every session');
 });
 
+test('Inaccessible library files recover to a verified per-version cache without entering classpaths stale', () => {
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+  const repairStart = mcLauncher.indexOf('static bool PrepareLibraryRepairDestination(');
+  const repairEnd = mcLauncher.indexOf('// A few networks expose Modrinth', repairStart);
+  assert.ok(repairStart >= 0 && repairEnd > repairStart, 'The library repair helper must be present');
+  const repair = mcLauncher.slice(repairStart, repairEnd);
+
+  assert.ok(repair.includes('RemoveExistingFileForReplacement') &&
+            repair.includes('ERROR_ACCESS_DENIED') &&
+            repair.includes('GetRecoveredLibraryPath') &&
+            repair.includes('IsValidLibraryArtifact(library, recoveredPath') &&
+            repair.includes('originalAttributes') &&
+            mcLauncher.includes('L"\\\\.aether-recovered\\\\libraries\\\\'),
+    'A denied canonical cleanup must use a separate recovery destination and retain access/attribute diagnostics');
+  assert.ok(mcLauncher.includes('Using verified recovery archive') &&
+            mcLauncher.includes('GetRecoveredLibraryPath(libDir, mcVersion, loader, lib.path)'),
+    'Native extraction must also fall back to a validated recovery library');
+  assert.ok(mcLauncher.includes('if (loader != L"vanilla" && loader != L"fabric")') &&
+            mcLauncher.includes('shared-cache stale artifacts excluded'),
+    'Vanilla and Fabric classpaths must use current dependencies rather than stale cached JARs');
+
+  const classpathStart = mcLauncher.indexOf('// 4. Assemble the complete Java classpath');
+  const classpath = mcLauncher.slice(classpathStart);
+  assert.ok(classpath.includes('Prioritizing verified recovery library') &&
+            !classpath.includes('CollectJarsRecursively(recoveredLibDir'),
+    'Only explicitly validated current-version recovery JARs may be used in the classpath');
+});
+
 test('Native launcher writes persistent stage-by-stage launch diagnostics and captures child output safely', () => {
   const launcherMain = fs.readFileSync('src/cpp/launcher_main.cpp', 'utf8');
   const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
@@ -248,8 +276,10 @@ test('Native launcher writes persistent stage-by-stage launch diagnostics and ca
             mcLauncher.includes('MoveDownloadedFileIntoPlace') &&
             mcLauncher.includes('FILE_ATTRIBUTE_READONLY') &&
             mcLauncher.includes('SetFileAttributesW') &&
-            mcLauncher.includes('Cleared the read-only attribute before replacing'),
-    'Library repair and downloads must be able to replace stale read-only JARs and report access-denied cleanup errors');
+            mcLauncher.includes('Cleared the read-only attribute before replacing') &&
+            mcLauncher.includes('.aether-recovered') &&
+            mcLauncher.includes('Prioritizing verified recovery library'),
+    'Library repair must clear read-only files, retry finalization, and use a verified alternate path when an invalid JAR cannot be replaced');
   assert.ok(mcLauncher.includes('DetectJava(customJava, requiredJava') &&
             mcLauncher.includes('No runnable Java installation was detected') &&
             !mcLauncher.includes('fallback.path = L"java.exe"'),
