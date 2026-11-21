@@ -368,6 +368,29 @@ static std::string JsonArrayField(const std::string& json, const char* key) {
     return "";
 }
 
+static bool IsNativeArchivePath(const std::wstring& relativePath) {
+    std::wstring path = relativePath;
+    std::transform(path.begin(), path.end(), path.begin(), ::towlower);
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    const size_t marker = name.find(L"-natives-");
+    return marker != std::wstring::npos && name.size() > 4 &&
+           name.substr(name.size() - 4) == L".jar";
+}
+
+static bool IsWindowsNativeArchivePath(const std::wstring& relativePath) {
+    std::wstring path = relativePath;
+    std::transform(path.begin(), path.end(), path.begin(), ::towlower);
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
+    const size_t marker = name.find(L"-natives-windows");
+    if (marker == std::wstring::npos) return false;
+    const std::wstring suffix = name.substr(marker + wcslen(L"-natives-windows"));
+    // Do not try to load Windows ARM64/x86 classifier archives on the x64
+    // runtime. Mojang uses the unsuffixed JAR (or -64) for Windows x64.
+    return suffix == L".jar" || suffix == L"-64.jar" || suffix == L"-x86_64.jar";
+}
+
 static void AddLibraryDownload(std::vector<VersionLibInfo>& result, std::unordered_set<std::wstring>& seenPaths,
                                const std::string& object, bool isNativeArchive) {
     const std::string path = JsonStringField(object, "path");
@@ -378,18 +401,34 @@ static void AddLibraryDownload(std::vector<VersionLibInfo>& result, std::unorder
     for (wchar_t& c : widePath) if (c == L'/') c = L'\\';
     std::wstring key = widePath;
     std::transform(key.begin(), key.end(), key.begin(), ::towlower);
-    if (!seenPaths.insert(key).second) return;
+    const bool nativeArchive = isNativeArchive || IsNativeArchivePath(widePath);
+    if (!seenPaths.insert(key).second) {
+        // An artifact may be encountered before the same file's classifier
+        // entry. Preserve the native role when de-duplicating that path.
+        for (VersionLibInfo& existing : result) {
+            std::wstring existingKey = existing.path;
+            std::transform(existingKey.begin(), existingKey.end(), existingKey.begin(), ::towlower);
+            if (existingKey == key) {
+                existing.isNativeArchive = existing.isNativeArchive || nativeArchive;
+                break;
+            }
+        }
+        return;
+    }
     VersionLibInfo info;
     info.path = widePath;
     info.url.assign(url.begin(), url.end());
     info.sha1.assign(sha1.begin(), sha1.end());
-    info.isNativeArchive = isNativeArchive;
+    // Some version JSONs expose native classifiers as top-level artifact paths
+    // instead of downloads.classifiers; infer their role from the Maven path.
+    info.isNativeArchive = nativeArchive;
     result.push_back(std::move(info));
 }
 
 // Parse the official Mojang metadata as nested JSON objects instead of scanning
-// a fixed 1,200-byte window. In particular, LWJGL's "artifact" jar and its
-// "natives-windows" classifier are now distinguished reliably.
+// a fixed 1,200-byte window. Native role is derived both from the classifiers
+// object and from Maven paths, so artifact-style LWJGL native entries are not
+// silently left marked as ordinary classpath libraries.
 static std::vector<VersionLibInfo> ParseLibrariesFromJson(const std::string& json) {
     std::vector<VersionLibInfo> result;
     std::unordered_set<std::wstring> seenPaths;
@@ -406,16 +445,34 @@ static std::vector<VersionLibInfo> ParseLibrariesFromJson(const std::string& jso
         const std::string artifact = JsonObjectField(downloads, "artifact");
         if (!artifact.empty()) AddLibraryDownload(result, seenPaths, artifact, false);
 
+        const std::string classifiers = JsonObjectField(downloads, "classifiers");
         const std::string natives = JsonObjectField(library, "natives");
         std::string classifier = JsonStringField(natives, "windows");
-        if (classifier.empty()) continue;
         const std::string archToken = "${arch}";
         const size_t arch = classifier.find(archToken);
         if (arch != std::string::npos) classifier.replace(arch, archToken.size(), "64");
 
-        const std::string classifiers = JsonObjectField(downloads, "classifiers");
-        const std::string nativeDownload = JsonObjectField(classifiers, classifier.c_str());
-        if (!nativeDownload.empty()) AddLibraryDownload(result, seenPaths, nativeDownload, true);
+        // Honor the declared Windows classifier when available, but also scan
+        // classifier download paths. Some Mojang/Fabric metadata lists native
+        // JARs as artifact-style entries or omits the natives.windows mapping;
+        // selecting by the actual Maven path keeps those archives discoverable.
+        if (!classifier.empty()) {
+            const std::string nativeDownload = JsonObjectField(classifiers, classifier.c_str());
+            if (!nativeDownload.empty()) AddLibraryDownload(result, seenPaths, nativeDownload, true);
+        }
+        size_t classifierCursor = 0;
+        while (!classifiers.empty() && classifierCursor < classifiers.size()) {
+            std::string classifierDownload;
+            size_t classifierAfter = 0;
+            if (!ExtractJsonObjectAt(classifiers, classifierCursor, classifierDownload, &classifierAfter)) break;
+            classifierCursor = classifierAfter;
+            const std::string classifierPath = JsonStringField(classifierDownload, "path");
+            if (classifierPath.empty()) continue;
+            const std::wstring wideClassifierPath(classifierPath.begin(), classifierPath.end());
+            if (IsWindowsNativeArchivePath(wideClassifierPath)) {
+                AddLibraryDownload(result, seenPaths, classifierDownload, true);
+            }
+        }
     }
     return result;
 }
@@ -559,8 +616,12 @@ static bool ExtractWindowsNatives(const std::vector<VersionLibInfo>& libraries,
     ClearExtractedNativeDlls(nativesDir);
     if (onDiagnostic) onDiagnostic(L"[Natives] Clearing old DLLs and preparing Windows LWJGL natives in " + nativesDir);
     for (const VersionLibInfo& lib : libraries) {
-        if (!lib.isNativeArchive) continue;
+        // Mojang metadata can represent native JARs as classifier downloads or
+        // plain artifacts. Treat the Maven path as authoritative and select
+        // only the Windows x64 archive so no platform is silently skipped.
+        if (!IsWindowsNativeArchivePath(lib.path)) continue;
         ++nativeArchiveCount;
+        if (onDiagnostic) onDiagnostic(L"[Natives] Selected Windows x64 archive: " + lib.path);
         std::wstring archive = libDir + L"\\" + lib.path;
         std::wstring invalidReason;
         if (!IsValidLibraryArtifact(lib, archive, &invalidReason)) {
@@ -2103,7 +2164,13 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
         logDiagnostic(L"Could not parse library entries from version JSON; using built-in fallback list.");
         libsToEnsure = GetStandardFallbackLibraries();
     }
-    logDiagnostic(L"Checking " + std::to_wstring(libsToEnsure.size()) + L" Minecraft library artifacts.");
+    const size_t parsedNativeArchives = (size_t)std::count_if(libsToEnsure.begin(), libsToEnsure.end(),
+        [](const VersionLibInfo& library) { return library.isNativeArchive; });
+    const size_t parsedWindowsX64Natives = (size_t)std::count_if(libsToEnsure.begin(), libsToEnsure.end(),
+        [](const VersionLibInfo& library) { return IsWindowsNativeArchivePath(library.path); });
+    logDiagnostic(L"Checking " + std::to_wstring(libsToEnsure.size()) + L" Minecraft library artifacts; native entries=" +
+        std::to_wstring(parsedNativeArchives) + L"; Windows x64 native paths=" +
+        std::to_wstring(parsedWindowsX64Natives) + L".");
 
     if (progress) progress(L"Проверка и синхронизация библиотек...", 60);
 
@@ -2331,9 +2398,15 @@ bool MinecraftLauncher::LaunchMinecraft(
         fclose(metadataFile);
     }
     const std::vector<VersionLibInfo> metadataLibraries = ParseLibrariesFromJson(versionMetadata);
+    const size_t metadataNativeArchives = (size_t)std::count_if(metadataLibraries.begin(), metadataLibraries.end(),
+        [](const VersionLibInfo& library) { return library.isNativeArchive; });
+    const size_t metadataWindowsX64Natives = (size_t)std::count_if(metadataLibraries.begin(), metadataLibraries.end(),
+        [](const VersionLibInfo& library) { return IsWindowsNativeArchivePath(library.path); });
     const std::wstring localLibrariesDir = storageDir + L"\\libraries";
     logDiagnostic(L"[Metadata] Version JSON bytes=" + std::to_wstring(versionMetadata.size()) +
-                  L"; parsed libraries=" + std::to_wstring(metadataLibraries.size()) + L".");
+                  L"; parsed libraries=" + std::to_wstring(metadataLibraries.size()) +
+                  L"; native entries=" + std::to_wstring(metadataNativeArchives) +
+                  L"; Windows x64 native paths=" + std::to_wstring(metadataWindowsX64Natives) + L".");
     if (metadataLibraries.empty()) {
         logDiagnostic(L"[Natives][ERROR] Version metadata has no parseable library entries.");
         if (callbacks.onProgress) callbacks.onProgress(L"Ошибка подготовки LWJGL natives", 0);

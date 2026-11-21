@@ -161,10 +161,93 @@ test('Native launcher keeps catalog state on the UI thread and prepares a comple
     'Blocked Fabric Maven downloads must use a SHA-1-verified mirror for 1.20.1 intermediary');
   assert.ok(!mcLauncher.includes('fabric-loader-0.16.9.jar'),
     'Obsolete Fabric Loader 0.16.9 must not be selected for launch');
-  assert.ok(mcLauncher.includes('ExtractWindowsNatives') && mcLauncher.includes('ExtractNativeArchive'),
-    'LWJGL native classifier archives must be extracted before Java starts');
+  assert.ok(mcLauncher.includes('ExtractWindowsNatives') &&
+            mcLauncher.includes('ExtractNativeArchive') &&
+            mcLauncher.includes('IsWindowsNativeArchivePath(lib.path)') &&
+            mcLauncher.includes('Selected Windows x64 archive'),
+    'Windows x64 native JARs must be selected by classifier path, including metadata entries not flagged as native archives');
   assert.ok(mcLauncher.includes('lowerName.find(L"-natives-")') && mcLauncher.includes('MemoryUtil'),
     'Native archives must be excluded from the Java classpath so LWJGL classes remain available');
+});
+
+test('Mojang metadata parser preserves Windows x64 native classifiers across artifact parsing and deduplication', () => {
+  const mcLauncher = fs.readFileSync('src/cpp/minecraft_launcher.cpp', 'utf8');
+  const addStart = mcLauncher.indexOf('static void AddLibraryDownload(');
+  const parseStart = mcLauncher.indexOf('static std::vector<VersionLibInfo> ParseLibrariesFromJson(');
+  const nativePathStart = mcLauncher.indexOf('static bool IsNativeArchivePath(');
+  const windowsPathStart = mcLauncher.indexOf('static bool IsWindowsNativeArchivePath(');
+  const extractStart = mcLauncher.indexOf('static bool ExtractWindowsNatives(');
+  const add = mcLauncher.slice(addStart, parseStart);
+  const parserEnd = mcLauncher.indexOf('static std::wstring EscapePowerShellLiteral(', parseStart);
+  const parser = mcLauncher.slice(parseStart, parserEnd);
+  const nativePath = mcLauncher.slice(nativePathStart, windowsPathStart);
+  const windowsPathEnd = mcLauncher.indexOf('static void AddLibraryDownload(', windowsPathStart);
+  const windowsPath = mcLauncher.slice(windowsPathStart, windowsPathEnd);
+  const extractEnd = mcLauncher.indexOf('static std::vector<VersionLibInfo> GetStandardFallbackLibraries(', extractStart);
+  const extract = mcLauncher.slice(extractStart, extractEnd);
+
+  assert.ok(addStart >= 0 && parseStart > addStart && nativePathStart >= 0 &&
+            windowsPathStart > nativePathStart && extractStart >= 0,
+    'The metadata parser, native-path classifiers, and extraction routine must be present');
+  assert.ok(add.includes('isNativeArchive || IsNativeArchivePath(widePath)') &&
+            add.includes('existing.isNativeArchive = existing.isNativeArchive || nativeArchive'),
+    'Native paths must be classified even when represented as artifacts and remain native after duplicate-path merging');
+  assert.ok(nativePath.includes('name.find(L"-natives-")') && nativePath.includes('L".jar"'),
+    'The parser must detect native JARs from their Maven classifier paths');
+  assert.ok(parser.includes('IsWindowsNativeArchivePath(wideClassifierPath)') &&
+            parser.includes('AddLibraryDownload(result, seenPaths, classifierDownload, true)'),
+    'Windows x64 classifiers must be discovered from downloads.classifiers even without natives.windows metadata');
+  assert.ok(windowsPath.includes('suffix == L".jar"') &&
+            windowsPath.includes('suffix == L"-64.jar"') &&
+            !windowsPath.includes('suffix == L"-arm64.jar"'),
+    'Only the x64 Windows classifier variants should be selected, not ARM64 or x86 archives');
+  assert.ok(extract.includes('IsWindowsNativeArchivePath(lib.path)') &&
+            extract.includes('Selected Windows x64 archive'),
+    'Native extraction must process the discovered Windows x64 JARs instead of relying solely on metadata flags');
+
+  const artifact = (relativePath: string) => ({
+    path: relativePath,
+    sha1: '0123456789abcdef0123456789abcdef01234567',
+    url: `https://libraries.minecraft.net/${relativePath}`,
+  });
+  const metadataFixture = {
+    libraries: [
+      {
+        name: 'org.lwjgl:lwjgl:3.3.1',
+        downloads: {
+          artifact: artifact('org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1.jar'),
+          classifiers: {
+            'natives-windows': artifact('org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows.jar'),
+            'natives-windows-64': artifact('org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows-64.jar'),
+            'natives-windows-x86_64': artifact('org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows-x86_64.jar'),
+            'natives-windows-arm64': artifact('org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows-arm64.jar'),
+            'natives-windows-x86': artifact('org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows-x86.jar'),
+            'natives-linux': artifact('org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-linux.jar'),
+          },
+        },
+        natives: { windows: 'natives-windows' },
+      },
+      {
+        name: 'org.lwjgl:lwjgl-glfw:3.3.1',
+        // Regression case: a native archive represented as a plain artifact.
+        downloads: {
+          artifact: artifact('org/lwjgl/lwjgl-glfw/3.3.1/lwjgl-glfw-3.3.1-natives-windows.jar'),
+        },
+      },
+    ],
+  };
+  const metadataPaths = metadataFixture.libraries.flatMap((library) => [
+    ...(library.downloads.artifact ? [library.downloads.artifact.path] : []),
+    ...Object.values(library.downloads.classifiers ?? {}).map((download) => download.path),
+  ]);
+  const windowsX64 = metadataPaths.filter((entry) =>
+    /-natives-windows(?:-64|-x86_64)?\.jar$/i.test(entry));
+  assert.deepEqual(windowsX64, [
+    'org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows.jar',
+    'org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows-64.jar',
+    'org/lwjgl/lwjgl/3.3.1/lwjgl-3.3.1-natives-windows-x86_64.jar',
+    'org/lwjgl/lwjgl-glfw/3.3.1/lwjgl-glfw-3.3.1-natives-windows.jar',
+  ], 'A 1.20.1-style metadata fixture must select generic/64-bit Windows natives, including artifact paths, and reject other architectures');
 });
 
 test('Native launcher uses valid Mojang metadata, a verified client JAR, and disk-backed mod deletion', () => {
