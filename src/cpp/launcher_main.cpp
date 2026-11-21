@@ -2339,8 +2339,8 @@ void BeginMicrosoftDeviceLogin(HWND hwnd) {
                     g_microsoftAccount = account;
                     g_accountStatus = Tr(L"Выполнен вход: ", L"Signed in: ") + account.username;
                 }
-                AppendLog(Tr(L"[Microsoft] Вход выполнен: " + account.username,
-                             L"[Microsoft] Signed in: " + account.username));
+                AppendLog(Tr(L"[Microsoft] Вход успешно выполнен; данные профиля не записываются в журнал.",
+                             L"[Microsoft] Sign-in succeeded; profile identifiers are omitted from the log."));
                 if (hwnd) PostMessageW(hwnd, WM_USER + 102, 0, 0);
             }
         }
@@ -4661,10 +4661,12 @@ void StartMinecraftLaunch() {
                      L"[Aether] Launching profile: " + g_activeContainerName));
         AppendLog(Tr(L"[Aether] Загрузчик модов: " + g_config.loader,
                      L"[Aether] Mod loader: " + g_config.loader));
-        AppendLog(Tr(L"[Aether] Игрок: " + launchAccount.username +
-                     (launchAccount.isMicrosoft ? L" (Microsoft)" : L" (offline)"),
-                     L"[Aether] Player: " + launchAccount.username +
-                     (launchAccount.isMicrosoft ? L" (Microsoft)" : L" (offline)")));
+        AppendLog(Tr(L"[Aether] Режим аккаунта: " +
+                     (launchAccount.isMicrosoft ? std::wstring(L"Microsoft") : std::wstring(L"офлайн")) +
+                     L"; идентификатор игрока не записывается в журнал.",
+                     L"[Aether] Account mode: " +
+                     (launchAccount.isMicrosoft ? std::wstring(L"Microsoft") : std::wstring(L"offline")) +
+                     L"; player identifier omitted from the log."));
         AppendLog(Tr(L"[Aether] Выделение RAM (глобально): " + std::to_wstring(g_config.memoryMb) + L" MB",
                      L"[Aether] RAM (global): " + std::to_wstring(g_config.memoryMb) + L" MB"));
 

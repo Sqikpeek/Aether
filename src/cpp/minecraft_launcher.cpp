@@ -110,6 +110,78 @@ static void EnsureParentDirectory(const std::wstring& path) {
     if (slash != std::wstring::npos) EnsureDirTree(path.substr(0, slash));
 }
 
+// Remove stale/read-only artifacts before copying or atomically finalizing a
+// download. DeleteFileW alone fails with ERROR_ACCESS_DENIED on READONLY JARs.
+static bool RemoveExistingFileForReplacement(const std::wstring& path,
+                                             DWORD* errorCode = nullptr,
+                                             bool* readOnlyCleared = nullptr) {
+    if (errorCode) *errorCode = ERROR_SUCCESS;
+    if (readOnlyCleared) *readOnlyCleared = false;
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return true;
+        if (errorCode) *errorCode = error;
+        return false;
+    }
+    if (attributes & FILE_ATTRIBUTE_DIRECTORY) {
+        if (errorCode) *errorCode = ERROR_ACCESS_DENIED;
+        return false;
+    }
+
+    const bool wasReadOnly = (attributes & FILE_ATTRIBUTE_READONLY) != 0;
+    if (wasReadOnly) {
+        DWORD writableAttributes = attributes & ~FILE_ATTRIBUTE_READONLY;
+        if (writableAttributes == 0) writableAttributes = FILE_ATTRIBUTE_NORMAL;
+        if (!SetFileAttributesW(path.c_str(), writableAttributes)) {
+            if (errorCode) *errorCode = GetLastError();
+            return false;
+        }
+    }
+    if (!DeleteFileW(path.c_str())) {
+        const DWORD error = GetLastError();
+        if (wasReadOnly) SetFileAttributesW(path.c_str(), attributes);
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return true;
+        if (errorCode) *errorCode = error;
+        return false;
+    }
+    if (readOnlyCleared) *readOnlyCleared = wasReadOnly;
+    return true;
+}
+
+static bool MoveDownloadedFileIntoPlace(const std::wstring& partialPath,
+                                       const std::wstring& destinationPath,
+                                       DWORD* errorCode,
+                                       const wchar_t** failureStage) {
+    if (errorCode) *errorCode = ERROR_SUCCESS;
+    if (failureStage) *failureStage = L"";
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        DWORD cleanupError = ERROR_SUCCESS;
+        if (!RemoveExistingFileForReplacement(destinationPath, &cleanupError)) {
+            if ((cleanupError == ERROR_ACCESS_DENIED || cleanupError == ERROR_SHARING_VIOLATION) && attempt < 3) {
+                Sleep(75 * (attempt + 1));
+                continue;
+            }
+            if (errorCode) *errorCode = cleanupError;
+            if (failureStage) *failureStage = L"prepare destination for finalization";
+            return false;
+        }
+        if (MoveFileExW(partialPath.c_str(), destinationPath.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return true;
+        }
+        const DWORD error = GetLastError();
+        if (errorCode) *errorCode = error;
+        if (error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION) {
+            if (failureStage) *failureStage = L"MoveFileExW(finalize)";
+            return false;
+        }
+        if (attempt < 3) Sleep(75 * (attempt + 1));
+        else if (failureStage) *failureStage = L"MoveFileExW(finalize) after transient-error retries";
+    }
+    return false;
+}
+
 static std::wstring GetArtifactKey(const std::wstring& path) {
     std::wstring p = path;
     for (auto& c : p) if (c == L'/') c = L'\\';
@@ -870,6 +942,58 @@ static std::wstring FormatWin32Error(DWORD error) {
     return result;
 }
 
+static void AddSensitiveOutputValue(std::vector<std::wstring>& values, const std::wstring& value) {
+    // Tiny values are too common to redact safely from diagnostic text. Minecraft
+    // names are at least three characters; tokens and UUIDs are substantially longer.
+    if (value.size() < 3) return;
+    if (std::find(values.begin(), values.end(), value) == values.end()) values.push_back(value);
+}
+
+static void AddSensitiveJvmArguments(const std::wstring& arguments, std::vector<std::wstring>& values) {
+    AddSensitiveOutputValue(values, arguments);
+    std::wstring current;
+    bool inQuotes = false;
+    auto flush = [&]() {
+        if (current.empty()) return;
+        AddSensitiveOutputValue(values, current);
+        const size_t equals = current.find(L'=');
+        if (equals != std::wstring::npos && equals + 1 < current.size()) {
+            AddSensitiveOutputValue(values, current.substr(equals + 1));
+        }
+        current.clear();
+    };
+    for (size_t i = 0; i < arguments.size(); ++i) {
+        const wchar_t ch = arguments[i];
+        if (ch == L'\\' && i + 1 < arguments.size() && arguments[i + 1] == L'"') {
+            current.push_back(L'"');
+            ++i;
+        } else if (ch == L'"') {
+            inQuotes = !inQuotes;
+        } else if (iswspace(ch) && !inQuotes) {
+            flush();
+        } else {
+            current.push_back(ch);
+        }
+    }
+    flush();
+}
+
+static std::wstring RedactSensitiveProcessOutput(
+    std::wstring text,
+    const std::vector<std::wstring>& sensitiveValues
+) {
+    static const std::wstring marker = L"[REDACTED]";
+    for (const std::wstring& value : sensitiveValues) {
+        if (value.size() < 3) continue;
+        size_t position = 0;
+        while ((position = text.find(value, position)) != std::wstring::npos) {
+            text.replace(position, value.size(), marker);
+            position += marker.size();
+        }
+    }
+    return text;
+}
+
 static std::wstring DecodeProcessOutput(const std::string& bytes) {
     if (bytes.empty()) return L"";
     int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
@@ -962,7 +1086,12 @@ static bool DownloadHttpFileViaWinInet(
 
     EnsureParentDirectory(destPath);
     const std::wstring partialPath = destPath + L".download";
-    DeleteFileW(partialPath.c_str());
+    DWORD partialCleanupError = ERROR_SUCCESS;
+    if (!RemoveExistingFileForReplacement(partialPath, &partialCleanupError)) {
+        InternetCloseHandle(hUrl);
+        InternetCloseHandle(hInternet);
+        return fail(L"remove stale partial", partialCleanupError);
+    }
     HANDLE hFile = CreateFileW(partialPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                                FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
@@ -1031,10 +1160,11 @@ static bool DownloadHttpFileViaWinInet(
         return fail(failureStage[0] ? failureStage : L"empty response",
                     failureStage[0] ? failureCode : ERROR_INVALID_DATA);
     }
-    if (!MoveFileExW(partialPath.c_str(), destPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        const DWORD error = GetLastError();
+    DWORD finalizeError = ERROR_SUCCESS;
+    const wchar_t* finalizeStage = L"";
+    if (!MoveDownloadedFileIntoPlace(partialPath, destPath, &finalizeError, &finalizeStage)) {
         DeleteFileW(partialPath.c_str());
-        return fail(L"MoveFileExW(finalize)", error);
+        return fail(finalizeStage, finalizeError);
     }
     if (details) details->stage = L"completed";
     return true;
@@ -1133,7 +1263,13 @@ static bool DownloadHttpFileViaWinHttp(
 
     std::wstring partial = destPath + L".download";
     EnsureParentDirectory(destPath);
-    DeleteFileW(partial.c_str());
+    DWORD partialCleanupError = ERROR_SUCCESS;
+    if (!RemoveExistingFileForReplacement(partial, &partialCleanupError)) {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return fail(L"remove stale partial", partialCleanupError);
+    }
     HANDLE file = CreateFileW(partial.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                               FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) {
@@ -1219,10 +1355,11 @@ static bool DownloadHttpFileViaWinHttp(
         return fail(failureStage[0] ? failureStage : L"empty response",
                     failureStage[0] ? failureCode : ERROR_INVALID_DATA);
     }
-    if (!MoveFileExW(partial.c_str(), destPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-        const DWORD error = GetLastError();
+    DWORD finalizeError = ERROR_SUCCESS;
+    const wchar_t* finalizeStage = L"";
+    if (!MoveDownloadedFileIntoPlace(partial, destPath, &finalizeError, &finalizeStage)) {
         DeleteFileW(partial.c_str());
-        return fail(L"MoveFileExW(finalize)", error);
+        return fail(finalizeStage, finalizeError);
     }
     if (details) details->stage = L"completed";
     return true;
@@ -1293,13 +1430,26 @@ bool MinecraftLauncher::DownloadHttpFile(
     std::function<void(const std::wstring& diagnostic)> onDiagnostic
 ) {
     const std::vector<std::wstring> candidates = GetDownloadUrlCandidates(url);
+    auto prepareDestination = [&]() {
+        DWORD error = ERROR_SUCCESS;
+        bool readOnlyCleared = false;
+        if (!RemoveExistingFileForReplacement(destPath, &error, &readOnlyCleared)) {
+            if (onDiagnostic) onDiagnostic(L"[Download][ERROR] Could not remove the existing destination (Win32 " +
+                std::to_wstring(error) + L": " + FormatWin32Error(error) + L"): " + destPath);
+            return false;
+        }
+        if (readOnlyCleared && onDiagnostic) {
+            onDiagnostic(L"[Download] Cleared the read-only attribute before replacing: " + destPath);
+        }
+        return true;
+    };
+
     for (const std::wstring& candidate : candidates) {
+        if (!prepareDestination()) return false;
         DownloadAttemptDetails details;
-        DeleteFileW(destPath.c_str());
         const bool wininetOk = DownloadHttpFileViaWinInet(candidate, destPath, progress, &details);
         if (onDiagnostic) onDiagnostic(DescribeDownloadAttempt(L"WinINet", candidate, wininetOk, details));
         if (wininetOk) return true;
-        DeleteFileW(destPath.c_str());
 
         // A second HTTP implementation avoids a broken user-level WinINet
         // proxy while preserving normal enterprise/Windows proxy behaviour.
@@ -1307,7 +1457,6 @@ bool MinecraftLauncher::DownloadHttpFile(
             AETHER_WINHTTP_ACCESS_DEFAULT_PROXY, &details);
         if (onDiagnostic) onDiagnostic(DescribeDownloadAttempt(L"WinHTTP(default proxy)", candidate, winhttpOk, details));
         if (winhttpOk) return true;
-        DeleteFileW(destPath.c_str());
 
         // Last resort: bypass a stale/manual Windows proxy entirely. This is
         // especially useful when Modrinth is reachable but Maven hosts are not.
@@ -1315,7 +1464,6 @@ bool MinecraftLauncher::DownloadHttpFile(
             AETHER_WINHTTP_ACCESS_NO_PROXY, &details);
         if (onDiagnostic) onDiagnostic(DescribeDownloadAttempt(L"WinHTTP(no proxy)", candidate, directOk, details));
         if (directOk) return true;
-        DeleteFileW(destPath.c_str());
     }
     if (onDiagnostic) onDiagnostic(L"[Download] All configured URLs and HTTP transports failed for " + SanitizeDownloadUrl(url));
     return false;
@@ -1463,7 +1611,6 @@ static bool DownloadVerifiedFabricMirror(
         L"https://raw.githubusercontent.com/NoaKajou/Distrib-launcher/main/repo/lib/"
     };
     for (const std::wstring& base : bases) {
-        DeleteFileW(targetPath.c_str());
         if (onDiagnostic) onDiagnostic(L"[Download] Trying preverified Fabric mirror: " + base + relative);
         if (MinecraftLauncher::DownloadHttpFile(base + relative, targetPath, nullptr, onDiagnostic) &&
             FileMatchesSha1(targetPath, library.sha1)) {
@@ -1471,7 +1618,6 @@ static bool DownloadVerifiedFabricMirror(
             return true;
         }
         if (onDiagnostic) onDiagnostic(L"[Download] Fabric mirror failed or SHA-1 did not match for " + relative);
-        DeleteFileW(targetPath.c_str());
     }
     return false;
 }
@@ -1759,7 +1905,14 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 continue;
             }
             logDiagnostic(L"Fabric dependency needs repair: " + targetPath + L" (" + invalidReason + L")");
-            DeleteFileW(targetPath.c_str());
+            DWORD staleFileError = ERROR_SUCCESS;
+            bool staleFileWasReadOnly = false;
+            if (!RemoveExistingFileForReplacement(targetPath, &staleFileError, &staleFileWasReadOnly)) {
+                return reportPreparationFailure(L"cannot remove invalid Fabric library " + targetPath +
+                    L" (Win32 " + std::to_wstring(staleFileError) + L": " +
+                    FormatWin32Error(staleFileError) + L")");
+            }
+            if (staleFileWasReadOnly) logDiagnostic(L"Cleared read-only attribute from stale Fabric library: " + targetPath);
             bool found = false;
 
             if (!mojangLibsDir.empty()) {
@@ -1767,13 +1920,18 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 std::wstring sourceReason;
                 if (IsValidLibraryArtifact(flib, appDataLib, &sourceReason)) {
                     EnsureParentDirectory(targetPath);
-                    if (CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE) &&
-                        IsValidLibraryArtifact(flib, targetPath, &invalidReason)) {
+                    const BOOL copied = CopyFileW(appDataLib.c_str(), targetPath.c_str(), FALSE);
+                    const DWORD copyError = copied ? ERROR_SUCCESS : GetLastError();
+                    if (!copied) {
+                        logDiagnostic(L"[ERROR] CopyFileW for cached Fabric dependency failed (Win32 " +
+                            std::to_wstring(copyError) + L": " + FormatWin32Error(copyError) +
+                            L"); source=" + appDataLib + L"; destination=" + targetPath);
+                    } else if (IsValidLibraryArtifact(flib, targetPath, &invalidReason)) {
                         found = true;
                         logDiagnostic(L"Copied verified Fabric dependency from official cache: " + appDataLib);
                     } else {
-                        logDiagnostic(L"Could not copy cached Fabric dependency (Win32 " +
-                                      std::to_wstring(GetLastError()) + L"): " + appDataLib);
+                        logDiagnostic(L"Copied cached Fabric dependency failed validation: " + targetPath +
+                                      L" (" + invalidReason + L")");
                     }
                 } else if (CheckFileExists(appDataLib)) {
                     logDiagnostic(L"Official cache Fabric dependency rejected: " + appDataLib +
@@ -1793,14 +1951,17 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 }
             }
             if (!found) {
-                DeleteFileW(targetPath.c_str());
                 found = DownloadVerifiedFabricMirror(flib, targetPath, onDiagnostic) &&
                         IsValidLibraryArtifact(flib, targetPath, &invalidReason);
                 if (found) logDiagnostic(L"Recovered Fabric dependency through verified mirror: " + targetPath);
                 else logDiagnostic(L"No verified Fabric mirror artifact available for " + flib.path);
             }
             if (!found) {
-                DeleteFileW(targetPath.c_str());
+                DWORD cleanupError = ERROR_SUCCESS;
+                if (!RemoveExistingFileForReplacement(targetPath, &cleanupError)) {
+                    logDiagnostic(L"[WARN] Could not remove failed Fabric artifact (Win32 " +
+                        std::to_wstring(cleanupError) + L": " + FormatWin32Error(cleanupError) + L"): " + targetPath);
+                }
                 return reportPreparationFailure(L"failed to download or validate Fabric library " +
                                                 flib.path + L"; last validation: " + invalidReason);
             }
@@ -1830,7 +1991,14 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
             logDiagnostic(L"Minecraft library verified: " + targetPath);
         } else {
             logDiagnostic(L"Minecraft library missing/corrupt: " + targetPath + L" (" + invalidReason + L")");
-            DeleteFileW(targetPath.c_str());
+            DWORD staleFileError = ERROR_SUCCESS;
+            bool staleFileWasReadOnly = false;
+            if (!RemoveExistingFileForReplacement(targetPath, &staleFileError, &staleFileWasReadOnly)) {
+                return reportPreparationFailure(L"cannot remove invalid Minecraft library " + targetPath +
+                    L" (Win32 " + std::to_wstring(staleFileError) + L": " +
+                    FormatWin32Error(staleFileError) + L")");
+            }
+            if (staleFileWasReadOnly) logDiagnostic(L"Cleared read-only attribute from stale Minecraft library: " + targetPath);
             bool foundLibrary = false;
 
             if (!mojangLibsDir.empty()) {
@@ -1838,13 +2006,18 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 std::wstring sourceReason;
                 if (IsValidLibraryArtifact(lib, appDataLibPath, &sourceReason)) {
                     EnsureParentDirectory(targetPath);
-                    if (CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE) &&
-                        IsValidLibraryArtifact(lib, targetPath, &invalidReason)) {
+                    const BOOL copied = CopyFileW(appDataLibPath.c_str(), targetPath.c_str(), FALSE);
+                    const DWORD copyError = copied ? ERROR_SUCCESS : GetLastError();
+                    if (!copied) {
+                        logDiagnostic(L"[ERROR] CopyFileW for cached Minecraft library failed (Win32 " +
+                            std::to_wstring(copyError) + L": " + FormatWin32Error(copyError) +
+                            L"); source=" + appDataLibPath + L"; destination=" + targetPath);
+                    } else if (IsValidLibraryArtifact(lib, targetPath, &invalidReason)) {
                         foundLibrary = true;
                         logDiagnostic(L"Copied verified Minecraft library from official cache: " + appDataLibPath);
                     } else {
-                        logDiagnostic(L"Could not copy cached Minecraft library (Win32 " +
-                                      std::to_wstring(GetLastError()) + L"): " + appDataLibPath);
+                        logDiagnostic(L"Copied cached Minecraft library failed validation: " + targetPath +
+                                      L" (" + invalidReason + L")");
                     }
                 } else if (CheckFileExists(appDataLibPath)) {
                     logDiagnostic(L"Official cache Minecraft library rejected: " + appDataLibPath +
@@ -1878,7 +2051,11 @@ bool MinecraftLauncher::PrepareMinecraftFiles(
                 }
             }
             if (!foundLibrary) {
-                DeleteFileW(targetPath.c_str());
+                DWORD cleanupError = ERROR_SUCCESS;
+                if (!RemoveExistingFileForReplacement(targetPath, &cleanupError)) {
+                    logDiagnostic(L"[WARN] Could not remove failed Minecraft artifact (Win32 " +
+                        std::to_wstring(cleanupError) + L": " + FormatWin32Error(cleanupError) + L"): " + targetPath);
+                }
                 return reportPreparationFailure(L"failed to download or validate Minecraft library " +
                                                 lib.path + L"; last validation: " + invalidReason);
             }
@@ -1957,10 +2134,11 @@ bool MinecraftLauncher::LaunchMinecraft(
         return reportLaunchFailure(L"Microsoft session is incomplete (missing profile name, UUID, or Minecraft access token); token values are intentionally not written to logs.",
                                    L"Microsoft sign-in required");
     }
-    logDiagnostic(L"[Account] Session profile=" + (account.username.empty() ? L"(empty)" : account.username) +
-                  L"; mode=" + (account.isMicrosoft ? L"Microsoft" : L"offline") +
-                  L"; UUID=" + (account.uuid.empty() ? L"(offline default)" : account.uuid) +
-                  L"; access token present=" + (account.accessToken.empty() ? L"no" : L"yes; value redacted"));
+    logDiagnostic(L"[Account] Session mode=" + std::wstring(account.isMicrosoft ? L"Microsoft" : L"offline") +
+                  L"; profile present=" + (account.username.empty() ? L"no" : L"yes") +
+                  L"; UUID present=" + (account.uuid.empty() ? L"no" : L"yes") +
+                  L"; access token present=" + (account.accessToken.empty() ? L"no" : L"yes") +
+                  L"; account values omitted from log.");
 
     MEMORYSTATUSEX memoryStatus = {};
     memoryStatus.dwLength = sizeof(memoryStatus);
@@ -2239,26 +2417,21 @@ bool MinecraftLauncher::LaunchMinecraft(
         L"--userType " + userType + L" " +
         L"--versionType " + versionType;
 
-    std::wstring commandLineForLog = cmdLine;
-    const std::wstring tokenMarker = L"--accessToken \"";
-    const size_t tokenMarkerPos = commandLineForLog.find(tokenMarker);
-    if (tokenMarkerPos != std::wstring::npos) {
-        const size_t tokenStart = tokenMarkerPos + tokenMarker.size();
-        const size_t tokenEnd = commandLineForLog.find(L'"', tokenStart);
-        if (tokenEnd != std::wstring::npos) {
-            commandLineForLog.replace(tokenStart, tokenEnd - tokenStart, L"[REDACTED]");
-        }
-    }
-    logDiagnostic(L"[Process] Application=" + java.path + L"; working directory=" + instanceDir +
+    // Do not persist the full command line. Besides the Microsoft access token,
+    // user-supplied JVM arguments and account identifiers can contain secrets or
+    // personal data; a summary is enough to diagnose process creation failures.
+    logDiagnostic(L"[Process] Java launch request prepared: executable=" + java.path +
+                  L"; working directory=" + instanceDir +
                   L"; command-line characters=" + std::to_wstring(cmdLine.size()) +
                   L"; classpath JARs=" + std::to_wstring(addedCount) +
-                  L"; main class=" + mainClass + L"; access token value is redacted.");
-    if (commandLineForLog.size() > 12000) {
-        commandLineForLog.resize(12000);
-        commandLineForLog += L" …[command line truncated; original length=" +
-                             std::to_wstring(cmdLine.size()) + L"]";
-    }
-    logDiagnostic(L"[Process] Redacted Java command line: " + commandLineForLog);
+                  L"; main class=" + mainClass +
+                  L"; account values and JVM arguments omitted from log.");
+
+    std::vector<std::wstring> outputRedactionValues;
+    AddSensitiveOutputValue(outputRedactionValues, account.username);
+    AddSensitiveOutputValue(outputRedactionValues, account.uuid);
+    AddSensitiveOutputValue(outputRedactionValues, finalAccessToken);
+    AddSensitiveJvmArguments(customArgs, outputRedactionValues);
 
     if (cmdLine.size() >= 32767) {
         return reportLaunchFailure(L"Java command line exceeds the Windows CreateProcessW limit (32766 characters). Reduce the classpath or shorten the storage path.",
@@ -2357,10 +2530,12 @@ bool MinecraftLauncher::LaunchMinecraft(
     // The returned process handle belongs to the caller when outProcessHandle
     // is supplied; otherwise this monitor closes it after collecting the exit.
     const bool processHandleTransferred = outProcessHandle != nullptr;
-    std::thread([hStdOutRead, process, callbacks, processHandleTransferred]() {
-        auto emitLine = [&callbacks](const std::string& rawLine) {
+    std::thread([hStdOutRead, process, callbacks, processHandleTransferred,
+                 outputRedactionValues = std::move(outputRedactionValues)]() {
+        auto emitLine = [&callbacks, &outputRedactionValues](const std::string& rawLine) {
             if (rawLine.empty() || !callbacks.onLog) return;
-            const std::wstring line = DecodeProcessOutput(rawLine);
+            const std::wstring line = RedactSensitiveProcessOutput(
+                DecodeProcessOutput(rawLine), outputRedactionValues);
             std::wstring uppercase = line;
             std::transform(uppercase.begin(), uppercase.end(), uppercase.begin(), ::towupper);
             const bool isError = uppercase.find(L"ERROR") != std::wstring::npos ||

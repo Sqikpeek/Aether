@@ -244,6 +244,12 @@ test('Native launcher writes persistent stage-by-stage launch diagnostics and ca
   assert.ok(mcHeader.includes('onDiagnostic') && mcLauncher.includes('DescribeDownloadAttempt') &&
             mcLauncher.includes('Content-Length mismatch') && mcLauncher.includes('FormatWin32Error'),
     'Download logging must include transport stage, HTTP/Win32 failures, and byte-count validation');
+  assert.ok(mcLauncher.includes('RemoveExistingFileForReplacement') &&
+            mcLauncher.includes('MoveDownloadedFileIntoPlace') &&
+            mcLauncher.includes('FILE_ATTRIBUTE_READONLY') &&
+            mcLauncher.includes('SetFileAttributesW') &&
+            mcLauncher.includes('Cleared the read-only attribute before replacing'),
+    'Library repair and downloads must be able to replace stale read-only JARs and report access-denied cleanup errors');
   assert.ok(mcLauncher.includes('DetectJava(customJava, requiredJava') &&
             mcLauncher.includes('No runnable Java installation was detected') &&
             !mcLauncher.includes('fallback.path = L"java.exe"'),
@@ -254,9 +260,16 @@ test('Native launcher writes persistent stage-by-stage launch diagnostics and ca
   assert.ok(mcLauncher.includes('DecodeProcessOutput') && mcLauncher.includes('[Minecraft] ') &&
             mcLauncher.includes('if (!accumulated.empty()) emitLine(accumulated)'),
     'Minecraft stdout/stderr must be decoded correctly and the final unterminated line must be logged');
-  assert.ok(mcLauncher.includes('commandLineForLog.replace') && mcLauncher.includes('[REDACTED]') &&
+  assert.ok(!mcLauncher.includes('commandLineForLog') &&
+            mcLauncher.includes('account values and JVM arguments omitted from log') &&
+            mcLauncher.includes('RedactSensitiveProcessOutput') &&
+            mcLauncher.includes('AddSensitiveJvmArguments(customArgs') &&
             mcLauncher.includes('CreateProcessW could not start Java'),
-    'The actual Java command line must be diagnosable without writing the Microsoft access token');
+    'Diagnostics must omit the full command line and redact account values/custom JVM arguments from captured output');
+  assert.ok(!mcLauncher.includes('L"[Account] Session profile="') &&
+            !launcherMain.includes('Signed in: " + account.username') &&
+            !launcherMain.includes('Player: " + launchAccount.username'),
+    'Persistent diagnostics must not include Microsoft profile names, UUIDs, or player nicknames');
   assert.ok(mcLauncher.includes('const int effectiveMemoryMb = std::max(512, memoryMb)') &&
             mcLauncher.includes('Xms=" + std::to_wstring(initialMemoryMb)'),
     'A low custom RAM setting must no longer silently become a 4 GiB heap');
